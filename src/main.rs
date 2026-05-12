@@ -33,8 +33,7 @@ fn main() -> Result<()> {
     // Anchor for LSP workspace root discovery — captured once here so the
     // value can't shift mid-session if anything changes the process's
     // cwd. Every later `:e` resolves against the same directory.
-    let startup_cwd =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let startup_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -68,7 +67,14 @@ fn main() -> Result<()> {
         }
     });
 
-    let mut app = App::new(keymap, loader, languages, extension_index, event_tx, startup_cwd);
+    let mut app = App::new(
+        keymap,
+        loader,
+        languages,
+        extension_index,
+        event_tx,
+        startup_cwd,
+    );
     app.cursor_shapes = config::resolve_cursor_shapes(&cfg.cursor)?;
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;

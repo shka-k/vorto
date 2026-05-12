@@ -258,9 +258,7 @@ fn render_line(
                 }
             }
             Selection::Line { from_row, to_row } => row >= from_row && row <= to_row,
-            Selection::Block { r0, c0, r1, c1 } => {
-                row >= r0 && row <= r1 && col >= c0 && col <= c1
-            }
+            Selection::Block { r0, c0, r1, c1 } => row >= r0 && row <= r1 && col >= c0 && col <= c1,
         }
     };
 
@@ -281,7 +279,11 @@ fn render_line(
         if cap.end_row < row || cap.start_row > row {
             continue;
         }
-        let lo = if cap.start_row == row { cap.start_col } else { 0 };
+        let lo = if cap.start_row == row {
+            cap.start_col
+        } else {
+            0
+        };
         let hi = if cap.end_row == row {
             cap.end_col.min(chars.len())
         } else {
@@ -455,7 +457,10 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
 fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'static str)>)> {
     // Find the trailing non-Count token — counts don't change what the
     // hint context is.
-    let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)))?;
+    let last = tokens
+        .iter()
+        .rev()
+        .find(|t| !matches!(t, Token::Count(_)))?;
     let (name, entries) = match last {
         Token::LeaderPrefix => (
             "leader",

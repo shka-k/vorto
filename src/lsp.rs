@@ -38,10 +38,7 @@ use crate::languages::LspConfig;
 pub enum LspEvent {
     /// Server replaced the diagnostics for a document. An empty `items`
     /// vector means "clear".
-    Diagnostics {
-        uri: String,
-        items: Vec<Diagnostic>,
-    },
+    Diagnostics { uri: String, items: Vec<Diagnostic> },
     /// `window/showMessage` — surface in the status bar.
     Message { level: u8, text: String },
     /// Response to an earlier request we sent. `id` matches what
@@ -207,8 +204,7 @@ impl LspClient {
         // before answering ours — we have to reply to those right here
         // or the handshake deadlocks.
         loop {
-            let msg = read_message(&mut reader)
-                .with_context(|| "reading initialize response")?;
+            let msg = read_message(&mut reader).with_context(|| "reading initialize response")?;
             let is_init_response = msg.get("id").and_then(|v| v.as_u64()) == Some(init_id)
                 && msg.get("method").is_none();
             if is_init_response {
@@ -300,7 +296,6 @@ impl LspClient {
         let params = json!({ "textDocument": { "uri": uri } });
         write_framed(&self.stdin, &notification("textDocument/didClose", params))
     }
-
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -359,10 +354,7 @@ fn reader_loop(
             }
             "window/showMessage" | "window/logMessage" => {
                 if let Some(params) = msg.get("params") {
-                    let level = params
-                        .get("type")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(3) as u8;
+                    let level = params.get("type").and_then(|v| v.as_u64()).unwrap_or(3) as u8;
                     let text = params
                         .get("message")
                         .and_then(|v| v.as_str())
@@ -413,9 +405,7 @@ fn parse_publish_diagnostics(params: &Value) -> Option<LspEvent> {
         let range = d.get("range")?;
         let start = range.get("start")?;
         let end = range.get("end")?;
-        let sev = Severity::from_code(
-            d.get("severity").and_then(|v| v.as_i64()).unwrap_or(1),
-        );
+        let sev = Severity::from_code(d.get("severity").and_then(|v| v.as_i64()).unwrap_or(1));
         let message = d
             .get("message")
             .and_then(|v| v.as_str())
@@ -688,9 +678,7 @@ fn apply_one_edit(lines: &mut Vec<String>, edit: &TextEdit) {
 /// lossy conversion — we don't need bit-perfect roundtrip, just something
 /// the server can match against.
 pub fn path_to_uri(path: &Path) -> String {
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let s = abs.to_string_lossy();
     if s.starts_with('/') {
         format!("file://{}", s)
@@ -754,9 +742,7 @@ pub fn discover_root(cwd: &Path, file: Option<&Path>, markers: &[String]) -> Pat
         return found;
     }
     if let Some(file) = file {
-        let file_abs = file
-            .canonicalize()
-            .unwrap_or_else(|_| file.to_path_buf());
+        let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
         if !file_abs.starts_with(&cwd_abs)
             && let Some(parent) = file_abs.parent()
         {
@@ -1021,8 +1007,14 @@ mod tests {
         let mut lines = vec!["let foo = 1;".to_string()];
         let edits = vec![TextEdit {
             range: Range {
-                start: Position { line: 0, character: 4 },
-                end:   Position { line: 0, character: 7 },
+                start: Position {
+                    line: 0,
+                    character: 4,
+                },
+                end: Position {
+                    line: 0,
+                    character: 7,
+                },
             },
             new_text: "bar".to_string(),
         }];
@@ -1038,15 +1030,27 @@ mod tests {
         let edits = vec![
             TextEdit {
                 range: Range {
-                    start: Position { line: 0, character: 0 },
-                    end:   Position { line: 0, character: 3 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 3,
+                    },
                 },
                 new_text: "XXXX".to_string(),
             },
             TextEdit {
                 range: Range {
-                    start: Position { line: 0, character: 8 },
-                    end:   Position { line: 0, character: 11 },
+                    start: Position {
+                        line: 0,
+                        character: 8,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 11,
+                    },
                 },
                 new_text: "Y".to_string(),
             },

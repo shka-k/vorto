@@ -589,13 +589,7 @@ impl Buffer {
                 }
             }
         };
-        Some((
-            Cursor {
-                row,
-                col: from_col,
-            },
-            Cursor { row, col: to_col },
-        ))
+        Some((Cursor { row, col: from_col }, Cursor { row, col: to_col }))
     }
 
     /// Yank a run of whole lines (inclusive of both endpoints).
@@ -735,9 +729,7 @@ impl Buffer {
             start -= 1;
         }
         let mut end = row;
-        while end + 1 < self.lines.len()
-            && is_blank_line(&self.lines[end + 1]) == target_blank
-        {
+        while end + 1 < self.lines.len() && is_blank_line(&self.lines[end + 1]) == target_blank {
             end += 1;
         }
 
@@ -754,9 +746,7 @@ impl Buffer {
                     (start, ae)
                 } else {
                     let mut as_ = start;
-                    while as_ > 0
-                        && is_blank_line(&self.lines[as_ - 1]) != target_blank
-                    {
+                    while as_ > 0 && is_blank_line(&self.lines[as_ - 1]) != target_blank {
                         as_ -= 1;
                     }
                     (as_, end)
@@ -991,6 +981,30 @@ fn word_forward_char_class(lines: &[String], from: Cursor) -> Cursor {
 /// Move backward one `b`-step: step left one char, skip any
 /// whitespace, then back up to the start of the contiguous run of the
 /// same class. Wraps to the previous line at column 0.
+fn word_back_char_class(lines: &[String], from: Cursor) -> Cursor {
+    if from.col == 0 {
+        if from.row > 0 {
+            let row = from.row - 1;
+            let col = lines[row].chars().count().saturating_sub(1);
+            return Cursor { row, col };
+        }
+        return from;
+    }
+    let chars: Vec<char> = lines[from.row].chars().collect();
+    let mut i = from.col.saturating_sub(1);
+    while i > 0 && classify(chars[i]) == CharClass::Space {
+        i -= 1;
+    }
+    let target_class = classify(chars[i]);
+    while i > 0 && classify(chars[i - 1]) == target_class {
+        i -= 1;
+    }
+    Cursor {
+        row: from.row,
+        col: i,
+    }
+}
+
 #[cfg(test)]
 mod word_class_tests {
     use super::*;
@@ -1042,29 +1056,5 @@ mod word_class_tests {
         assert_eq!(paragraph_back_row(&l, 4), 2); // qux → blank
         assert_eq!(paragraph_back_row(&l, 3), 2); // baz → blank
         assert_eq!(paragraph_back_row(&l, 2), 0); // blank → file start
-    }
-}
-
-fn word_back_char_class(lines: &[String], from: Cursor) -> Cursor {
-    if from.col == 0 {
-        if from.row > 0 {
-            let row = from.row - 1;
-            let col = lines[row].chars().count().saturating_sub(1);
-            return Cursor { row, col };
-        }
-        return from;
-    }
-    let chars: Vec<char> = lines[from.row].chars().collect();
-    let mut i = from.col.saturating_sub(1);
-    while i > 0 && classify(chars[i]) == CharClass::Space {
-        i -= 1;
-    }
-    let target_class = classify(chars[i]);
-    while i > 0 && classify(chars[i - 1]) == target_class {
-        i -= 1;
-    }
-    Cursor {
-        row: from.row,
-        col: i,
     }
 }

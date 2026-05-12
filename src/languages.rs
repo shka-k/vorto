@@ -232,7 +232,7 @@ mod tests {
         let m = builtin_languages();
         assert!(m.contains_key("rust"));
         assert_eq!(
-            m["rust"].extensions.as_ref().map(|v| v.as_slice()),
+            m["rust"].extensions.as_deref(),
             Some(&["rs".to_string()][..])
         );
     }

@@ -96,8 +96,7 @@ impl Loader {
     fn read_query(&self, spec: &LangSpec, kind: &str) -> Result<String> {
         let base = spec.query_dir.as_ref().unwrap_or(&self.query_dir);
         let path = base.join(&spec.name).join(format!("{}.scm", kind));
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("reading query {}", path.display()))
+        std::fs::read_to_string(&path).with_context(|| format!("reading query {}", path.display()))
     }
 }
 
@@ -157,9 +156,12 @@ impl Highlighter {
         parser
             .set_language(&language)
             .context("setting parser language (ABI mismatch?)")?;
-        let query =
-            Query::new(&language, highlights_src).context("compiling highlights query")?;
-        let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let query = Query::new(&language, highlights_src).context("compiling highlights query")?;
+        let capture_names = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let (textobjects, textobject_capture_names) = match textobjects_src {
             Some(src) => {
                 let q = Query::new(&language, src).context("compiling textobjects query")?;
@@ -282,7 +284,10 @@ impl Highlighter {
 
         // Cursor as a tree-sitter Point: row is line index, column is
         // byte offset within that line.
-        let cursor_pt = (cursor_row, char_to_byte_col(&self.source, cursor_row, cursor_col_chars));
+        let cursor_pt = (
+            cursor_row,
+            char_to_byte_col(&self.source, cursor_row, cursor_col_chars),
+        );
 
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(query, tree.root_node(), self.source.as_bytes());
@@ -320,9 +325,11 @@ impl Highlighter {
                     continue;
                 }
                 let (name, start_idx, end_idx) = match pred.args.as_ref() {
-                    [QueryPredicateArg::String(n), QueryPredicateArg::Capture(s), QueryPredicateArg::Capture(e)] => {
-                        (n.as_ref(), *s, *e)
-                    }
+                    [
+                        QueryPredicateArg::String(n),
+                        QueryPredicateArg::Capture(s),
+                        QueryPredicateArg::Capture(e),
+                    ] => (n.as_ref(), *s, *e),
                     _ => continue,
                 };
                 if name != target {
@@ -376,10 +383,7 @@ impl Highlighter {
 /// whose start position is strictly greater than `target`. Subtrees
 /// that end at or before `target` are skipped wholesale — that's the
 /// pruning that keeps this O(depth × matching-leaves) rather than O(N).
-fn next_leaf_after(
-    node: tree_sitter::Node,
-    target: (usize, usize),
-) -> Option<tree_sitter::Node> {
+fn next_leaf_after(node: tree_sitter::Node, target: (usize, usize)) -> Option<tree_sitter::Node> {
     let end = node.end_position();
     if (end.row, end.column) <= target {
         return None;
@@ -404,10 +408,7 @@ fn next_leaf_after(
 /// Mirror of [`next_leaf_after`] — walks children in reverse document
 /// order and returns the last leaf whose start is strictly less than
 /// `target`.
-fn prev_leaf_before(
-    node: tree_sitter::Node,
-    target: (usize, usize),
-) -> Option<tree_sitter::Node> {
+fn prev_leaf_before(node: tree_sitter::Node, target: (usize, usize)) -> Option<tree_sitter::Node> {
     let s = node.start_position();
     if (s.row, s.column) >= target {
         return None;

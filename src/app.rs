@@ -28,7 +28,10 @@ pub enum AppEvent {
 pub enum Prompt {
     None,
     Command(String),
-    Search { forward: bool, query: String },
+    Search {
+        forward: bool,
+        query: String,
+    },
     Fuzzy(Finder),
     /// `<space>r` — text input for the new identifier. The cursor and
     /// URI captured at open-time aren't stored here: the LSP rename
@@ -229,10 +232,10 @@ impl App {
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
         // Tell the previous LSP client we're done with that document so
         // it can drop diagnostics and stop watching it.
-        if let (Some(uri), Some(lang)) = (self.current_uri.take(), self.current_language.take()) {
-            if let Some(client) = self.lsp_clients.get_mut(&lang) {
-                let _ = client.did_close(&uri);
-            }
+        if let (Some(uri), Some(lang)) = (self.current_uri.take(), self.current_language.take())
+            && let Some(client) = self.lsp_clients.get_mut(&lang)
+        {
+            let _ = client.did_close(&uri);
         }
         self.buffer = Buffer::load(path)?;
         self.attach_highlighter();
@@ -291,12 +294,11 @@ impl App {
 
         let uri = lsp::path_to_uri(&path);
         let text = self.buffer.lines.join("\n");
-        if let Some(client) = self.lsp_clients.get_mut(&lang_name) {
-            if let Err(e) = client.did_open(&uri, &text) {
-                self.status =
-                    Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
-                return;
-            }
+        if let Some(client) = self.lsp_clients.get_mut(&lang_name)
+            && let Err(e) = client.did_open(&uri, &text)
+        {
+            self.status = Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
+            return;
         }
         self.current_uri = Some(uri);
         self.current_language = Some(lang_name);
@@ -331,7 +333,11 @@ impl App {
                 serde_json::json!({ "includeDeclaration": true }),
             );
         }
-        self.send_lsp_request("textDocument/references", params, LspRequestKind::References);
+        self.send_lsp_request(
+            "textDocument/references",
+            params,
+            LspRequestKind::References,
+        );
     }
 
     fn open_rename_prompt(&mut self) {
@@ -375,10 +381,7 @@ impl App {
     /// Build the standard `{ textDocument: { uri }, position }` block
     /// most language-feature requests start with.
     fn text_document_position_params(&self) -> serde_json::Value {
-        let uri = self
-            .current_uri
-            .clone()
-            .unwrap_or_default();
+        let uri = self.current_uri.clone().unwrap_or_default();
         serde_json::json!({
             "textDocument": { "uri": uri },
             "position": {
@@ -391,14 +394,13 @@ impl App {
     /// Send `method` to the current buffer's LSP client and remember
     /// `kind` so the response handler knows what to do. No-op when
     /// there's no client — callers should have checked first.
-    fn send_lsp_request(
-        &mut self,
-        method: &str,
-        params: serde_json::Value,
-        kind: LspRequestKind,
-    ) {
-        let Some(lang) = self.current_language.clone() else { return };
-        let Some(client) = self.lsp_clients.get_mut(&lang) else { return };
+    fn send_lsp_request(&mut self, method: &str, params: serde_json::Value, kind: LspRequestKind) {
+        let Some(lang) = self.current_language.clone() else {
+            return;
+        };
+        let Some(client) = self.lsp_clients.get_mut(&lang) else {
+            return;
+        };
         match client.request(method, params) {
             Ok(id) => {
                 self.pending_lsp.insert((lang, id), kind);
@@ -416,7 +418,9 @@ impl App {
         result: Option<serde_json::Value>,
         error: Option<String>,
     ) {
-        let Some(kind) = self.pending_lsp.remove(&(lang, id)) else { return };
+        let Some(kind) = self.pending_lsp.remove(&(lang, id)) else {
+            return;
+        };
         if let Some(msg) = error {
             self.status = Status::error(format!("lsp: {}", msg));
             return;
@@ -425,9 +429,7 @@ impl App {
         match kind {
             LspRequestKind::Jump { label } => self.apply_jump_result(label, &result),
             LspRequestKind::References => self.apply_references_result(&result),
-            LspRequestKind::Rename { new_name } => {
-                self.apply_rename_result(&new_name, &result)
-            }
+            LspRequestKind::Rename { new_name } => self.apply_rename_result(&new_name, &result),
         }
     }
 
@@ -502,7 +504,9 @@ impl App {
                 self.buffer.dirty = true;
                 continue;
             }
-            let Some(path) = lsp::uri_to_path(&uri) else { continue };
+            let Some(path) = lsp::uri_to_path(&uri) else {
+                continue;
+            };
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
@@ -634,8 +638,7 @@ impl App {
         match self.loader.highlighter_for(&spec) {
             Ok(h) => self.buffer.highlighter = Some(h),
             Err(e) => {
-                self.status =
-                    Status::error(format!("highlight ({}): {}", name, root_cause(&e)));
+                self.status = Status::error(format!("highlight ({}): {}", name, root_cause(&e)));
             }
         }
     }
@@ -1021,9 +1024,7 @@ impl App {
             D::GotoLine => self.goto_line(ctx.rest),
             D::GotoDefinition => self.lsp_jump("textDocument/definition", "definition"),
             D::GotoDeclaration => self.lsp_jump("textDocument/declaration", "declaration"),
-            D::GotoImplementation => {
-                self.lsp_jump("textDocument/implementation", "implementation")
-            }
+            D::GotoImplementation => self.lsp_jump("textDocument/implementation", "implementation"),
             D::FindReferences => self.lsp_find_references(),
             D::Rename => self.open_rename_prompt(),
         }
@@ -1306,7 +1307,10 @@ impl CommandBind {
 /// status-bar message focused on the actual filesystem / parser error
 /// rather than the wrapping context.
 fn root_cause(e: &anyhow::Error) -> String {
-    e.chain().last().map(|x| x.to_string()).unwrap_or_else(|| e.to_string())
+    e.chain()
+        .last()
+        .map(|x| x.to_string())
+        .unwrap_or_else(|| e.to_string())
 }
 
 /// True if the error chain contains an `io::Error` with `NotFound` kind —

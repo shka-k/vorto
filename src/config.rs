@@ -205,8 +205,8 @@ pub fn load_or_default(path: Option<&std::path::Path>) -> Result<Config> {
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let config: Config = toml::from_str(&text)
-        .with_context(|| format!("parsing config {}", path.display()))?;
+    let config: Config =
+        toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
     Ok(config)
 }
 
