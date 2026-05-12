@@ -280,4 +280,34 @@ mod tests {
         let sig = KeySig::new(KeyCode::Char('u'), KeyModifiers::NONE);
         assert_eq!(km.initial.get(&sig), Some(&Token::Direct(DirectKind::Quit)));
     }
+
+    #[test]
+    fn parse_inline_array_form() {
+        let toml = r#"
+bind = [
+  { keys = "<C-s>", action = "save" },
+  { keys = "<space>w", action = "save" },
+]
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.bind.len(), 2);
+        assert_eq!(cfg.bind[0].keys, "<C-s>");
+        assert_eq!(cfg.bind[1].action, "save");
+    }
+
+    #[test]
+    fn parse_table_array_form() {
+        let toml = r#"
+[[bind]]
+keys = "<C-s>"
+action = "save"
+
+[[bind]]
+keys = "<space>w"
+action = "save"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.bind.len(), 2);
+        assert_eq!(cfg.bind[0].keys, "<C-s>");
+    }
 }
