@@ -15,7 +15,9 @@
 //! Operator + motion / text-object grammar lives entirely in these three
 //! functions — no separate state machine or KeyBind table.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use std::collections::HashMap;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{
     DirectKind, Expr, MotionExpr, MotionKind, Object, Operator, PromptKind, Scope, Target, Token,
@@ -24,6 +26,144 @@ use crate::fuzzy::FuzzyKind;
 use crate::mode::Mode;
 
 pub const LEADER: char = ' ';
+
+// ────────────────────────────────────────────────────────────────────────
+// Keymap — runtime-mutable binding table per context
+// ────────────────────────────────────────────────────────────────────────
+
+/// Canonical key signature used for hash-table lookup. SHIFT is stripped
+/// for Char keys (since 'G' vs 'g' is already encoded in the character)
+/// so terminals that report it explicitly behave the same as ones that
+/// don't.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct KeySig {
+    pub code: KeyCode,
+    pub modifiers: KeyModifiers,
+}
+
+impl KeySig {
+    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+        let modifiers = if matches!(code, KeyCode::Char(_)) {
+            modifiers - KeyModifiers::SHIFT
+        } else {
+            modifiers
+        };
+        Self { code, modifiers }
+    }
+
+    pub fn from_event(key: KeyEvent) -> Self {
+        Self::new(key.code, key.modifiers)
+    }
+}
+
+/// User-customisable binding tables, one per tokenization context that
+/// the parser can be in. Each context is a `KeySig → Token` map.
+///
+/// `Initial` and `Leader` are the two everyday-customisable contexts —
+/// they're the ones the TOML config writes into. `OpPending`,
+/// `ObjectExpected`, and `GotoPending` use fixed match arms (their
+/// grammar is part of the parser, not "user shortcuts"), so they're
+/// intentionally absent here.
+pub struct Keymap {
+    pub initial: HashMap<KeySig, Token>,
+    pub leader: HashMap<KeySig, Token>,
+}
+
+impl Keymap {
+    /// Empty Keymap with no bindings; useful only as a builder base.
+    pub fn empty() -> Self {
+        Self {
+            initial: HashMap::new(),
+            leader: HashMap::new(),
+        }
+    }
+
+    /// All of vim's default Normal-mode bindings.
+    pub fn vim_default() -> Self {
+        let mut m = Self::empty();
+        m.install_vim_defaults();
+        m
+    }
+
+    /// Insert a binding into the Initial context.
+    pub fn bind_initial(&mut self, sig: KeySig, token: Token) {
+        self.initial.insert(sig, token);
+    }
+
+    /// Insert a binding into the Leader-pending context (keys that fire
+    /// after `<space>` has been pressed).
+    pub fn bind_leader(&mut self, sig: KeySig, token: Token) {
+        self.leader.insert(sig, token);
+    }
+
+    fn install_vim_defaults(&mut self) {
+        use DirectKind as D;
+        use MotionKind as M;
+        use Token::*;
+
+        let none = KeyModifiers::NONE;
+        let initial = [
+            // ── movement ─────────────────────────────────────────────
+            (KeyCode::Char('h'), Motion(M::Left)),
+            (KeyCode::Left, Motion(M::Left)),
+            (KeyCode::Char('l'), Motion(M::Right)),
+            (KeyCode::Right, Motion(M::Right)),
+            (KeyCode::Char('j'), Motion(M::Down)),
+            (KeyCode::Down, Motion(M::Down)),
+            (KeyCode::Char('k'), Motion(M::Up)),
+            (KeyCode::Up, Motion(M::Up)),
+            (KeyCode::Char('$'), Motion(M::LineEnd)),
+            (KeyCode::End, Motion(M::LineEnd)),
+            (KeyCode::Home, Motion(M::LineStart)),
+            (KeyCode::Char('w'), Motion(M::WordForward)),
+            (KeyCode::Char('b'), Motion(M::WordBack)),
+            (KeyCode::Char('G'), Motion(M::FileEnd)),
+            (KeyCode::Char('n'), Motion(M::SearchNext)),
+            (KeyCode::Char('N'), Motion(M::SearchPrev)),
+            // ── operators ────────────────────────────────────────────
+            (KeyCode::Char('d'), Op(Operator::Delete)),
+            (KeyCode::Char('y'), Op(Operator::Yank)),
+            (KeyCode::Char('c'), Op(Operator::Change)),
+            // ── standalone commands ──────────────────────────────────
+            (KeyCode::Char('i'), Direct(D::EnterMode(Mode::Insert))),
+            (KeyCode::Char('a'), Motion(M::Right)), // vim's append: stub
+            (KeyCode::Char('v'), Direct(D::EnterMode(Mode::Visual))),
+            (KeyCode::Char('o'), Direct(D::OpenLineBelow)),
+            (KeyCode::Char('O'), Direct(D::OpenLineAbove)),
+            (KeyCode::Char('x'), Direct(D::DeleteCharUnderCursor)),
+            (KeyCode::Char('p'), Direct(D::Paste)),
+            (KeyCode::Char('u'), Direct(D::Undo)),
+            (KeyCode::Char(':'), Direct(D::OpenPrompt(PromptKind::Command))),
+            (
+                KeyCode::Char('/'),
+                Direct(D::OpenPrompt(PromptKind::Search { forward: true })),
+            ),
+            (
+                KeyCode::Char('?'),
+                Direct(D::OpenPrompt(PromptKind::Search { forward: false })),
+            ),
+            (KeyCode::Char('g'), GotoPrefix),
+            (KeyCode::Char(LEADER), LeaderPrefix),
+        ];
+        for (code, token) in initial {
+            self.bind_initial(KeySig::new(code, none), token);
+        }
+
+        let leader = [
+            (
+                KeyCode::Char('f'),
+                Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
+            ),
+            (
+                KeyCode::Char('l'),
+                Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
+            ),
+        ];
+        for (code, token) in leader {
+            self.bind_leader(KeySig::new(code, none), token);
+        }
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Parse result
@@ -81,56 +221,50 @@ fn context_of(prev: &[Token]) -> Ctx {
     }
 }
 
-/// Resolve a key to its token in the current parse context.
-///
-/// Returns `None` when the key has no meaning in the current context —
-/// the caller should treat this as a parse abort (clear the token list).
-///
-/// Only called for Normal mode (Insert/Visual handle keys directly in
-/// `App::handle_key`).
-pub fn tokenize(prev: &[Token], mode: Mode, key: KeyEvent) -> Option<Token> {
-    debug_assert_eq!(mode, Mode::Normal);
-    let ctx = context_of(prev);
-    tokenize_normal(ctx, prev, key)
-}
+impl Keymap {
+    /// Resolve a key to its token in the current parse context.
+    ///
+    /// Returns `None` when the key has no meaning in the current context —
+    /// the caller should treat this as a parse abort (clear the token
+    /// list). Only called for Normal mode.
+    pub fn tokenize(&self, prev: &[Token], mode: Mode, key: KeyEvent) -> Option<Token> {
+        debug_assert_eq!(mode, Mode::Normal);
 
-fn tokenize_normal(ctx: Ctx, prev: &[Token], key: KeyEvent) -> Option<Token> {
-    // Ctrl-r is redo, vim's convention. Works in any context.
-    if key
-        .modifiers
-        .contains(crossterm::event::KeyModifiers::CONTROL)
-        && key.code == KeyCode::Char('r')
-    {
-        return Some(Token::Direct(DirectKind::Redo));
-    }
+        // Ctrl-r is redo (vim convention). Works in any context.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+            return Some(Token::Direct(DirectKind::Redo));
+        }
 
-    let code = key.code;
+        let ctx = context_of(prev);
+        let code = key.code;
 
-    // Digits: always count-extending if a Count is already in flight,
-    // otherwise 1-9 starts a count and 0 is the MoveLineStart motion.
-    if let KeyCode::Char(c) = code
-        && c.is_ascii_digit()
-    {
-        let already_counting = matches!(prev.last(), Some(Token::Count(_)));
-        let d = c.to_digit(10).unwrap();
-        return match (ctx, c, already_counting) {
-            // 0 alone in Initial is the line-start motion, not a count.
-            (Ctx::Initial, '0', false) => Some(Token::Motion(MotionKind::LineStart)),
-            // 0 inside a running count extends it.
-            (_, '0', true) => Some(Token::Count(0)),
-            // 1-9 always starts/extends a count (in Initial or OpPending).
-            (Ctx::Initial | Ctx::OpPending, '1'..='9', _) => Some(Token::Count(d)),
-            // In LeaderPending or ObjectExpected, digits don't make sense.
-            _ => None,
-        };
-    }
+        // Digit handling stays special: count parsing is a parser
+        // primitive, not a user-rebindable shortcut.
+        if let KeyCode::Char(c) = code
+            && c.is_ascii_digit()
+        {
+            let already_counting = matches!(prev.last(), Some(Token::Count(_)));
+            let d = c.to_digit(10).unwrap();
+            return match (ctx, c, already_counting) {
+                // 0 alone in Initial is the line-start motion, not a count.
+                (Ctx::Initial, '0', false) => Some(Token::Motion(MotionKind::LineStart)),
+                // 0 inside a running count extends it.
+                (_, '0', true) => Some(Token::Count(0)),
+                // 1-9 always starts/extends a count (Initial or OpPending).
+                (Ctx::Initial | Ctx::OpPending, '1'..='9', _) => Some(Token::Count(d)),
+                // In LeaderPending / ObjectExpected, digits don't make sense.
+                _ => None,
+            };
+        }
 
-    match ctx {
-        Ctx::Initial => initial_token(code),
-        Ctx::LeaderPending => leader_token(code),
-        Ctx::OpPending => op_pending_token(code, prev),
-        Ctx::ObjectExpected => object_token(code),
-        Ctx::GotoPending => goto_pending_token(code),
+        let sig = KeySig::from_event(key);
+        match ctx {
+            Ctx::Initial => self.initial.get(&sig).copied(),
+            Ctx::LeaderPending => self.leader.get(&sig).copied(),
+            Ctx::OpPending => op_pending_token(code, prev),
+            Ctx::ObjectExpected => object_token(code),
+            Ctx::GotoPending => goto_pending_token(code),
+        }
     }
 }
 
@@ -140,62 +274,6 @@ fn goto_pending_token(code: KeyCode) -> Option<Token> {
         KeyCode::Char('g') => Some(Token::GotoPrefix),
         _ => None,
     }
-}
-
-fn initial_token(code: KeyCode) -> Option<Token> {
-    use DirectKind as D;
-    use MotionKind as M;
-    use Token::*;
-    let t = match code {
-        // movement
-        KeyCode::Char('h') | KeyCode::Left => Motion(M::Left),
-        KeyCode::Char('l') | KeyCode::Right => Motion(M::Right),
-        KeyCode::Char('j') | KeyCode::Down => Motion(M::Down),
-        KeyCode::Char('k') | KeyCode::Up => Motion(M::Up),
-        KeyCode::Char('$') | KeyCode::End => Motion(M::LineEnd),
-        KeyCode::Home => Motion(M::LineStart),
-        KeyCode::Char('w') => Motion(M::WordForward),
-        KeyCode::Char('b') => Motion(M::WordBack),
-        KeyCode::Char('G') => Motion(M::FileEnd),
-        KeyCode::Char('n') => Motion(M::SearchNext),
-        KeyCode::Char('N') => Motion(M::SearchPrev),
-
-        // operators
-        KeyCode::Char('d') => Op(Operator::Delete),
-        KeyCode::Char('y') => Op(Operator::Yank),
-        KeyCode::Char('c') => Op(Operator::Change),
-
-        // standalone commands
-        KeyCode::Char('i') => Direct(D::EnterMode(Mode::Insert)),
-        KeyCode::Char('a') => Motion(M::Right), // vim's append: stub as MoveRight for now
-        KeyCode::Char('v') => Direct(D::EnterMode(Mode::Visual)),
-        KeyCode::Char('o') => Direct(D::OpenLineBelow),
-        KeyCode::Char('O') => Direct(D::OpenLineAbove),
-        KeyCode::Char('x') => Direct(D::DeleteCharUnderCursor),
-        KeyCode::Char('p') => Direct(D::Paste),
-        KeyCode::Char('u') => Direct(D::Undo),
-        KeyCode::Char(':') => Direct(D::OpenPrompt(PromptKind::Command)),
-        KeyCode::Char('/') => Direct(D::OpenPrompt(PromptKind::Search { forward: true })),
-        KeyCode::Char('?') => Direct(D::OpenPrompt(PromptKind::Search { forward: false })),
-        // `g` opens a 2-key sequence (gg → file start).
-        KeyCode::Char('g') => GotoPrefix,
-
-        // leader
-        KeyCode::Char(LEADER) => LeaderPrefix,
-
-        _ => return None,
-    };
-    Some(t)
-}
-
-fn leader_token(code: KeyCode) -> Option<Token> {
-    use DirectKind as D;
-    let t = match code {
-        KeyCode::Char('f') => Token::Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
-        KeyCode::Char('l') => Token::Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
-        _ => return None,
-    };
-    Some(t)
 }
 
 fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {

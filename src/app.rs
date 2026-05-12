@@ -8,7 +8,7 @@ use crate::action::{
 };
 use crate::editor::Buffer;
 use crate::fuzzy::{Finder, FuzzyKind};
-use crate::keymap;
+use crate::keymap::{self, Keymap};
 use crate::mode::Mode;
 use crate::search::SearchState;
 
@@ -58,11 +58,18 @@ pub struct App {
     /// Accumulated tokens since the last command fired. Cleared on
     /// Complete dispatch or Invalid parse.
     pub tokens: Vec<Token>,
+    /// User-customisable binding tables (defaults to the vim mapping
+    /// and gets overridden by `~/.config/vorto/config.toml` at startup).
+    pub keymap: Keymap,
     pub should_quit: bool,
 }
 
 impl App {
     pub fn new() -> Self {
+        Self::with_keymap(Keymap::vim_default())
+    }
+
+    pub fn with_keymap(keymap: Keymap) -> Self {
         Self {
             buffer: Buffer::new(),
             mode: Mode::Normal,
@@ -70,6 +77,7 @@ impl App {
             search: SearchState::default(),
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
             tokens: Vec::new(),
+            keymap,
             should_quit: false,
         }
     }
@@ -101,7 +109,7 @@ impl App {
         }
 
         // Normal mode: tokenize → classify → evaluate.
-        match keymap::tokenize(&self.tokens, self.mode, key) {
+        match self.keymap.tokenize(&self.tokens, self.mode, key) {
             Some(t) => self.tokens.push(t),
             None => {
                 self.tokens.clear();
