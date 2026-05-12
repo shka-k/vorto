@@ -89,11 +89,12 @@ impl App {
 
         // Insert mode: bare char input goes straight to the buffer — no
         // Action wrapping for what is essentially raw text data.
-        if matches!(self.mode, Mode::Insert) && !key.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char(c) = key.code {
-                self.buffer.insert_char(c);
-                return Ok(());
-            }
+        if matches!(self.mode, Mode::Insert)
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(c) = key.code
+        {
+            self.buffer.insert_char(c);
+            return Ok(());
         }
 
         // Push the key into the stream, then ask the interpreter what to do
@@ -101,9 +102,9 @@ impl App {
         // → keep waiting; NoMatch → silently drop.
         self.keys.push(key);
         match keymap::interpret(&self.keys, self.mode) {
-            keymap::Match::Complete(action) => {
+            keymap::Match::Complete { action, count } => {
                 self.keys.clear();
-                self.dispatch(action, Ctx::default())?;
+                self.dispatch(action, Ctx { rest: "", count })?;
             }
             keymap::Match::Partial => {}
             keymap::Match::NoMatch => {
@@ -115,8 +116,8 @@ impl App {
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
         // Esc or Ctrl-C cancels the prompt and returns to the underlying mode.
-        let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('c');
+        let ctrl_c =
+            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         if key.code == KeyCode::Esc || ctrl_c {
             self.prompt = Prompt::None;
             return Ok(());
@@ -196,6 +197,12 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) -> Result<()> {
+        // Vim-style shortcut: `:42` jumps to line 42. Treated as syntactic
+        // sugar for `:goto 42` — we route through the same Action.
+        if cmd.parse::<usize>().is_ok() {
+            return self.dispatch(Action::Buffer(BufferAction::GotoLine), Ctx::with_rest(cmd));
+        }
+
         let (head, rest) = match cmd.split_once(' ') {
             Some((h, r)) => (h, r.trim()),
             None => (cmd, ""),
@@ -217,7 +224,7 @@ impl App {
     /// inputs funnel through here.
     pub fn dispatch(&mut self, action: Action, ctx: Ctx) -> Result<()> {
         match action {
-            Action::Buffer(a) => self.apply_buffer(a),
+            Action::Buffer(a) => self.apply_buffer(a, ctx),
             Action::Workspace(a) => self.apply_workspace(a, ctx)?,
             Action::EnterMode(m) => self.enter_mode(m),
             Action::OpenPrompt(kind) => self.open_prompt(kind),
@@ -245,35 +252,111 @@ impl App {
         Ok(())
     }
 
-    fn apply_buffer(&mut self, action: BufferAction) {
+    fn apply_buffer(&mut self, action: BufferAction, ctx: Ctx) {
         use BufferAction as B;
         let allow_after = matches!(self.mode, Mode::Insert);
+        let n = ctx.count;
         match action {
-            B::MoveLeft => self.buffer.move_left(),
-            B::MoveRight => self.buffer.move_right(allow_after),
-            B::MoveUp => self.buffer.move_up(),
-            B::MoveDown => self.buffer.move_down(),
+            B::MoveLeft => {
+                for _ in 0..n {
+                    self.buffer.move_left();
+                }
+            }
+            B::MoveRight => {
+                for _ in 0..n {
+                    self.buffer.move_right(allow_after);
+                }
+            }
+            B::MoveUp => {
+                for _ in 0..n {
+                    self.buffer.move_up();
+                }
+            }
+            B::MoveDown => {
+                for _ in 0..n {
+                    self.buffer.move_down();
+                }
+            }
             B::MoveLineStart => self.buffer.move_line_start(),
             B::MoveLineEnd => self.buffer.move_line_end(),
             B::MoveFileStart => self.buffer.move_file_start(),
-            B::MoveFileEnd => self.buffer.move_file_end(),
-            B::MoveWordForward => self.buffer.move_word_forward(),
-            B::MoveWordBackward => self.buffer.move_word_backward(),
+            // Vim's `G` is count-aware: bare `G` jumps to file end; `<N>G`
+            // jumps to line N. Reuses the same Action variant.
+            B::MoveFileEnd => {
+                if ctx.count > 1 {
+                    self.goto_line_n(ctx.count as usize);
+                } else {
+                    self.buffer.move_file_end();
+                }
+            }
+            B::MoveWordForward => {
+                for _ in 0..n {
+                    self.buffer.move_word_forward();
+                }
+            }
+            B::MoveWordBackward => {
+                for _ in 0..n {
+                    self.buffer.move_word_backward();
+                }
+            }
             B::InsertNewline => self.buffer.insert_newline(),
-            B::DeleteCharUnderCursor => self.buffer.delete_char_under_cursor(),
-            B::DeleteCharBefore => self.buffer.delete_char_before(),
-            B::DeleteLine => self.buffer.delete_line(),
+            B::DeleteCharUnderCursor => {
+                for _ in 0..n {
+                    self.buffer.delete_char_under_cursor();
+                }
+            }
+            B::DeleteCharBefore => {
+                for _ in 0..n {
+                    self.buffer.delete_char_before();
+                }
+            }
+            B::DeleteLine => {
+                for _ in 0..n {
+                    self.buffer.delete_line();
+                }
+            }
             B::Yank => {
                 self.buffer.yank_line();
                 self.status = Status::info("yanked");
             }
-            B::Paste => self.buffer.paste_after(),
+            B::Paste => {
+                for _ in 0..n {
+                    self.buffer.paste_after();
+                }
+            }
             B::Undo => {
                 self.status = Status::error("undo not implemented yet");
             }
-            B::SearchNext => self.jump_search(self.search.last_forward),
-            B::SearchPrev => self.jump_search(!self.search.last_forward),
+            B::SearchNext => {
+                for _ in 0..n {
+                    self.jump_search(self.search.last_forward);
+                }
+            }
+            B::SearchPrev => {
+                for _ in 0..n {
+                    self.jump_search(!self.search.last_forward);
+                }
+            }
+            B::GotoLine => self.goto_line(ctx.rest),
         }
+    }
+
+    fn goto_line(&mut self, arg: &str) {
+        match arg.parse::<usize>() {
+            Ok(n) if n >= 1 => self.goto_line_n(n),
+            _ => {
+                self.status = Status::error("usage: :goto <line>");
+            }
+        }
+    }
+
+    /// Move the cursor to the start of the 1-based line `n`, clamped to
+    /// the last line of the buffer. Shared by `:goto`, `:<N>`, and `<N>G`.
+    fn goto_line_n(&mut self, n: usize) {
+        let last = self.buffer.lines.len().saturating_sub(1);
+        self.buffer.cursor.row = n.saturating_sub(1).min(last);
+        self.buffer.cursor.col = 0;
+        self.buffer.clamp_col(false);
     }
 
     fn jump_search(&mut self, forward: bool) {
@@ -347,10 +430,39 @@ impl CommandBind {
 }
 
 pub const COMMAND_BINDS: &[CommandBind] = &[
-    CommandBind { name: "q",  description: "quit",                action: Action::Quit },
-    CommandBind { name: "q!", description: "force quit",          action: Action::QuitForce },
-    CommandBind { name: "w",  description: "save (or :w <path>)", action: Action::Workspace(WorkspaceAction::Save) },
-    CommandBind { name: "wq", description: "save & quit",         action: Action::SaveAndQuit },
-    CommandBind { name: "x",  description: "save & quit",         action: Action::SaveAndQuit },
-    CommandBind { name: "e",  description: "open <path>",         action: Action::Workspace(WorkspaceAction::Open) },
+    CommandBind {
+        name: "q",
+        description: "quit",
+        action: Action::Quit,
+    },
+    CommandBind {
+        name: "q!",
+        description: "force quit",
+        action: Action::QuitForce,
+    },
+    CommandBind {
+        name: "w",
+        description: "save (or :w <path>)",
+        action: Action::Workspace(WorkspaceAction::Save),
+    },
+    CommandBind {
+        name: "wq",
+        description: "save & quit",
+        action: Action::SaveAndQuit,
+    },
+    CommandBind {
+        name: "x",
+        description: "save & quit",
+        action: Action::SaveAndQuit,
+    },
+    CommandBind {
+        name: "e",
+        description: "open <path>",
+        action: Action::Workspace(WorkspaceAction::Open),
+    },
+    CommandBind {
+        name: "goto",
+        description: "go to line <n>",
+        action: Action::Buffer(BufferAction::GotoLine),
+    },
 ];

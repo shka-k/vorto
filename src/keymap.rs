@@ -40,122 +40,401 @@ const CTRL: KeyModifiers = KeyModifiers::CONTROL;
 
 pub const KEYBINDS: &[KeyBind] = &[
     // ── Global ──────────────────────────────────────────────────────────
-    KeyBind { mode: None, key: KeyCode::Char('c'), modifiers: CTRL, pending: PendingMatch::None,
-              action: Action::QuitForce, description: "force quit" },
-
+    KeyBind {
+        mode: None,
+        key: KeyCode::Char('c'),
+        modifiers: CTRL,
+        pending: PendingMatch::None,
+        action: Action::QuitForce,
+        description: "force quit",
+    },
     // ── Normal: movement ────────────────────────────────────────────────
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('h'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLeft), description: "move left" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Left, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLeft), description: "move left" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('l'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveRight), description: "move right" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Right, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveRight), description: "move right" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('j'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveDown), description: "move down" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Down, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveDown), description: "move down" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('k'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveUp), description: "move up" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Up, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveUp), description: "move up" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('0'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLineStart), description: "line start" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Home, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLineStart), description: "line start" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('$'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLineEnd), description: "line end" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::End, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLineEnd), description: "line end" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('G'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveFileEnd), description: "file end" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('g'), modifiers: NONE, pending: PendingMatch::Lead('g'),
-              action: Action::Buffer(B::MoveFileStart), description: "gg: file start" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('w'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveWordForward), description: "word forward" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('b'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveWordBackward), description: "word back" },
-
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('h'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLeft),
+        description: "move left",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Left,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLeft),
+        description: "move left",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('l'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveRight),
+        description: "move right",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Right,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveRight),
+        description: "move right",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('j'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveDown),
+        description: "move down",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Down,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveDown),
+        description: "move down",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('k'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveUp),
+        description: "move up",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Up,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveUp),
+        description: "move up",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('0'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLineStart),
+        description: "line start",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Home,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLineStart),
+        description: "line start",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('$'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLineEnd),
+        description: "line end",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::End,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLineEnd),
+        description: "line end",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('G'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveFileEnd),
+        description: "file end",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('g'),
+        modifiers: NONE,
+        pending: PendingMatch::Lead('g'),
+        action: Action::Buffer(B::MoveFileStart),
+        description: "gg: file start",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('w'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveWordForward),
+        description: "word forward",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('b'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveWordBackward),
+        description: "word back",
+    },
     // ── Normal: edits ───────────────────────────────────────────────────
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('i'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::EnterMode(Mode::Insert), description: "insert" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('a'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveRight), description: "append (right + insert TBD)" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('o'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::OpenLineBelow, description: "open line below" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('O'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::OpenLineAbove, description: "open line above" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('x'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::DeleteCharUnderCursor), description: "delete char" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('d'), modifiers: NONE, pending: PendingMatch::Lead('d'),
-              action: Action::Buffer(B::DeleteLine), description: "dd: delete line" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('y'), modifiers: NONE, pending: PendingMatch::Lead('y'),
-              action: Action::Buffer(B::Yank), description: "yy: yank line" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('p'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::Paste), description: "paste" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('u'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::Undo), description: "undo" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('v'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::EnterMode(Mode::Visual), description: "visual" },
-
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('i'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::EnterMode(Mode::Insert),
+        description: "insert",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('a'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveRight),
+        description: "append (right + insert TBD)",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('o'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::OpenLineBelow,
+        description: "open line below",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('O'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::OpenLineAbove,
+        description: "open line above",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('x'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::DeleteCharUnderCursor),
+        description: "delete char",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('d'),
+        modifiers: NONE,
+        pending: PendingMatch::Lead('d'),
+        action: Action::Buffer(B::DeleteLine),
+        description: "dd: delete line",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('y'),
+        modifiers: NONE,
+        pending: PendingMatch::Lead('y'),
+        action: Action::Buffer(B::Yank),
+        description: "yy: yank line",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('p'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::Paste),
+        description: "paste",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('u'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::Undo),
+        description: "undo",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('v'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::EnterMode(Mode::Visual),
+        description: "visual",
+    },
     // ── Normal: prompts ─────────────────────────────────────────────────
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char(':'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::OpenPrompt(PromptKind::Command), description: "command" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('/'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::OpenPrompt(PromptKind::Search { forward: true }), description: "search forward" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('?'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::OpenPrompt(PromptKind::Search { forward: false }), description: "search back" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('n'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::SearchNext), description: "next match" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('N'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::SearchPrev), description: "prev match" },
-
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char(':'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::OpenPrompt(PromptKind::Command),
+        description: "command",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('/'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::OpenPrompt(PromptKind::Search { forward: true }),
+        description: "search forward",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('?'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::OpenPrompt(PromptKind::Search { forward: false }),
+        description: "search back",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('n'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::SearchNext),
+        description: "next match",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('N'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::SearchPrev),
+        description: "prev match",
+    },
     // ── Normal: leader (space) ──────────────────────────────────────────
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('f'), modifiers: NONE, pending: PendingMatch::Lead(LEADER),
-              action: Action::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files)), description: "<space>f: fuzzy files" },
-    KeyBind { mode: Some(Mode::Normal), key: KeyCode::Char('l'), modifiers: NONE, pending: PendingMatch::Lead(LEADER),
-              action: Action::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines)), description: "<space>l: fuzzy lines" },
-
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('f'),
+        modifiers: NONE,
+        pending: PendingMatch::Lead(LEADER),
+        action: Action::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files)),
+        description: "<space>f: fuzzy files",
+    },
+    KeyBind {
+        mode: Some(Mode::Normal),
+        key: KeyCode::Char('l'),
+        modifiers: NONE,
+        pending: PendingMatch::Lead(LEADER),
+        action: Action::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines)),
+        description: "<space>l: fuzzy lines",
+    },
     // ── Insert ──────────────────────────────────────────────────────────
     // (Bare char input is routed straight to the buffer in App::handle_key
     // and bypasses the bind table entirely.)
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Esc, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::EnterMode(Mode::Normal), description: "leave insert" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Enter, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::InsertNewline), description: "newline" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Backspace, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::DeleteCharBefore), description: "backspace" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Left, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLeft), description: "move left" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Right, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveRight), description: "move right" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Up, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveUp), description: "move up" },
-    KeyBind { mode: Some(Mode::Insert), key: KeyCode::Down, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveDown), description: "move down" },
-
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Esc,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::EnterMode(Mode::Normal),
+        description: "leave insert",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Enter,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::InsertNewline),
+        description: "newline",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Backspace,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::DeleteCharBefore),
+        description: "backspace",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Left,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLeft),
+        description: "move left",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Right,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveRight),
+        description: "move right",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Up,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveUp),
+        description: "move up",
+    },
+    KeyBind {
+        mode: Some(Mode::Insert),
+        key: KeyCode::Down,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveDown),
+        description: "move down",
+    },
     // ── Visual ──────────────────────────────────────────────────────────
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Esc, modifiers: NONE, pending: PendingMatch::None,
-              action: Action::EnterMode(Mode::Normal), description: "leave visual" },
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Char('h'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveLeft), description: "move left" },
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Char('l'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveRight), description: "move right" },
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Char('j'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveDown), description: "move down" },
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Char('k'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::MoveUp), description: "move up" },
-    KeyBind { mode: Some(Mode::Visual), key: KeyCode::Char('y'), modifiers: NONE, pending: PendingMatch::None,
-              action: Action::Buffer(B::Yank), description: "yank" },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Esc,
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::EnterMode(Mode::Normal),
+        description: "leave visual",
+    },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Char('h'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveLeft),
+        description: "move left",
+    },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Char('l'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveRight),
+        description: "move right",
+    },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Char('j'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveDown),
+        description: "move down",
+    },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Char('k'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::MoveUp),
+        description: "move up",
+    },
+    KeyBind {
+        mode: Some(Mode::Visual),
+        key: KeyCode::Char('y'),
+        modifiers: NONE,
+        pending: PendingMatch::None,
+        action: Action::Buffer(B::Yank),
+        description: "yank",
+    },
 ];
 
 /// Result of attempting to interpret an accumulated key stream against the
 /// bind table. `Partial` means the stream is the prefix of one or more
 /// bindings — keep waiting for more input. `NoMatch` means nothing in the
 /// table matches the stream even as a prefix — clear and drop.
+// `NoMatch` reads more clearly than alternatives like `None` (which would
+// collide with Option semantically) or `Failed`.
+#[allow(clippy::enum_variant_names)]
 pub enum Match {
-    Complete(Action),
+    Complete { action: Action, count: u32 },
     Partial,
     NoMatch,
 }
@@ -169,20 +448,38 @@ enum SeqMatch {
 /// Try to interpret the current key stream in the given mode. Returns
 /// Complete as soon as any binding fully matches, Partial if any binding
 /// is still a possible continuation, and NoMatch otherwise.
+///
+/// A leading run of digits (with `1`–`9` as the starter) is stripped off
+/// as a vim-style count prefix and surfaced via `Match::Complete.count`.
+/// `0` is excluded from the count starter set because it is already a
+/// binding (`MoveLineStart`).
 pub fn interpret(keys: &[KeyEvent], mode: Mode) -> Match {
     if keys.is_empty() {
         return Match::NoMatch;
     }
 
+    let (count, rest) = split_count(keys);
+
+    // The stream is currently just count digits with no action key yet —
+    // we know more input must follow.
+    if rest.is_empty() {
+        return Match::Partial;
+    }
+
     let mut partial = false;
     for bind in KEYBINDS {
-        if let Some(m) = bind.mode {
-            if m != mode {
-                continue;
-            }
+        if let Some(m) = bind.mode
+            && m != mode
+        {
+            continue;
         }
-        match match_sequence(keys, bind) {
-            SeqMatch::Full => return Match::Complete(bind.action),
+        match match_sequence(rest, bind) {
+            SeqMatch::Full => {
+                return Match::Complete {
+                    action: bind.action,
+                    count,
+                };
+            }
             SeqMatch::Partial => partial = true,
             SeqMatch::None => {}
         }
@@ -193,6 +490,29 @@ pub fn interpret(keys: &[KeyEvent], mode: Mode) -> Match {
     } else {
         Match::NoMatch
     }
+}
+
+/// Peel a leading count off the key stream. The first digit must be 1–9
+/// (so a bare `0` still triggers MoveLineStart); subsequent digits 0–9
+/// extend the count. Returns `(count, remaining_keys)`.
+fn split_count(keys: &[KeyEvent]) -> (u32, &[KeyEvent]) {
+    let starter = match keys.first().map(|k| k.code) {
+        Some(KeyCode::Char(c @ '1'..='9')) => c,
+        _ => return (1, keys),
+    };
+    let mut count: u32 = starter.to_digit(10).unwrap();
+    let mut end = 1;
+    for k in &keys[1..] {
+        let KeyCode::Char(c) = k.code else { break };
+        if !c.is_ascii_digit() {
+            break;
+        }
+        count = count
+            .saturating_mul(10)
+            .saturating_add(c.to_digit(10).unwrap());
+        end += 1;
+    }
+    (count, &keys[end..])
 }
 
 /// Match the accumulated key stream against a binding's logical sequence:

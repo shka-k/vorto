@@ -47,6 +47,8 @@ pub enum BufferAction {
     Undo,
     SearchNext,
     SearchPrev,
+    /// Jump to a 1-based line number. Reads the target from `ctx.rest`.
+    GotoLine,
 }
 
 /// Workspace-level I/O. Path arguments are not part of the variant — the

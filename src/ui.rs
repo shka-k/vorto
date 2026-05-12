@@ -1,10 +1,10 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
-use ratatui::Frame;
 
-use crate::app::{App, Prompt, COMMAND_BINDS};
+use crate::app::{App, COMMAND_BINDS, Prompt};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::mode::Mode;
 
@@ -119,7 +119,11 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let title = match &app.buffer.path {
-        Some(p) => format!(" {} {}", p.display(), if app.buffer.dirty { "[+]" } else { "" }),
+        Some(p) => format!(
+            " {} {}",
+            p.display(),
+            if app.buffer.dirty { "[+]" } else { "" }
+        ),
         None => " [scratch] ".to_string(),
     };
 
@@ -170,8 +174,14 @@ fn status_label(app: &App) -> (String, Color) {
 fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
     let (prefix, content) = match &app.prompt {
         Prompt::Command(buf) => (":", buf.as_str()),
-        Prompt::Search { forward: true, query } => ("/", query.as_str()),
-        Prompt::Search { forward: false, query } => ("?", query.as_str()),
+        Prompt::Search {
+            forward: true,
+            query,
+        } => ("/", query.as_str()),
+        Prompt::Search {
+            forward: false,
+            query,
+        } => ("?", query.as_str()),
         _ => return,
     };
     let text = format!("{}{}", prefix, content);
@@ -183,7 +193,11 @@ fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     }
     let height = buf_area.height.saturating_sub(2) as usize;
-    let scroll = app.buffer.cursor.row.saturating_sub(height.saturating_sub(1));
+    let scroll = app
+        .buffer
+        .cursor
+        .row
+        .saturating_sub(height.saturating_sub(1));
     let line_no_width: u16 = 5;
     let x = buf_area.x + 1 + line_no_width + app.buffer.cursor.col as u16;
     let y = buf_area.y + 1 + (app.buffer.cursor.row - scroll) as u16;
@@ -218,7 +232,11 @@ fn draw_fuzzy(f: &mut Frame, finder: &Finder, area: Rect) {
     // Inside the single frame: query line on top, separator, then matches.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
         .split(inner);
 
     let query_line = Line::from(vec![

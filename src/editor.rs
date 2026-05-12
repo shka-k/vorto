@@ -116,7 +116,7 @@ impl Buffer {
 
     pub fn move_line_end(&mut self) {
         let max = self.current_line_len();
-        self.cursor.col = max.saturating_sub(1).max(0);
+        self.cursor.col = max.saturating_sub(1);
     }
 
     pub fn move_file_start(&mut self) {

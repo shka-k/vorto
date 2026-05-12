@@ -28,7 +28,13 @@ fn find_forward(buffer: &Buffer, query: &str) -> Option<Cursor> {
     let start_row = buffer.cursor.row;
     let start_col = buffer.cursor.col + 1;
 
-    for (offset, _) in buffer.lines.iter().enumerate().cycle().take(buffer.lines.len() + 1) {
+    for (offset, _) in buffer
+        .lines
+        .iter()
+        .enumerate()
+        .cycle()
+        .take(buffer.lines.len() + 1)
+    {
         let row = (start_row + offset) % buffer.lines.len();
         let line = &buffer.lines[row];
         let search_from_byte = if offset == 0 {

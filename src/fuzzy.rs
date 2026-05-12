@@ -96,7 +96,7 @@ impl Finder {
                     });
                 }
             }
-            self.matches.sort_by(|a, b| b.score.cmp(&a.score));
+            self.matches.sort_by_key(|m| -m.score);
             self.matches.truncate(500);
         }
         self.selected = 0;
@@ -122,7 +122,7 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> Option<(i32, Vec<usize>)> {
         if ni >= ndl.len() {
             break;
         }
-        if hc.to_ascii_lowercase() == ndl[ni].to_ascii_lowercase() {
+        if hc.eq_ignore_ascii_case(&ndl[ni]) {
             score += 10;
             if hc == ndl[ni] {
                 score += 2; // exact case bonus
@@ -179,13 +179,11 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize) {
         }
         if path.is_dir() {
             collect_files(root, &path, out, depth + 1);
-        } else if path.is_file() {
-            if let Ok(rel) = path.strip_prefix(root) {
-                if let Some(s) = rel.to_str() {
-                    out.push(s.to_string());
-                }
-            }
+        } else if path.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+            && let Some(s) = rel.to_str()
+        {
+            out.push(s.to_string());
         }
     }
 }
-
