@@ -57,7 +57,9 @@ pub struct App {
     pub prompt: Prompt,
     pub search: SearchState,
     pub status: Status,
-    pub pending: Option<char>,
+    /// Accumulated key events that haven't yet resolved to a complete
+    /// binding. The interpreter looks at the full slice on each new key.
+    pub keys: Vec<KeyEvent>,
     pub should_quit: bool,
 }
 
@@ -69,7 +71,7 @@ impl App {
             prompt: Prompt::None,
             search: SearchState::default(),
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
-            pending: None,
+            keys: Vec::new(),
             should_quit: false,
         }
     }
@@ -81,11 +83,6 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return Ok(());
-        }
-
         if self.prompt.is_open() {
             return self.handle_prompt_key(key);
         }
@@ -99,30 +96,33 @@ impl App {
             }
         }
 
-        let lead = keymap::is_pending_lead(self.mode, key, self.pending);
-        let actions = keymap::translate(self.mode, key, self.pending.take());
-
-        if actions.is_empty() {
-            if let Some(c) = lead {
-                self.pending = Some(c);
+        // Push the key into the stream, then ask the interpreter what to do
+        // with the accumulated sequence. Complete → fire and clear; Partial
+        // → keep waiting; NoMatch → silently drop.
+        self.keys.push(key);
+        match keymap::interpret(&self.keys, self.mode) {
+            keymap::Match::Complete(action) => {
+                self.keys.clear();
+                self.dispatch(action, Ctx::default())?;
             }
-            return Ok(());
-        }
-
-        for action in actions {
-            self.dispatch(action, Ctx::default())?;
+            keymap::Match::Partial => {}
+            keymap::Match::NoMatch => {
+                self.keys.clear();
+            }
         }
         Ok(())
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
-                self.prompt = Prompt::None;
-                return Ok(());
-            }
-            KeyCode::Enter => return self.submit_prompt(),
-            _ => {}
+        // Esc or Ctrl-C cancels the prompt and returns to the underlying mode.
+        let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('c');
+        if key.code == KeyCode::Esc || ctrl_c {
+            self.prompt = Prompt::None;
+            return Ok(());
+        }
+        if key.code == KeyCode::Enter {
+            return self.submit_prompt();
         }
 
         match &mut self.prompt {

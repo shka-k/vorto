@@ -34,34 +34,6 @@ pub struct KeyBind {
     pub description: &'static str,
 }
 
-impl KeyBind {
-    fn matches(&self, mode: Mode, key: KeyEvent, pending: Option<char>) -> bool {
-        if let Some(m) = self.mode {
-            if m != mode {
-                return false;
-            }
-        }
-        if self.key != key.code {
-            return false;
-        }
-        // For Char keys the shift state is already baked into the character
-        // ('G' vs 'g'). Strip SHIFT from the input modifiers so that
-        // terminals which report it explicitly behave the same as ones
-        // that don't.
-        let mut input_mods = key.modifiers;
-        if matches!(key.code, KeyCode::Char(_)) {
-            input_mods -= KeyModifiers::SHIFT;
-        }
-        if self.modifiers != input_mods {
-            return false;
-        }
-        match self.pending {
-            PendingMatch::None => pending.is_none(),
-            PendingMatch::Lead(c) => pending == Some(c),
-        }
-    }
-}
-
 // Shorthands for table readability.
 const NONE: KeyModifiers = KeyModifiers::NONE;
 const CTRL: KeyModifiers = KeyModifiers::CONTROL;
@@ -178,31 +150,89 @@ pub const KEYBINDS: &[KeyBind] = &[
               action: Action::Buffer(B::Yank), description: "yank" },
 ];
 
-/// Look up the first KeyBind that matches the current input and return its
-/// action (still returns a `Vec<Action>` for API stability with the old
-/// translate signature; will become a single Action in Stage 3 once the
-/// interpreter takes over).
-pub fn translate(mode: Mode, key: KeyEvent, pending: Option<char>) -> Vec<Action> {
-    KEYBINDS
-        .iter()
-        .find(|b| b.matches(mode, key, pending))
-        .map(|b| vec![b.action])
-        .unwrap_or_default()
+/// Result of attempting to interpret an accumulated key stream against the
+/// bind table. `Partial` means the stream is the prefix of one or more
+/// bindings — keep waiting for more input. `NoMatch` means nothing in the
+/// table matches the stream even as a prefix — clear and drop.
+pub enum Match {
+    Complete(Action),
+    Partial,
+    NoMatch,
 }
 
-/// Detect whether this key starts a multi-key sequence in `mode` — derived
-/// from the bind table by looking for any binding whose `pending` field
-/// requires this key as the lead.
-pub fn is_pending_lead(mode: Mode, key: KeyEvent, pending: Option<char>) -> Option<char> {
-    if pending.is_some() {
-        return None;
+enum SeqMatch {
+    Full,
+    Partial,
+    None,
+}
+
+/// Try to interpret the current key stream in the given mode. Returns
+/// Complete as soon as any binding fully matches, Partial if any binding
+/// is still a possible continuation, and NoMatch otherwise.
+pub fn interpret(keys: &[KeyEvent], mode: Mode) -> Match {
+    if keys.is_empty() {
+        return Match::NoMatch;
     }
-    let KeyCode::Char(c) = key.code else {
-        return None;
+
+    let mut partial = false;
+    for bind in KEYBINDS {
+        if let Some(m) = bind.mode {
+            if m != mode {
+                continue;
+            }
+        }
+        match match_sequence(keys, bind) {
+            SeqMatch::Full => return Match::Complete(bind.action),
+            SeqMatch::Partial => partial = true,
+            SeqMatch::None => {}
+        }
+    }
+
+    if partial {
+        Match::Partial
+    } else {
+        Match::NoMatch
+    }
+}
+
+/// Match the accumulated key stream against a binding's logical sequence:
+///   - `pending == None`             → 1-key sequence: [bind.key]
+///   - `pending == Lead(c)`          → 2-key sequence: [Char(c), bind.key]
+fn match_sequence(keys: &[KeyEvent], bind: &KeyBind) -> SeqMatch {
+    let expected_len = match bind.pending {
+        PendingMatch::None => 1,
+        PendingMatch::Lead(_) => 2,
     };
-    let needed = PendingMatch::Lead(c);
-    let any = KEYBINDS.iter().any(|b| {
-        b.mode.map_or(true, |m| m == mode) && b.pending == needed
-    });
-    any.then_some(c)
+    if keys.len() > expected_len {
+        return SeqMatch::None;
+    }
+
+    // For Lead bindings, the first key must be Char(lead) with no modifiers.
+    if let PendingMatch::Lead(c) = bind.pending {
+        let first = keys.first().expect("keys non-empty by interpret() guard");
+        if !key_event_matches(*first, KeyCode::Char(c), KeyModifiers::NONE) {
+            return SeqMatch::None;
+        }
+        if keys.len() == 1 {
+            return SeqMatch::Partial;
+        }
+    }
+
+    // The final key in the stream must match the binding's main key.
+    let main = keys.last().expect("non-empty");
+    if !key_event_matches(*main, bind.key, bind.modifiers) {
+        return SeqMatch::None;
+    }
+    SeqMatch::Full
+}
+
+fn key_event_matches(input: KeyEvent, code: KeyCode, mods: KeyModifiers) -> bool {
+    if input.code != code {
+        return false;
+    }
+    let mut input_mods = input.modifiers;
+    if matches!(input.code, KeyCode::Char(_)) {
+        input_mods -= KeyModifiers::SHIFT;
+    }
+    input_mods == mods
 }
