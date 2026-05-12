@@ -43,13 +43,8 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut keymap = crate::keymap::Keymap::vim_default();
-    let cfg_path = config::default_path();
-    let cfg = config::load_or_default(cfg_path.as_deref())?;
-    config::apply(&cfg, &mut keymap)?;
-
-    let languages = config::LanguageRegistry::build(cfg.languages.clone());
-    let loader = highlight::Loader::new(config::grammar_dir(&cfg), config::query_dir(&cfg));
+    let cfg = config::Config::load(config::default_path().as_deref())?;
+    let loader = highlight::Loader::new(cfg.grammar_dir.clone(), cfg.query_dir.clone());
 
     // Unified event channel. Terminal input runs on a dedicated thread
     // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.
@@ -68,8 +63,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let mut app = App::new(keymap, loader, languages, event_tx, startup_cwd);
-    app.cursor_shapes = config::resolve_cursor_shapes(&cfg.cursor)?;
+    let mut app = App::new(cfg, loader, event_tx, startup_cwd);
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;
     }
@@ -95,7 +89,7 @@ fn run(
     while !app.should_quit {
         app.buffer.refresh_highlights();
         terminal.draw(|f| ui::draw(f, app))?;
-        let shape = app.cursor_shapes.for_mode(app.mode);
+        let shape = app.config.cursor_shapes.for_mode(app.mode);
         if last_shape != Some(shape) {
             let mut out = io::stdout();
             out.write_all(shape.ansi())?;

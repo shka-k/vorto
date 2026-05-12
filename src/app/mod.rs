@@ -7,12 +7,11 @@ use anyhow::{Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{Ctx, Operator, PromptKind, Token};
-use crate::config::{CursorShapes, LanguageRegistry};
+use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
 use crate::highlight::Loader;
-use crate::keymap::Keymap;
 use crate::lsp::{
     self, Diagnostic, Location, LspCoordinator, LspEvent, LspEventOutcome, WorkspaceEdit,
 };
@@ -55,22 +54,15 @@ pub struct App {
     /// Accumulated tokens since the last command fired. Cleared on
     /// Complete dispatch or Invalid parse.
     pub tokens: Vec<Token>,
-    /// User-customisable binding tables (defaults to the vim mapping
-    /// and gets overridden by `~/.config/vorto/config.toml` at startup).
-    pub keymap: Keymap,
-    /// Per-mode cursor shapes (Block/Bar/Underbar) — applied by the main
-    /// loop via `SetCursorStyle` after every draw.
-    pub cursor_shapes: CursorShapes,
     /// Anchor cursor for visual modes — the position the selection was
     /// started from. `None` outside of any visual mode.
     pub visual_anchor: Option<Cursor>,
+    /// Resolved user configuration (keymap, cursor shapes, language
+    /// registry, grammar/query dirs). Frozen at startup.
+    pub config: Config,
     /// Tree-sitter grammar loader. Lives for the whole program so the
     /// loaded `Language` pointers stay valid.
     pub loader: Loader,
-    /// Resolved language catalog (built-in defaults overlaid with
-    /// `[languages.<name>]` from the user's config). Provides both
-    /// name-based and extension-based lookups.
-    pub languages: LanguageRegistry,
     /// Working directory captured once at process startup. All workspace
     /// root discovery anchors here — `:e` opened mid-session still uses
     /// the same anchor as the file passed on the command line.
@@ -100,9 +92,8 @@ pub enum Selection {
 
 impl App {
     pub fn new(
-        keymap: Keymap,
+        config: Config,
         loader: Loader,
-        languages: LanguageRegistry,
         event_tx: Sender<AppEvent>,
         startup_cwd: PathBuf,
     ) -> Self {
@@ -114,11 +105,9 @@ impl App {
             search: SearchState::default(),
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
             tokens: Vec::new(),
-            keymap,
-            cursor_shapes: CursorShapes::default(),
             visual_anchor: None,
+            config,
             loader,
-            languages,
             startup_cwd,
             lsp,
             should_quit: false,
@@ -179,7 +168,7 @@ impl App {
         else {
             return;
         };
-        let Some(spec) = self.languages.by_extension(&ext).cloned() else {
+        let Some(spec) = self.config.languages.by_extension(&ext).cloned() else {
             return;
         };
         let Some(lsp_cfg) = spec.lsp else { return };
@@ -376,7 +365,7 @@ impl App {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
         let Some(ext) = ext else { return };
-        let Some(spec) = self.languages.by_extension(&ext).cloned() else {
+        let Some(spec) = self.config.languages.by_extension(&ext).cloned() else {
             return;
         };
         let name = spec.name.clone();
@@ -411,7 +400,7 @@ impl App {
         }
 
         // Normal mode: tokenize → classify → evaluate.
-        match eval::tokenize(&self.keymap, &self.tokens, self.mode, key) {
+        match eval::tokenize(&self.config.keymap, &self.tokens, self.mode, key) {
             Some(t) => self.tokens.push(t),
             None => {
                 self.tokens.clear();
