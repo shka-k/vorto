@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,11 @@ pub struct Buffer {
     /// matching grammar + query are available. `None` means "no syntax
     /// highlighting for this buffer", which is the safe fallback.
     pub highlighter: Option<Highlighter>,
+    /// Topmost line currently visible in the viewport. Sticky — only
+    /// moved when the cursor would otherwise leave the viewport (the
+    /// UI layer updates it during `draw_buffer`, so it's wrapped in
+    /// `Cell` to stay reachable through a shared `&Buffer`).
+    pub scroll: Cell<usize>,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
 }
@@ -69,6 +75,7 @@ impl Buffer {
             yank: String::new(),
             version: 0,
             highlighter: None,
+            scroll: Cell::new(0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })

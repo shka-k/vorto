@@ -121,8 +121,7 @@ fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
 
 fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let height = area.height.saturating_sub(2) as usize;
-    let cursor_row = app.buffer.cursor.row;
-    let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
+    let scroll = compute_scroll(app, height);
 
     let sel = app.selection();
     let last_visible = scroll + height;
@@ -491,15 +490,30 @@ fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     }
     let height = buf_area.height.saturating_sub(2) as usize;
-    let scroll = app
-        .buffer
-        .cursor
-        .row
-        .saturating_sub(height.saturating_sub(1));
+    let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
     let x = buf_area.x + 1 + line_no_width + app.buffer.cursor.col as u16;
     let y = buf_area.y + 1 + (app.buffer.cursor.row - scroll) as u16;
     f.set_cursor_position((x, y));
+}
+
+/// Update and return the viewport scroll position. Sticky: the scroll
+/// only moves when the cursor would otherwise fall outside the
+/// visible `height`-row window. Cursor-above-viewport scrolls up so
+/// the cursor sits on the top line; cursor-below-viewport scrolls
+/// down so the cursor sits on the bottom line. Otherwise the existing
+/// scroll is preserved — which is what fixes "cursor stuck at the
+/// bottom" on upward movement.
+fn compute_scroll(app: &App, height: usize) -> usize {
+    let cur = app.buffer.cursor.row;
+    let mut scroll = app.buffer.scroll.get();
+    if cur < scroll {
+        scroll = cur;
+    } else if height > 0 && cur >= scroll + height {
+        scroll = cur + 1 - height;
+    }
+    app.buffer.scroll.set(scroll);
+    scroll
 }
 
 fn mode_color(mode: Mode) -> Color {
