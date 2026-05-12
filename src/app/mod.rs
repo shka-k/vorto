@@ -419,9 +419,8 @@ impl App {
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) -> Result<()> {
-        if !key.modifiers.contains(KeyModifiers::CONTROL)
-            && let KeyCode::Char(c) = key.code
-        {
+        let no_ctrl = !key.modifiers.contains(KeyModifiers::CONTROL);
+        if no_ctrl && let KeyCode::Char(c) = key.code {
             self.buffer.insert_char(c);
             return Ok(());
         }

@@ -329,9 +329,8 @@ fn reader_loop(
         // initialize-response handshake is consumed synchronously before
         // this loop runs, so every response we see here is for a
         // post-handshake request.
-        if msg.get("method").is_none()
-            && let Some(id) = msg.get("id").and_then(|v| v.as_u64())
-        {
+        let is_response = msg.get("method").is_none();
+        if is_response && let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
             let result = msg.get("result").cloned().filter(|v| !v.is_null());
             let error = msg
                 .get("error")
@@ -349,9 +348,7 @@ fn reader_loop(
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         match method {
             "textDocument/publishDiagnostics" => {
-                if let Some(params) = msg.get("params")
-                    && let Some(ev) = parse_publish_diagnostics(params)
-                {
+                if let Some(ev) = msg.get("params").and_then(parse_publish_diagnostics) {
                     emit(ev);
                 }
             }
@@ -746,9 +743,8 @@ pub fn discover_root(cwd: &Path, file: Option<&Path>, markers: &[String]) -> Pat
     }
     if let Some(file) = file {
         let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-        if !file_abs.starts_with(&cwd_abs)
-            && let Some(parent) = file_abs.parent()
-        {
+        let outside_cwd = !file_abs.starts_with(&cwd_abs);
+        if outside_cwd && let Some(parent) = file_abs.parent() {
             return find_root_upward(parent, markers);
         }
     }

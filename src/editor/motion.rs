@@ -111,9 +111,11 @@ impl Buffer {
     /// punctuation = each contiguous run of other non-whitespace chars,
     /// whitespace separates them — when no grammar is attached.
     fn peek_word_forward(&self, from: Cursor) -> Cursor {
-        if let Some(h) = &self.highlighter
-            && let Some((r, c)) = h.next_token_start(from.row, from.col)
-        {
+        let ts = self
+            .highlighter
+            .as_ref()
+            .and_then(|h| h.next_token_start(from.row, from.col));
+        if let Some((r, c)) = ts {
             return Cursor { row: r, col: c };
         }
         word_forward_char_class(&self.lines, from)
@@ -121,9 +123,11 @@ impl Buffer {
 
     /// Symmetric counterpart of [`peek_word_forward`] for `b`.
     fn peek_word_back(&self, from: Cursor) -> Cursor {
-        if let Some(h) = &self.highlighter
-            && let Some((r, c)) = h.prev_token_start(from.row, from.col)
-        {
+        let ts = self
+            .highlighter
+            .as_ref()
+            .and_then(|h| h.prev_token_start(from.row, from.col));
+        if let Some((r, c)) = ts {
             return Cursor { row: r, col: c };
         }
         word_back_char_class(&self.lines, from)

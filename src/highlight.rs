@@ -396,8 +396,9 @@ fn next_leaf_after(node: tree_sitter::Node, target: (usize, usize)) -> Option<tr
         return None;
     }
     for i in 0..node.child_count() {
-        if let Some(c) = node.child(i as u32)
-            && let Some(found) = next_leaf_after(c, target)
+        if let Some(found) = node
+            .child(i as u32)
+            .and_then(|c| next_leaf_after(c, target))
         {
             return Some(found);
         }
@@ -417,8 +418,9 @@ fn prev_leaf_before(node: tree_sitter::Node, target: (usize, usize)) -> Option<t
         return Some(node);
     }
     for i in (0..node.child_count()).rev() {
-        if let Some(c) = node.child(i as u32)
-            && let Some(found) = prev_leaf_before(c, target)
+        if let Some(found) = node
+            .child(i as u32)
+            .and_then(|c| prev_leaf_before(c, target))
         {
             return Some(found);
         }

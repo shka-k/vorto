@@ -93,9 +93,7 @@ pub(super) fn tokenize(km: &Keymap, prev: &[Token], mode: Mode, key: KeyEvent) -
 
     // Digit handling stays special: count parsing is a parser
     // primitive, not a user-rebindable shortcut.
-    if let KeyCode::Char(c) = code
-        && c.is_ascii_digit()
-    {
+    if let Some(c) = ascii_digit(code) {
         let already_counting = matches!(prev.last(), Some(Token::Count(_)));
         let d = c.to_digit(10).unwrap();
         return match (ctx, c, already_counting) {
@@ -158,6 +156,13 @@ fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
         .iter()
         .find(|b| b.matches(code))
         .map(|b| b.token)
+}
+
+fn ascii_digit(code: KeyCode) -> Option<char> {
+    match code {
+        KeyCode::Char(c) if c.is_ascii_digit() => Some(c),
+        _ => None,
+    }
 }
 
 fn object_token(code: KeyCode) -> Option<Token> {

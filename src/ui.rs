@@ -355,9 +355,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled(app.status.text().to_string(), status_style),
     ];
-    if !app.status.is_error()
-        && let Some(d) = app.diagnostic_on_cursor()
-    {
+    let show_diag = !app.status.is_error();
+    if show_diag && let Some(d) = app.diagnostic_on_cursor() {
         spans.push(Span::raw("  "));
         spans.push(diagnostic_span(d));
     }
