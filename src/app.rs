@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{
     Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token,
@@ -13,8 +14,16 @@ use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
 use crate::languages::Language;
+use crate::lsp::{self, Diagnostic, LspClient, LspEvent};
 use crate::mode::Mode;
 use crate::search::SearchState;
+
+/// Unified event flowing into the main loop. Terminal input and LSP
+/// reader threads both feed into the same `mpsc::Sender`.
+pub enum AppEvent {
+    Term(Event),
+    Lsp(LspEvent),
+}
 
 pub enum Prompt {
     None,
@@ -79,6 +88,31 @@ pub struct App {
     pub languages: HashMap<String, Language>,
     /// `ext -> language name` lookup, built once from `languages`.
     pub extension_index: HashMap<String, String>,
+    /// Live LSP clients, keyed by language name. Spawned lazily on the
+    /// first `open_path` for a language with `[languages.<name>.lsp]`
+    /// configured. The same client is reused across files of that
+    /// language.
+    pub lsp_clients: HashMap<String, LspClient>,
+    /// Diagnostics keyed by URI. URIs are produced via `lsp::path_to_uri`
+    /// so the lookup matches whatever the server reports back.
+    pub diagnostics: HashMap<String, Vec<Diagnostic>>,
+    /// Sender shared with input + LSP reader threads. Cloned into each
+    /// new LSP client at spawn time.
+    pub event_tx: Sender<AppEvent>,
+    /// Working directory captured once at process startup. All workspace
+    /// root discovery anchors here — `:e` opened mid-session still uses
+    /// the same anchor as the file passed on the command line.
+    pub startup_cwd: PathBuf,
+    /// Last buffer `version` we synced via `didChange`. When the cursor
+    /// returns to the main loop after handling input, the loop compares
+    /// this to `buffer.version` to decide whether to fire a sync.
+    pub last_synced_version: u64,
+    /// URI of the document currently open in `buffer` (cached so we can
+    /// fire `didClose`/`didChange` without re-canonicalising every time).
+    pub current_uri: Option<String>,
+    /// Language name currently associated with `buffer`. Lets the main
+    /// loop find the right client without re-resolving by extension.
+    pub current_language: Option<String>,
     pub should_quit: bool,
 }
 
@@ -105,6 +139,8 @@ impl App {
         loader: Loader,
         languages: HashMap<String, Language>,
         extension_index: HashMap<String, String>,
+        event_tx: Sender<AppEvent>,
+        startup_cwd: PathBuf,
     ) -> Self {
         Self {
             buffer: Buffer::new(),
@@ -119,6 +155,13 @@ impl App {
             loader,
             languages,
             extension_index,
+            lsp_clients: HashMap::new(),
+            diagnostics: HashMap::new(),
+            event_tx,
+            startup_cwd,
+            last_synced_version: 0,
+            current_uri: None,
+            current_language: None,
             should_quit: false,
         }
     }
@@ -152,10 +195,149 @@ impl App {
     }
 
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
+        // Tell the previous LSP client we're done with that document so
+        // it can drop diagnostics and stop watching it.
+        if let (Some(uri), Some(lang)) = (self.current_uri.take(), self.current_language.take()) {
+            if let Some(client) = self.lsp_clients.get_mut(&lang) {
+                let _ = client.did_close(&uri);
+            }
+        }
         self.buffer = Buffer::load(path)?;
         self.attach_highlighter();
+        self.attach_lsp();
+        self.last_synced_version = self.buffer.version;
         self.status = Status::info(format!("opened {}", path.display()));
         Ok(())
+    }
+
+    /// Resolve the language for the current buffer, spawn an `LspClient`
+    /// if one isn't already running, and send `didOpen`. Failures are
+    /// surfaced via the status bar — the buffer keeps working without LSP.
+    fn attach_lsp(&mut self) {
+        let path = match &self.buffer.path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        let Some(ext) = ext else { return };
+        let Some(lang_name) = self.extension_index.get(&ext).cloned() else {
+            return;
+        };
+        let Some(spec) = self.languages.get(&lang_name).cloned() else {
+            return;
+        };
+        let Some(lsp_cfg) = spec.lsp else { return };
+
+        if !self.lsp_clients.contains_key(&lang_name) {
+            let root_dir =
+                lsp::discover_root(&self.startup_cwd, Some(&path), &lsp_cfg.root_markers);
+            let root_uri = lsp::path_to_uri(&root_dir);
+            let tx = self.event_tx.clone();
+            let emit: Box<dyn Fn(LspEvent) + Send> = Box::new(move |ev| {
+                let _ = tx.send(AppEvent::Lsp(ev));
+            });
+            match LspClient::spawn(&lang_name, &lsp_cfg, &root_uri, emit) {
+                Ok(client) => {
+                    self.lsp_clients.insert(lang_name.clone(), client);
+                }
+                Err(e) => {
+                    // Built-in defaults reference servers most users won't
+                    // have installed. If the binary isn't on PATH, stay
+                    // quiet — the buffer keeps working without LSP. Other
+                    // failures (handshake errors, etc.) are still surfaced.
+                    if !is_command_not_found(&e) {
+                        self.status =
+                            Status::error(format!("lsp ({}): {}", lang_name, root_cause(&e)));
+                    }
+                    return;
+                }
+            }
+        }
+
+        let uri = lsp::path_to_uri(&path);
+        let text = self.buffer.lines.join("\n");
+        if let Some(client) = self.lsp_clients.get_mut(&lang_name) {
+            if let Err(e) = client.did_open(&uri, &text) {
+                self.status =
+                    Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
+                return;
+            }
+        }
+        self.current_uri = Some(uri);
+        self.current_language = Some(lang_name);
+    }
+
+    /// Send `didChange` if the buffer has been mutated since the last
+    /// sync. Called from the main loop after every key handled.
+    pub fn sync_buffer_if_dirty(&mut self) {
+        if self.buffer.version == self.last_synced_version {
+            return;
+        }
+        self.last_synced_version = self.buffer.version;
+        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
+            return;
+        };
+        let Some(client) = self.lsp_clients.get_mut(lang) else {
+            return;
+        };
+        let text = self.buffer.lines.join("\n");
+        if let Err(e) = client.did_change(uri, &text) {
+            self.status = Status::error(format!("lsp didChange: {}", root_cause(&e)));
+        }
+    }
+
+    /// Apply an event from an LSP reader thread. Diagnostics replace
+    /// whatever we had stored for that URI; messages are surfaced as
+    /// non-error status; reader errors do the same.
+    pub fn handle_lsp_event(&mut self, ev: LspEvent) {
+        match ev {
+            LspEvent::Diagnostics { uri, items } => {
+                if items.is_empty() {
+                    self.diagnostics.remove(&uri);
+                } else {
+                    self.diagnostics.insert(uri, items);
+                }
+            }
+            LspEvent::Message { level, text } => {
+                // Levels: 1 Error, 2 Warning, 3 Info, 4 Log.
+                if level == 1 {
+                    self.status = Status::error(text);
+                } else {
+                    self.status = Status::info(text);
+                }
+            }
+            LspEvent::Error(e) => {
+                self.status = Status::error(format!("lsp: {}", e));
+            }
+        }
+    }
+
+    /// Diagnostics for the current buffer's URI, if any. Convenience for
+    /// the UI layer.
+    pub fn current_diagnostics(&self) -> Option<&[Diagnostic]> {
+        self.current_uri
+            .as_ref()
+            .and_then(|u| self.diagnostics.get(u))
+            .map(|v| v.as_slice())
+    }
+
+    /// First diagnostic that covers the cursor row, prioritising errors.
+    pub fn diagnostic_on_cursor(&self) -> Option<&Diagnostic> {
+        let row = self.buffer.cursor.row as u32;
+        let mut best: Option<&Diagnostic> = None;
+        for d in self.current_diagnostics()? {
+            if d.range.start.line <= row && row <= d.range.end.line {
+                best = Some(match best {
+                    None => d,
+                    Some(prev) if (d.severity as u8) < (prev.severity as u8) => d,
+                    Some(prev) => prev,
+                });
+            }
+        }
+        best
     }
 
     /// Look up a language for the current buffer's file extension and,
@@ -409,8 +591,11 @@ impl App {
         };
         match finder.kind {
             FuzzyKind::Files => {
-                let path = finder.items[sel.idx].clone();
-                self.open_path(Path::new(&path))?;
+                // Items are root-relative paths (see `collect_files`). Re-
+                // anchor against `startup_cwd` so the resulting buffer
+                // path doesn't depend on whatever `current_dir()` is now.
+                let path = self.startup_cwd.join(&finder.items[sel.idx]);
+                self.open_path(&path)?;
             }
             FuzzyKind::Lines => {
                 self.buffer.cursor.row = sel.idx;
@@ -704,7 +889,24 @@ impl App {
             self.buffer.save_as(p)?;
             self.status = Status::info(format!("written to {}", p.display()));
         }
+        // Notify the LSP server that the buffer is now on disk — many
+        // servers (rust-analyzer in particular) only run their full
+        // checker on save, so without this nothing fresh would arrive.
+        self.notify_lsp_save();
         Ok(())
+    }
+
+    fn notify_lsp_save(&mut self) {
+        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
+            return;
+        };
+        let Some(client) = self.lsp_clients.get_mut(lang) else {
+            return;
+        };
+        let text = self.buffer.lines.join("\n");
+        if let Err(e) = client.did_save(uri, &text) {
+            self.status = Status::error(format!("lsp didSave: {}", root_cause(&e)));
+        }
     }
 
     fn goto_line(&mut self, arg: &str) {
@@ -745,7 +947,7 @@ impl App {
                 forward,
                 query: String::new(),
             },
-            PromptKind::Fuzzy(FuzzyKind::Files) => Prompt::Fuzzy(Finder::files(Path::new("."))),
+            PromptKind::Fuzzy(FuzzyKind::Files) => Prompt::Fuzzy(Finder::files(&self.startup_cwd)),
             PromptKind::Fuzzy(FuzzyKind::Lines) => Prompt::Fuzzy(Finder::lines(&self.buffer.lines)),
         };
     }
@@ -772,6 +974,16 @@ impl CommandBind {
 /// rather than the wrapping context.
 fn root_cause(e: &anyhow::Error) -> String {
     e.chain().last().map(|x| x.to_string()).unwrap_or_else(|| e.to_string())
+}
+
+/// True if the error chain contains an `io::Error` with `NotFound` kind —
+/// i.e. the LSP server binary isn't on `PATH`. Lets us silently skip
+/// built-in defaults the user hasn't installed.
+fn is_command_not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
 }
 
 pub const COMMAND_BINDS: &[CommandBind] = &[

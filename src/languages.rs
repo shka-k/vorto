@@ -30,6 +30,24 @@ pub struct LanguageConfig {
     /// Override directory for `<lang>/highlights.scm` — overrides the
     /// global query dir for just this language.
     pub query_dir: Option<PathBuf>,
+    /// `[languages.<name>.lsp]` subtable — replaced whole, not deep-merged.
+    pub lsp: Option<LspConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct LspConfig {
+    /// Server executable (e.g. "rust-analyzer", "pyright-langserver").
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// LSP `languageId` sent in `didOpen`. Falls back to the language
+    /// name when unset.
+    pub language_id: Option<String>,
+    /// Filenames that mark the project root (e.g. "Cargo.toml",
+    /// "pyproject.toml"). The first match walking up from the opened
+    /// file becomes `rootUri`; defaults to the file's parent directory.
+    #[serde(default)]
+    pub root_markers: Vec<String>,
 }
 
 impl LanguageConfig {
@@ -48,6 +66,9 @@ impl LanguageConfig {
         if user.query_dir.is_some() {
             self.query_dir = user.query_dir;
         }
+        if user.lsp.is_some() {
+            self.lsp = user.lsp;
+        }
     }
 }
 
@@ -60,6 +81,7 @@ pub struct Language {
     pub grammar: String,
     pub grammar_dir: Option<PathBuf>,
     pub query_dir: Option<PathBuf>,
+    pub lsp: Option<LspConfig>,
 }
 
 impl Language {
@@ -70,6 +92,7 @@ impl Language {
             grammar: c.grammar.unwrap_or_else(|| name.to_string()),
             grammar_dir: c.grammar_dir,
             query_dir: c.query_dir,
+            lsp: c.lsp,
         }
     }
 }
@@ -84,6 +107,12 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "rust".into(),
         LanguageConfig {
             extensions: Some(vec!["rs".into()]),
+            lsp: Some(LspConfig {
+                command: "rust-analyzer".into(),
+                args: vec![],
+                language_id: Some("rust".into()),
+                root_markers: vec!["Cargo.toml".into(), "rust-project.json".into()],
+            }),
             ..Default::default()
         },
     );
@@ -91,6 +120,17 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "python".into(),
         LanguageConfig {
             extensions: Some(vec!["py".into()]),
+            lsp: Some(LspConfig {
+                command: "pyright-langserver".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("python".into()),
+                root_markers: vec![
+                    "pyproject.toml".into(),
+                    "setup.py".into(),
+                    "setup.cfg".into(),
+                    "requirements.txt".into(),
+                ],
+            }),
             ..Default::default()
         },
     );
@@ -98,6 +138,51 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "toml".into(),
         LanguageConfig {
             extensions: Some(vec!["toml".into()]),
+            lsp: Some(LspConfig {
+                command: "taplo".into(),
+                args: vec!["lsp".into(), "stdio".into()],
+                language_id: Some("toml".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "typescript".into(),
+        LanguageConfig {
+            extensions: Some(vec!["ts".into(), "tsx".into()]),
+            lsp: Some(LspConfig {
+                command: "typescript-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("typescript".into()),
+                root_markers: vec!["package.json".into(), "tsconfig.json".into()],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "javascript".into(),
+        LanguageConfig {
+            extensions: Some(vec!["js".into(), "jsx".into(), "mjs".into(), "cjs".into()]),
+            lsp: Some(LspConfig {
+                command: "typescript-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("javascript".into()),
+                root_markers: vec!["package.json".into(), "jsconfig.json".into()],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "go".into(),
+        LanguageConfig {
+            extensions: Some(vec!["go".into()]),
+            lsp: Some(LspConfig {
+                command: "gopls".into(),
+                args: vec![],
+                language_id: Some("go".into()),
+                root_markers: vec!["go.mod".into(), "go.work".into()],
+            }),
             ..Default::default()
         },
     );

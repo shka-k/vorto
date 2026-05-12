@@ -690,6 +690,7 @@ dependencies = [
  "libloading",
  "ratatui",
  "serde",
+ "serde_json",
  "toml",
  "tree-sitter",
 ]

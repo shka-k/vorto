@@ -9,6 +9,7 @@ use crate::app::{App, COMMAND_BINDS, Prompt, Selection};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Capture;
 use crate::keymap::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
+use crate::lsp::{Diagnostic, Severity};
 use crate::mode::Mode;
 use crate::theme;
 
@@ -132,6 +133,7 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .map(|h| h.captures_in_rows(scroll, last_visible))
         .unwrap_or_default();
+    let row_severity = build_row_severity(app, scroll, last_visible);
 
     let visible: Vec<Line> = app
         .buffer
@@ -141,8 +143,9 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .skip(scroll)
         .take(height)
         .map(|(i, line)| {
+            let mut spans = vec![sign_span(row_severity.get(&i).copied())];
             let num = format!("{:>4} ", i + 1);
-            let mut spans = vec![Span::styled(num, Style::default().fg(Color::DarkGray))];
+            spans.push(Span::styled(num, Style::default().fg(Color::DarkGray)));
             spans.extend(render_line(i, line, sel.as_ref(), &captures));
             Line::from(spans)
         })
@@ -165,6 +168,66 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
 /// Color used to paint visually-selected text. Picked to read clearly on
 /// both dark and light terminals.
 const SEL_BG: Color = Color::Rgb(58, 78, 122);
+
+/// Width of the gutter prefix (severity sign + space). Kept in sync with
+/// `place_cursor` so the cursor lands on the right column.
+const GUTTER_SIGN_WIDTH: u16 = 1;
+
+/// Build a `row → highest severity` lookup for the visible window. Rows
+/// outside `[scroll, last)` are skipped, multi-line diagnostics fill all
+/// rows they span, and the most severe diagnostic wins per row.
+fn build_row_severity(
+    app: &App,
+    scroll: usize,
+    last: usize,
+) -> std::collections::HashMap<usize, Severity> {
+    let mut map: std::collections::HashMap<usize, Severity> = std::collections::HashMap::new();
+    let diags = match app.current_diagnostics() {
+        Some(d) => d,
+        None => return map,
+    };
+    for d in diags {
+        let lo = d.range.start.line as usize;
+        let hi = d.range.end.line as usize;
+        for row in lo.max(scroll)..=hi.min(last.saturating_sub(1)) {
+            map.entry(row)
+                .and_modify(|s| {
+                    if (d.severity as u8) < (*s as u8) {
+                        *s = d.severity;
+                    }
+                })
+                .or_insert(d.severity);
+        }
+    }
+    map
+}
+
+fn diagnostic_span(d: &Diagnostic) -> Span<'static> {
+    let color = match d.severity {
+        Severity::Error => Color::Red,
+        Severity::Warning => Color::Yellow,
+        Severity::Info => Color::LightBlue,
+        Severity::Hint => Color::DarkGray,
+    };
+    // First line only — diagnostics with embedded newlines (rust-analyzer
+    // does this for explanations) would otherwise wreck the status bar.
+    let text = d.message.lines().next().unwrap_or("").to_string();
+    let prefix = match &d.source {
+        Some(s) => format!("[{}] ", s),
+        None => String::new(),
+    };
+    Span::styled(format!("{}{}", prefix, text), Style::default().fg(color))
+}
+
+fn sign_span(sev: Option<Severity>) -> Span<'static> {
+    match sev {
+        Some(Severity::Error) => Span::styled("E", Style::default().fg(Color::Red)),
+        Some(Severity::Warning) => Span::styled("W", Style::default().fg(Color::Yellow)),
+        Some(Severity::Info) => Span::styled("I", Style::default().fg(Color::LightBlue)),
+        Some(Severity::Hint) => Span::styled("H", Style::default().fg(Color::DarkGray)),
+        None => Span::raw(" "),
+    }
+}
 
 /// Render one buffer line, layering syntax-highlight captures
 /// (foreground) underneath the visual-selection background. Spans
@@ -281,12 +344,21 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default()
     };
-    let left = Line::from(vec![
+    // Show the diagnostic under the cursor only when the regular status
+    // text is the default info — explicit errors and recent commands
+    // should still win the line.
+    let mut spans = vec![
         mode_span,
         Span::raw(" "),
         Span::styled(app.status.text().to_string(), status_style),
-    ]);
-    f.render_widget(Paragraph::new(left), halves[0]);
+    ];
+    if !app.status.is_error()
+        && let Some(d) = app.diagnostic_on_cursor()
+    {
+        spans.push(Span::raw("  "));
+        spans.push(diagnostic_span(d));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), halves[0]);
 
     let pos = format!(
         "{}:{} ",
@@ -485,7 +557,7 @@ fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let height = buf_area.height.saturating_sub(2) as usize;
     let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
-    let x = buf_area.x + 1 + line_no_width + app.buffer.cursor.col as u16;
+    let x = buf_area.x + 1 + GUTTER_SIGN_WIDTH + line_no_width + app.buffer.cursor.col as u16;
     let y = buf_area.y + 1 + (app.buffer.cursor.row - scroll) as u16;
     f.set_cursor_position((x, y));
 }

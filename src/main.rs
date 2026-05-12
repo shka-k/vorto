@@ -6,12 +6,15 @@ mod fuzzy;
 mod highlight;
 mod keymap;
 mod languages;
+mod lsp;
 mod mode;
 mod search;
 mod theme;
 mod ui;
 
 use std::io::{self, Stdout, Write};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::Result;
 use crossterm::event::{self, Event};
@@ -27,6 +30,11 @@ use crate::config::CursorShape;
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1);
+    // Anchor for LSP workspace root discovery — captured once here so the
+    // value can't shift mid-session if anything changes the process's
+    // cwd. Every later `:e` resolves against the same directory.
+    let startup_cwd =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -43,13 +51,30 @@ fn main() -> Result<()> {
     let extension_index = languages::build_extension_index(&languages);
     let loader = highlight::Loader::new(config::grammar_dir(&cfg), config::query_dir(&cfg));
 
-    let mut app = App::new(keymap, loader, languages, extension_index);
+    // Unified event channel. Terminal input runs on a dedicated thread
+    // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.
+    let (event_tx, event_rx) = mpsc::channel::<app::AppEvent>();
+    let input_tx = event_tx.clone();
+    thread::spawn(move || {
+        loop {
+            match event::read() {
+                Ok(ev) => {
+                    if input_tx.send(app::AppEvent::Term(ev)).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+
+    let mut app = App::new(keymap, loader, languages, extension_index, event_tx, startup_cwd);
     app.cursor_shapes = config::resolve_cursor_shapes(&cfg.cursor)?;
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;
     }
 
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, &event_rx);
 
     disable_raw_mode()?;
     // `\x1b[0 q` = DECSCUSR Ps=0 → restore the user's configured shape.
@@ -61,7 +86,11 @@ fn main() -> Result<()> {
     result
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    event_rx: &mpsc::Receiver<app::AppEvent>,
+) -> Result<()> {
     let mut last_shape: Option<CursorShape> = None;
     while !app.should_quit {
         app.buffer.refresh_highlights();
@@ -73,9 +102,29 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
             out.flush()?;
             last_shape = Some(shape);
         }
-        if let Event::Key(key) = event::read()? {
-            app.handle_key(key)?;
+        // Block on the next event. Both terminal input and LSP reader
+        // threads feed this channel, so we wake on whichever comes first
+        // and only redraw once after we drain the burst.
+        let first = match event_rx.recv() {
+            Ok(ev) => ev,
+            Err(_) => return Ok(()),
+        };
+        dispatch(app, first)?;
+        // Drain any events that piled up while we were blocked so we
+        // don't redraw between a Term+Lsp pair (e.g. didChange burst).
+        while let Ok(ev) = event_rx.try_recv() {
+            dispatch(app, ev)?;
         }
+        app.sync_buffer_if_dirty();
+    }
+    Ok(())
+}
+
+fn dispatch(app: &mut App, ev: app::AppEvent) -> Result<()> {
+    match ev {
+        app::AppEvent::Term(Event::Key(key)) => app.handle_key(key)?,
+        app::AppEvent::Term(_) => {}
+        app::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
     }
     Ok(())
 }
