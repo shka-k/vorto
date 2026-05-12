@@ -1,5 +1,6 @@
 mod action;
 mod app;
+mod config;
 mod editor;
 mod fuzzy;
 mod keymap;
@@ -29,7 +30,12 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let mut keymap = crate::keymap::Keymap::vim_default();
+    let cfg_path = config::default_path();
+    let cfg = config::load_or_default(cfg_path.as_deref())?;
+    config::apply(&cfg, &mut keymap)?;
+
+    let mut app = App::with_keymap(keymap);
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;
     }

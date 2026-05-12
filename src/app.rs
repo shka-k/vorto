@@ -65,10 +65,6 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self::with_keymap(Keymap::vim_default())
-    }
-
     pub fn with_keymap(keymap: Keymap) -> Self {
         Self {
             buffer: Buffer::new(),
