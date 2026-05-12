@@ -5,6 +5,9 @@ use std::path::Path;
 pub enum FuzzyKind {
     Files,
     Lines,
+    /// Cross-file location results (LSP references). The Finder carries
+    /// a parallel `locations` Vec so the picker can jump on selection.
+    Locations,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +46,22 @@ impl Finder {
         let items: Vec<String> = buffer_lines.to_vec();
         let mut f = Self {
             kind: FuzzyKind::Lines,
+            query: String::new(),
+            items,
+            matches: Vec::new(),
+            selected: 0,
+        };
+        f.refilter();
+        f
+    }
+
+    /// Build a [`FuzzyKind::Locations`] picker. Display strings are
+    /// arbitrary; the caller keeps a parallel `Vec` (typically of
+    /// `lsp::Location`) and looks up the selected index to decide what
+    /// to do on submit.
+    pub fn locations(items: Vec<String>) -> Self {
+        let mut f = Self {
+            kind: FuzzyKind::Locations,
             query: String::new(),
             items,
             matches: Vec::new(),

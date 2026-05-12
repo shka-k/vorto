@@ -464,7 +464,16 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
                 ("l".to_string(), "fuzzy lines"),
             ],
         ),
-        Token::GotoPrefix => ("goto", vec![("g".to_string(), "goto file start")]),
+        Token::GotoPrefix => (
+            "goto",
+            vec![
+                ("g".to_string(), "goto file start"),
+                ("d".to_string(), "definition (lsp)"),
+                ("D".to_string(), "declaration (lsp)"),
+                ("i".to_string(), "implementation (lsp)"),
+                ("r".to_string(), "references (lsp)"),
+            ],
+        ),
         Token::Op(op) => {
             // Each operator's repeat-self shortcut (dd/yy/cc) is the only
             // hint entry that depends on `op`; the rest of the menu is
@@ -530,6 +539,7 @@ fn status_label(app: &App) -> (String, Color) {
         Prompt::Search { forward: true, .. } => ("SEARCH/".into(), Color::LightBlue),
         Prompt::Search { forward: false, .. } => ("SEARCH?".into(), Color::LightBlue),
         Prompt::Fuzzy(_) => ("FUZZY".into(), Color::LightMagenta),
+        Prompt::Rename(_) => ("RENAME".into(), Color::LightCyan),
     }
 }
 
@@ -544,6 +554,7 @@ fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
             forward: false,
             query,
         } => ("?", query.as_str()),
+        Prompt::Rename(buf) => ("rename ▸ ", buf.as_str()),
         _ => return,
     };
     let text = format!("{}{}", prefix, content);
@@ -598,6 +609,7 @@ fn draw_fuzzy(f: &mut Frame, finder: &Finder, area: Rect) {
     let title = match finder.kind {
         FuzzyKind::Files => " fuzzy: files ",
         FuzzyKind::Lines => " fuzzy: lines ",
+        FuzzyKind::Locations => " references ",
     };
     let total = finder.matches.len();
     let footer = format!(" {}/{} ", finder.selected + 1, total.max(1));

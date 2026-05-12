@@ -105,6 +105,19 @@ pub enum DirectKind {
     Save,
     Open,
     GotoLine,
+    /// `gd` — `textDocument/definition` for the symbol under the cursor.
+    GotoDefinition,
+    /// `gD` — `textDocument/declaration` (distinct from definition in
+    /// languages like C/C++; most others alias the two).
+    GotoDeclaration,
+    /// `gi` — `textDocument/implementation` (jump from trait method /
+    /// interface decl to a concrete impl).
+    GotoImplementation,
+    /// `gr` — `textDocument/references` for the symbol under the cursor.
+    FindReferences,
+    /// `<space>r` — open a prompt to enter the new name, then send
+    /// `textDocument/rename` and apply the returned `WorkspaceEdit`.
+    Rename,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

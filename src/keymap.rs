@@ -71,43 +71,158 @@ impl Binding {
 /// possibly with an inner count). Operator-repeat (`dd`/`yy`/`cc`) is
 /// handled separately — it depends on the active operator.
 pub const OP_PENDING_BINDINGS: &[Binding] = {
+    use crate::action::Scope;
+    use MotionKind::*;
     use Token::Motion as M;
     use Token::Scope as S;
-    use MotionKind::*;
-    use crate::action::Scope;
     &[
-        Binding { key: KeyCode::Char('i'), aliases: &[], token: S(Scope::Inner),  label: "inner …" },
-        Binding { key: KeyCode::Char('a'), aliases: &[], token: S(Scope::Around), label: "around …" },
-        Binding { key: KeyCode::Char('w'), aliases: &[],               token: M(WordForward),     label: "word" },
-        Binding { key: KeyCode::Char('b'), aliases: &[],               token: M(WordBack),        label: "back" },
-        Binding { key: KeyCode::Char('}'), aliases: &[],               token: M(ParagraphForward), label: "paragraph fwd" },
-        Binding { key: KeyCode::Char('{'), aliases: &[],               token: M(ParagraphBack),    label: "paragraph back" },
-        Binding { key: KeyCode::Char('$'), aliases: &[KeyCode::End],   token: M(LineEnd),         label: "line end" },
-        Binding { key: KeyCode::Char('0'), aliases: &[KeyCode::Home],  token: M(LineStart),       label: "line start" },
-        Binding { key: KeyCode::Char('h'), aliases: &[KeyCode::Left],  token: M(Left),            label: "left" },
-        Binding { key: KeyCode::Char('l'), aliases: &[KeyCode::Right], token: M(Right),           label: "right" },
-        Binding { key: KeyCode::Char('j'), aliases: &[KeyCode::Down],  token: M(Down),            label: "down" },
-        Binding { key: KeyCode::Char('k'), aliases: &[KeyCode::Up],    token: M(Up),              label: "up" },
-        Binding { key: KeyCode::Char('G'), aliases: &[],               token: M(FileEnd),         label: "file end" },
+        Binding {
+            key: KeyCode::Char('i'),
+            aliases: &[],
+            token: S(Scope::Inner),
+            label: "inner …",
+        },
+        Binding {
+            key: KeyCode::Char('a'),
+            aliases: &[],
+            token: S(Scope::Around),
+            label: "around …",
+        },
+        Binding {
+            key: KeyCode::Char('w'),
+            aliases: &[],
+            token: M(WordForward),
+            label: "word",
+        },
+        Binding {
+            key: KeyCode::Char('b'),
+            aliases: &[],
+            token: M(WordBack),
+            label: "back",
+        },
+        Binding {
+            key: KeyCode::Char('}'),
+            aliases: &[],
+            token: M(ParagraphForward),
+            label: "paragraph fwd",
+        },
+        Binding {
+            key: KeyCode::Char('{'),
+            aliases: &[],
+            token: M(ParagraphBack),
+            label: "paragraph back",
+        },
+        Binding {
+            key: KeyCode::Char('$'),
+            aliases: &[KeyCode::End],
+            token: M(LineEnd),
+            label: "line end",
+        },
+        Binding {
+            key: KeyCode::Char('0'),
+            aliases: &[KeyCode::Home],
+            token: M(LineStart),
+            label: "line start",
+        },
+        Binding {
+            key: KeyCode::Char('h'),
+            aliases: &[KeyCode::Left],
+            token: M(Left),
+            label: "left",
+        },
+        Binding {
+            key: KeyCode::Char('l'),
+            aliases: &[KeyCode::Right],
+            token: M(Right),
+            label: "right",
+        },
+        Binding {
+            key: KeyCode::Char('j'),
+            aliases: &[KeyCode::Down],
+            token: M(Down),
+            label: "down",
+        },
+        Binding {
+            key: KeyCode::Char('k'),
+            aliases: &[KeyCode::Up],
+            token: M(Up),
+            label: "up",
+        },
+        Binding {
+            key: KeyCode::Char('G'),
+            aliases: &[],
+            token: M(FileEnd),
+            label: "file end",
+        },
     ]
 };
 
 /// Keys valid in the ObjectExpected context (right after `i`/`a` as
 /// the scope marker).
 pub const OBJECT_BINDINGS: &[Binding] = {
-    use Token::Object as O;
     use crate::action::Object::*;
+    use Token::Object as O;
     &[
-        Binding { key: KeyCode::Char('w'),  aliases: &[],                                   token: O(Word),        label: "word" },
-        Binding { key: KeyCode::Char('p'),  aliases: &[],                                   token: O(Paragraph),   label: "paragraph" },
-        Binding { key: KeyCode::Char('"'),  aliases: &[],                                   token: O(DoubleQuote), label: "double-quotes" },
-        Binding { key: KeyCode::Char('\''), aliases: &[],                                   token: O(SingleQuote), label: "single-quotes" },
-        Binding { key: KeyCode::Char('('),  aliases: &[KeyCode::Char(')'), KeyCode::Char('b')], token: O(Paren),   label: "parens" },
-        Binding { key: KeyCode::Char('{'),  aliases: &[KeyCode::Char('}'), KeyCode::Char('B')], token: O(Brace),   label: "braces" },
-        Binding { key: KeyCode::Char('['),  aliases: &[KeyCode::Char(']')],                 token: O(Bracket),     label: "brackets" },
-        Binding { key: KeyCode::Char('f'),  aliases: &[],                                   token: O(Function),    label: "function (ts)" },
-        Binding { key: KeyCode::Char('c'),  aliases: &[],                                   token: O(Class),       label: "class (ts)" },
-        Binding { key: KeyCode::Char('a'),  aliases: &[],                                   token: O(Parameter),   label: "argument (ts)" },
+        Binding {
+            key: KeyCode::Char('w'),
+            aliases: &[],
+            token: O(Word),
+            label: "word",
+        },
+        Binding {
+            key: KeyCode::Char('p'),
+            aliases: &[],
+            token: O(Paragraph),
+            label: "paragraph",
+        },
+        Binding {
+            key: KeyCode::Char('"'),
+            aliases: &[],
+            token: O(DoubleQuote),
+            label: "double-quotes",
+        },
+        Binding {
+            key: KeyCode::Char('\''),
+            aliases: &[],
+            token: O(SingleQuote),
+            label: "single-quotes",
+        },
+        Binding {
+            key: KeyCode::Char('('),
+            aliases: &[KeyCode::Char(')'), KeyCode::Char('b')],
+            token: O(Paren),
+            label: "parens",
+        },
+        Binding {
+            key: KeyCode::Char('{'),
+            aliases: &[KeyCode::Char('}'), KeyCode::Char('B')],
+            token: O(Brace),
+            label: "braces",
+        },
+        Binding {
+            key: KeyCode::Char('['),
+            aliases: &[KeyCode::Char(']')],
+            token: O(Bracket),
+            label: "brackets",
+        },
+        Binding {
+            key: KeyCode::Char('f'),
+            aliases: &[],
+            token: O(Function),
+            label: "function (ts)",
+        },
+        Binding {
+            key: KeyCode::Char('c'),
+            aliases: &[],
+            token: O(Class),
+            label: "class (ts)",
+        },
+        Binding {
+            key: KeyCode::Char('a'),
+            aliases: &[],
+            token: O(Parameter),
+            label: "argument (ts)",
+        },
     ]
 };
 
@@ -220,7 +335,10 @@ impl Keymap {
             (KeyCode::Char('x'), Direct(D::DeleteCharUnderCursor)),
             (KeyCode::Char('p'), Direct(D::Paste)),
             (KeyCode::Char('u'), Direct(D::Undo)),
-            (KeyCode::Char(':'), Direct(D::OpenPrompt(PromptKind::Command))),
+            (
+                KeyCode::Char(':'),
+                Direct(D::OpenPrompt(PromptKind::Command)),
+            ),
             (
                 KeyCode::Char('/'),
                 Direct(D::OpenPrompt(PromptKind::Search { forward: true })),
@@ -252,6 +370,10 @@ impl Keymap {
                 KeyCode::Char('l'),
                 Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
             ),
+            // <space>r — LSP rename. Opens a rename prompt populated by
+            // the user; the dispatch into `textDocument/rename` happens
+            // on submit.
+            (KeyCode::Char('r'), Direct(D::Rename)),
         ];
         for (code, token) in leader {
             self.bind_leader(KeySig::new(code, none), token);
@@ -366,6 +488,12 @@ fn goto_pending_token(code: KeyCode) -> Option<Token> {
     match code {
         // gg → second g closes the sequence
         KeyCode::Char('g') => Some(Token::GotoPrefix),
+        // LSP navigation: gd definition, gD declaration, gi
+        // implementation, gr references.
+        KeyCode::Char('d') => Some(Token::Direct(DirectKind::GotoDefinition)),
+        KeyCode::Char('D') => Some(Token::Direct(DirectKind::GotoDeclaration)),
+        KeyCode::Char('i') => Some(Token::Direct(DirectKind::GotoImplementation)),
+        KeyCode::Char('r') => Some(Token::Direct(DirectKind::FindReferences)),
         _ => None,
     }
 }
@@ -468,6 +596,12 @@ fn build_expr(tokens: &[Token]) -> Option<Expr> {
             motion: MotionKind::FileStart,
             count: outer_count,
         })),
+
+        // gd / gr — goto-prefix followed by an LSP action
+        [GotoPrefix, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
 
         // Operator + something
         [Op(op), inner @ ..] => build_op_expr(*op, inner, outer_count),

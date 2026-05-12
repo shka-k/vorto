@@ -102,6 +102,12 @@ impl Buffer {
         self.version = self.version.wrapping_add(1);
     }
 
+    /// Public version of [`Self::touch`] for callers that mutate
+    /// `lines` directly (the LSP rename path swaps the whole vec).
+    pub fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+
     /// Run the attached highlighter against the current buffer text if
     /// the cached parse is older than the buffer version. No-op when
     /// no highlighter is attached.

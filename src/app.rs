@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{
@@ -14,7 +14,7 @@ use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
 use crate::languages::Language;
-use crate::lsp::{self, Diagnostic, LspClient, LspEvent};
+use crate::lsp::{self, Diagnostic, Location, LspClient, LspEvent, WorkspaceEdit};
 use crate::mode::Mode;
 use crate::search::SearchState;
 
@@ -30,6 +30,12 @@ pub enum Prompt {
     Command(String),
     Search { forward: bool, query: String },
     Fuzzy(Finder),
+    /// `<space>r` — text input for the new identifier. The cursor and
+    /// URI captured at open-time aren't stored here: the LSP rename
+    /// request is built against the live cursor at submit, which
+    /// matches what the user sees (the cursor is locked while the
+    /// prompt is up because Normal-mode input is suspended).
+    Rename(String),
 }
 
 impl Prompt {
@@ -113,7 +119,31 @@ pub struct App {
     /// Language name currently associated with `buffer`. Lets the main
     /// loop find the right client without re-resolving by extension.
     pub current_language: Option<String>,
+    /// Outstanding LSP request bookkeeping. Keyed by `(lang, id)` so a
+    /// response arriving on the shared event channel can be routed back
+    /// to the right handler regardless of which client sent it.
+    pub pending_lsp: HashMap<(String, u64), LspRequestKind>,
+    /// Parallel data for an active `FuzzyKind::Locations` picker —
+    /// `locations[idx]` matches the picker's `items[idx]`. Empty when
+    /// the picker isn't open.
+    pub lsp_picker_locations: Vec<Location>,
     pub should_quit: bool,
+}
+
+/// What an outstanding LSP request was for. Stored under
+/// `pending_lsp[(lang, id)]` and consumed when the matching
+/// [`LspEvent::Response`] arrives.
+#[derive(Debug, Clone)]
+pub enum LspRequestKind {
+    /// Any `Location[]`-shaped jump request — `definition`,
+    /// `declaration`, `implementation`. We only need the user-visible
+    /// label for the "no results" status message.
+    Jump { label: &'static str },
+    /// `textDocument/references` — show the locations in a picker.
+    References,
+    /// `textDocument/rename` — apply the returned `WorkspaceEdit`.
+    /// `new_name` is kept around for the post-apply status line.
+    Rename { new_name: String },
 }
 
 /// Resolved visual-mode selection bounds, derived from the anchor and
@@ -162,6 +192,8 @@ impl App {
             last_synced_version: 0,
             current_uri: None,
             current_language: None,
+            pending_lsp: HashMap::new(),
+            lsp_picker_locations: Vec::new(),
             should_quit: false,
         }
     }
@@ -270,6 +302,239 @@ impl App {
         self.current_language = Some(lang_name);
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // LSP actions
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Send a request whose result is a list of `Location`s and whose
+    /// expected handling is "jump to the first one". Covers
+    /// `definition`, `declaration`, and `implementation` — all three
+    /// answer with the same shape.
+    fn lsp_jump(&mut self, method: &str, label: &'static str) {
+        if !self.has_lsp_for_current() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        let params = self.text_document_position_params();
+        self.send_lsp_request(method, params, LspRequestKind::Jump { label });
+    }
+
+    fn lsp_find_references(&mut self) {
+        if !self.has_lsp_for_current() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        let mut params = self.text_document_position_params();
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert(
+                "context".to_string(),
+                serde_json::json!({ "includeDeclaration": true }),
+            );
+        }
+        self.send_lsp_request("textDocument/references", params, LspRequestKind::References);
+    }
+
+    fn open_rename_prompt(&mut self) {
+        if !self.has_lsp_for_current() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        self.prompt = Prompt::Rename(String::new());
+    }
+
+    fn submit_rename(&mut self, new_name: String) {
+        if new_name.is_empty() {
+            self.status = Status::error("rename: empty name");
+            return;
+        }
+        if !self.has_lsp_for_current() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        let mut params = self.text_document_position_params();
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert(
+                "newName".to_string(),
+                serde_json::Value::String(new_name.clone()),
+            );
+        }
+        self.send_lsp_request(
+            "textDocument/rename",
+            params,
+            LspRequestKind::Rename { new_name },
+        );
+    }
+
+    fn has_lsp_for_current(&self) -> bool {
+        match (&self.current_uri, &self.current_language) {
+            (Some(_), Some(lang)) => self.lsp_clients.contains_key(lang),
+            _ => false,
+        }
+    }
+
+    /// Build the standard `{ textDocument: { uri }, position }` block
+    /// most language-feature requests start with.
+    fn text_document_position_params(&self) -> serde_json::Value {
+        let uri = self
+            .current_uri
+            .clone()
+            .unwrap_or_default();
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": {
+                "line": self.buffer.cursor.row as u64,
+                "character": self.buffer.cursor.col as u64,
+            }
+        })
+    }
+
+    /// Send `method` to the current buffer's LSP client and remember
+    /// `kind` so the response handler knows what to do. No-op when
+    /// there's no client — callers should have checked first.
+    fn send_lsp_request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        kind: LspRequestKind,
+    ) {
+        let Some(lang) = self.current_language.clone() else { return };
+        let Some(client) = self.lsp_clients.get_mut(&lang) else { return };
+        match client.request(method, params) {
+            Ok(id) => {
+                self.pending_lsp.insert((lang, id), kind);
+            }
+            Err(e) => {
+                self.status = Status::error(format!("lsp {}: {}", method, root_cause(&e)));
+            }
+        }
+    }
+
+    fn handle_lsp_response(
+        &mut self,
+        lang: String,
+        id: u64,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        let Some(kind) = self.pending_lsp.remove(&(lang, id)) else { return };
+        if let Some(msg) = error {
+            self.status = Status::error(format!("lsp: {}", msg));
+            return;
+        }
+        let result = result.unwrap_or(serde_json::Value::Null);
+        match kind {
+            LspRequestKind::Jump { label } => self.apply_jump_result(label, &result),
+            LspRequestKind::References => self.apply_references_result(&result),
+            LspRequestKind::Rename { new_name } => {
+                self.apply_rename_result(&new_name, &result)
+            }
+        }
+    }
+
+    fn apply_jump_result(&mut self, label: &'static str, result: &serde_json::Value) {
+        let locations = lsp::parse_locations(result);
+        let Some(first) = locations.into_iter().next() else {
+            self.status = Status::info(format!("no {}", label));
+            return;
+        };
+        if let Err(e) = self.jump_to_location(&first) {
+            self.status = Status::error(format!("jump: {}", root_cause(&e)));
+        }
+    }
+
+    fn apply_references_result(&mut self, result: &serde_json::Value) {
+        let locations = lsp::parse_locations(result);
+        if locations.is_empty() {
+            self.status = Status::info("no references");
+            return;
+        }
+        if locations.len() == 1 {
+            if let Err(e) = self.jump_to_location(&locations[0]) {
+                self.status = Status::error(format!("jump: {}", root_cause(&e)));
+            }
+            return;
+        }
+        let items: Vec<String> = locations
+            .iter()
+            .map(|loc| format_location_label(loc, &self.startup_cwd))
+            .collect();
+        self.lsp_picker_locations = locations;
+        self.prompt = Prompt::Fuzzy(Finder::locations(items));
+    }
+
+    fn apply_rename_result(&mut self, new_name: &str, result: &serde_json::Value) {
+        let Some(edit) = lsp::parse_workspace_edit(result) else {
+            self.status = Status::info("rename: nothing to change");
+            return;
+        };
+        match self.apply_workspace_edit(edit) {
+            Ok((files, occurrences)) => {
+                self.status = Status::info(format!(
+                    "renamed to {} ({} occurrences in {} files)",
+                    new_name, occurrences, files
+                ));
+            }
+            Err(e) => {
+                self.status = Status::error(format!("rename: {}", root_cause(&e)));
+            }
+        }
+    }
+
+    /// Apply a [`WorkspaceEdit`] across the filesystem. For the
+    /// currently-open buffer the edits go through the in-memory
+    /// `Buffer` (with an undo snapshot taken first); for other files we
+    /// read, edit, and write directly. Returns `(files, total_edits)`.
+    fn apply_workspace_edit(&mut self, edit: WorkspaceEdit) -> Result<(usize, usize)> {
+        let mut total: usize = 0;
+        let files = edit.changes.len();
+        // Track whether the active buffer ended up in the edit set —
+        // skip the on-disk write path for that one to avoid clobbering
+        // unsaved state.
+        let current_uri = self.current_uri.clone();
+        for (uri, edits) in edit.changes {
+            total += edits.len();
+            if Some(&uri) == current_uri.as_ref() {
+                self.buffer.snapshot();
+                let mut lines = std::mem::take(&mut self.buffer.lines);
+                lsp::apply_text_edits(&mut lines, edits);
+                self.buffer.lines = lines;
+                self.buffer.bump_version();
+                self.buffer.dirty = true;
+                continue;
+            }
+            let Some(path) = lsp::uri_to_path(&uri) else { continue };
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+            if lines.is_empty() {
+                lines.push(String::new());
+            }
+            lsp::apply_text_edits(&mut lines, edits);
+            std::fs::write(&path, lines.join("\n"))
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+        Ok((files, total))
+    }
+
+    fn jump_to_location(&mut self, loc: &Location) -> Result<()> {
+        let path = lsp::uri_to_path(&loc.uri)
+            .ok_or_else(|| anyhow!("unsupported uri scheme: {}", loc.uri))?;
+        let need_open = match &self.buffer.path {
+            Some(p) => p.canonicalize().ok() != path.canonicalize().ok(),
+            None => true,
+        };
+        if need_open {
+            self.open_path(&path)?;
+        }
+        let row = loc.range.start.line as usize;
+        let col = loc.range.start.character as usize;
+        let last = self.buffer.lines.len().saturating_sub(1);
+        self.buffer.cursor.row = row.min(last);
+        self.buffer.cursor.col = col;
+        self.buffer.clamp_col(false);
+        Ok(())
+    }
+
     /// Send `didChange` if the buffer has been mutated since the last
     /// sync. Called from the main loop after every key handled.
     pub fn sync_buffer_if_dirty(&mut self) {
@@ -312,6 +577,12 @@ impl App {
             LspEvent::Error(e) => {
                 self.status = Status::error(format!("lsp: {}", e));
             }
+            LspEvent::Response {
+                lang,
+                id,
+                result,
+                error,
+            } => self.handle_lsp_response(lang, id, result, error),
         }
     }
 
@@ -562,6 +833,13 @@ impl App {
                 KeyCode::Char(c) => finder.push(c),
                 _ => {}
             },
+            Prompt::Rename(buf) => match key.code {
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Char(c) => buf.push(c),
+                _ => {}
+            },
         }
         Ok(())
     }
@@ -581,13 +859,22 @@ impl App {
                 Ok(())
             }
             Prompt::Fuzzy(finder) => self.submit_fuzzy(finder),
+            Prompt::Rename(new_name) => {
+                self.submit_rename(new_name);
+                Ok(())
+            }
         }
     }
 
     fn submit_fuzzy(&mut self, finder: Finder) -> Result<()> {
         let sel = match finder.selection() {
             Some(s) => s.clone(),
-            None => return Ok(()),
+            None => {
+                // Drop any side-channel data even if the user submitted
+                // an empty picker.
+                self.lsp_picker_locations.clear();
+                return Ok(());
+            }
         };
         match finder.kind {
             FuzzyKind::Files => {
@@ -601,6 +888,15 @@ impl App {
                 self.buffer.cursor.row = sel.idx;
                 self.buffer.cursor.col = 0;
                 self.buffer.clamp_col(false);
+            }
+            FuzzyKind::Locations => {
+                let loc = self.lsp_picker_locations.get(sel.idx).cloned();
+                self.lsp_picker_locations.clear();
+                if let Some(loc) = loc
+                    && let Err(e) = self.jump_to_location(&loc)
+                {
+                    self.status = Status::error(format!("jump: {}", root_cause(&e)));
+                }
             }
         }
         Ok(())
@@ -723,6 +1019,13 @@ impl App {
                 }
             }
             D::GotoLine => self.goto_line(ctx.rest),
+            D::GotoDefinition => self.lsp_jump("textDocument/definition", "definition"),
+            D::GotoDeclaration => self.lsp_jump("textDocument/declaration", "declaration"),
+            D::GotoImplementation => {
+                self.lsp_jump("textDocument/implementation", "implementation")
+            }
+            D::FindReferences => self.lsp_find_references(),
+            D::Rename => self.open_rename_prompt(),
         }
         Ok(())
     }
@@ -949,8 +1252,38 @@ impl App {
             },
             PromptKind::Fuzzy(FuzzyKind::Files) => Prompt::Fuzzy(Finder::files(&self.startup_cwd)),
             PromptKind::Fuzzy(FuzzyKind::Lines) => Prompt::Fuzzy(Finder::lines(&self.buffer.lines)),
+            // `Locations` pickers are built from server results, not opened
+            // from a keymap — fall through to a no-op rather than a fresh
+            // empty picker that would do nothing useful on submit.
+            PromptKind::Fuzzy(FuzzyKind::Locations) => return,
         };
     }
+}
+
+/// Render a `path:line:col` label for an LSP `Location`. Used to
+/// populate the references picker. Falls back to the URI when the path
+/// can't be made relative.
+fn format_location_label(loc: &Location, root: &Path) -> String {
+    let path = match lsp::uri_to_path(&loc.uri) {
+        Some(p) => p,
+        None => return loc.uri.clone(),
+    };
+    // Canonicalize both sides so symlinked or /private-prefixed paths
+    // still compare equal — otherwise nothing strips and every label
+    // shows an absolute path.
+    let path_c = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let root_c = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let shown = path_c
+        .strip_prefix(&root_c)
+        .unwrap_or(&path_c)
+        .to_string_lossy()
+        .into_owned();
+    format!(
+        "{}:{}:{}",
+        shown,
+        loc.range.start.line + 1,
+        loc.range.start.character + 1
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════════
