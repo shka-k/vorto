@@ -402,10 +402,30 @@ impl Buffer {
                     col: max.saturating_sub(1),
                 }
             }
+            M::ParagraphForward => Cursor {
+                row: paragraph_forward_row(&self.lines, from.row),
+                col: 0,
+            },
+            M::ParagraphBack => Cursor {
+                row: paragraph_back_row(&self.lines, from.row),
+                col: 0,
+            },
             // Search-relative motions need search state — caller computes
             // those separately (see App::jump_search).
             M::SearchNext | M::SearchPrev => from,
         }
+    }
+
+    pub fn move_paragraph_forward(&mut self) {
+        self.cursor.row = paragraph_forward_row(&self.lines, self.cursor.row);
+        self.cursor.col = 0;
+        self.clamp_col(false);
+    }
+
+    pub fn move_paragraph_backward(&mut self) {
+        self.cursor.row = paragraph_back_row(&self.lines, self.cursor.row);
+        self.cursor.col = 0;
+        self.clamp_col(false);
     }
 
     /// Next `w` target. Prefers tree-sitter leaf boundaries (so `foo(bar)`
@@ -480,6 +500,12 @@ impl Buffer {
         if let Some(target) = ts_target(object, scope) {
             return self.text_object_range_ts(target);
         }
+        if matches!(object, Object::Word) {
+            return self.word_object_range(scope);
+        }
+        if matches!(object, Object::Paragraph) {
+            return Some(self.paragraph_object_range(scope));
+        }
 
         let row = self.cursor.row;
         let col = self.cursor.col;
@@ -512,6 +538,58 @@ impl Buffer {
         let h = self.highlighter.as_ref()?;
         let (sr, sc, er, ec) = h.find_text_object(target, self.cursor.row, self.cursor.col)?;
         Some((Cursor { row: sr, col: sc }, Cursor { row: er, col: ec }))
+    }
+
+    /// Vim-style `iw`/`aw`. Treats the line under the cursor as runs of
+    /// word chars / punctuation / whitespace — the same three classes
+    /// that drive `w`/`b`. `Inner` selects the run the cursor is in;
+    /// `Around` additionally swallows trailing whitespace (or leading,
+    /// if the run ends at end-of-line).
+    fn word_object_range(&self, scope: Scope) -> Option<(Cursor, Cursor)> {
+        let row = self.cursor.row;
+        let chars: Vec<char> = self.lines[row].chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let col = self.cursor.col.min(chars.len() - 1);
+
+        let class = classify(chars[col]);
+        let mut start = col;
+        while start > 0 && classify(chars[start - 1]) == class {
+            start -= 1;
+        }
+        let mut end = col;
+        while end < chars.len() && classify(chars[end]) == class {
+            end += 1;
+        }
+
+        let (from_col, to_col) = match scope {
+            Scope::Inner => (start, end),
+            Scope::Around => {
+                // Try to extend rightward with trailing whitespace.
+                let mut e = end;
+                while e < chars.len() && classify(chars[e]) == CharClass::Space {
+                    e += 1;
+                }
+                if e != end {
+                    (start, e)
+                } else {
+                    // No trailing space: fall back to leading.
+                    let mut s = start;
+                    while s > 0 && classify(chars[s - 1]) == CharClass::Space {
+                        s -= 1;
+                    }
+                    (s, end)
+                }
+            }
+        };
+        Some((
+            Cursor {
+                row,
+                col: from_col,
+            },
+            Cursor { row, col: to_col },
+        ))
     }
 
     /// Yank a run of whole lines (inclusive of both endpoints).
@@ -635,6 +713,52 @@ impl Buffer {
             self.yank = text;
         }
     }
+
+    /// Vim-style `ip`/`ap`. The "class" at the line level is `blank` vs
+    /// `non-blank`; `ip` selects the run the cursor is on, `ap`
+    /// additionally swallows the adjacent blank-line run (trailing if
+    /// any, else leading) — same shape as [`word_object_range`] one
+    /// dimension up. Always succeeds because every line belongs to
+    /// either a paragraph or a blank run.
+    fn paragraph_object_range(&self, scope: Scope) -> (Cursor, Cursor) {
+        let row = self.cursor.row;
+        let target_blank = is_blank_line(&self.lines[row]);
+
+        let mut start = row;
+        while start > 0 && is_blank_line(&self.lines[start - 1]) == target_blank {
+            start -= 1;
+        }
+        let mut end = row;
+        while end + 1 < self.lines.len()
+            && is_blank_line(&self.lines[end + 1]) == target_blank
+        {
+            end += 1;
+        }
+
+        let (s, e) = match scope {
+            Scope::Inner => (start, end),
+            Scope::Around => {
+                let mut ae = end;
+                while ae + 1 < self.lines.len()
+                    && is_blank_line(&self.lines[ae + 1]) != target_blank
+                {
+                    ae += 1;
+                }
+                if ae != end {
+                    (start, ae)
+                } else {
+                    let mut as_ = start;
+                    while as_ > 0
+                        && is_blank_line(&self.lines[as_ - 1]) != target_blank
+                    {
+                        as_ -= 1;
+                    }
+                    (as_, end)
+                }
+            }
+        };
+        range_for_full_lines(&self.lines, s, e)
+    }
 }
 
 fn order(a: Cursor, b: Cursor) -> (Cursor, Cursor) {
@@ -660,7 +784,79 @@ fn delim(object: Object) -> (char, char) {
         // Syntactic objects are handled via tree-sitter — the
         // caller should never reach `delim` for these.
         Object::Function | Object::Class | Object::Parameter => ('\0', '\0'),
+        // Paragraph is line-wise — also handled before reaching here.
+        Object::Paragraph => ('\0', '\0'),
     }
+}
+
+fn is_blank_line(line: &str) -> bool {
+    line.chars().all(|c| c.is_whitespace())
+}
+
+/// Forward paragraph motion target row. Skips past any current blank
+/// run, then advances to the first blank line after the next
+/// non-blank stretch — or the last line of the file when there isn't
+/// one. Mirrors vim's `}`.
+fn paragraph_forward_row(lines: &[String], from: usize) -> usize {
+    let n = lines.len();
+    if n == 0 {
+        return 0;
+    }
+    let started_blank = is_blank_line(&lines[from]);
+    let mut row = from + 1;
+    // Only skip past the current run of blanks when we *started* in one;
+    // otherwise the first blank we hit is exactly the target (the line
+    // that ends the current paragraph).
+    if started_blank {
+        while row < n && is_blank_line(&lines[row]) {
+            row += 1;
+        }
+    }
+    while row < n && !is_blank_line(&lines[row]) {
+        row += 1;
+    }
+    row.min(n - 1)
+}
+
+/// Mirror of [`paragraph_forward_row`] for `{`.
+fn paragraph_back_row(lines: &[String], from: usize) -> usize {
+    if from == 0 {
+        return 0;
+    }
+    let started_blank = is_blank_line(&lines[from]);
+    let mut row = from - 1;
+    if started_blank {
+        while row > 0 && is_blank_line(&lines[row]) {
+            row -= 1;
+        }
+    }
+    while row > 0 && !is_blank_line(&lines[row]) {
+        row -= 1;
+    }
+    row
+}
+
+/// Build a `delete_range`-friendly `(from, to)` pair that covers the
+/// whole-line slice `[start_row..=end_row]`. When `end_row` is the
+/// last line of the buffer, the closing cursor lands at end-of-line
+/// instead of `(end_row + 1, 0)` to avoid pointing past the buffer.
+fn range_for_full_lines(lines: &[String], start_row: usize, end_row: usize) -> (Cursor, Cursor) {
+    let from = Cursor {
+        row: start_row,
+        col: 0,
+    };
+    let to = if end_row + 1 < lines.len() {
+        Cursor {
+            row: end_row + 1,
+            col: 0,
+        }
+    } else {
+        Cursor {
+            row: end_row,
+            col: lines[end_row].chars().count(),
+        }
+    };
+    (from, to)
 }
 
 /// Map a tree-sitter-backed [`Object`] + [`Scope`] to the capture name
@@ -827,6 +1023,19 @@ mod word_class_tests {
         let l = lines("a => b");
         assert_eq!(back(&l, 0, 5), (0, 2)); // from `b` ← `=>`
         assert_eq!(back(&l, 0, 2), (0, 0)); // from `=>` ← `a`
+    }
+
+    #[test]
+    fn paragraph_motion_finds_blank_lines() {
+        // `foo / bar / "" / baz / qux / ""` — paragraphs at rows
+        // 0-1 and 3-4 separated by blank lines at 2 and 5.
+        let l = lines("foo\nbar\n\nbaz\nqux\n");
+        assert_eq!(paragraph_forward_row(&l, 0), 2); // foo → blank
+        assert_eq!(paragraph_forward_row(&l, 1), 2); // bar → blank
+        assert_eq!(paragraph_forward_row(&l, 2), 5); // blank → next blank
+        assert_eq!(paragraph_back_row(&l, 4), 2); // qux → blank
+        assert_eq!(paragraph_back_row(&l, 3), 2); // baz → blank
+        assert_eq!(paragraph_back_row(&l, 2), 0); // blank → file start
     }
 }
 

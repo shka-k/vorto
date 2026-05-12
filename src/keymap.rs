@@ -117,6 +117,8 @@ impl Keymap {
             (KeyCode::Home, Motion(M::LineStart)),
             (KeyCode::Char('w'), Motion(M::WordForward)),
             (KeyCode::Char('b'), Motion(M::WordBack)),
+            (KeyCode::Char('{'), Motion(M::ParagraphBack)),
+            (KeyCode::Char('}'), Motion(M::ParagraphForward)),
             (KeyCode::Char('G'), Motion(M::FileEnd)),
             (KeyCode::Char('n'), Motion(M::SearchNext)),
             (KeyCode::Char('N'), Motion(M::SearchPrev)),
@@ -316,6 +318,8 @@ fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
         KeyCode::Char('k') | KeyCode::Up => Token::Motion(M::Up),
         KeyCode::Char('w') => Token::Motion(M::WordForward),
         KeyCode::Char('b') => Token::Motion(M::WordBack),
+        KeyCode::Char('{') => Token::Motion(M::ParagraphBack),
+        KeyCode::Char('}') => Token::Motion(M::ParagraphForward),
         KeyCode::Char('$') | KeyCode::End => Token::Motion(M::LineEnd),
         KeyCode::Char('0') | KeyCode::Home => Token::Motion(M::LineStart),
         KeyCode::Char('G') => Token::Motion(M::FileEnd),
@@ -337,6 +341,8 @@ fn object_token(code: KeyCode) -> Option<Token> {
         KeyCode::Char('f') => Object::Function,
         KeyCode::Char('c') => Object::Class,
         KeyCode::Char('a') => Object::Parameter,
+        // Paragraph (vim): non-blank line run separated by blank lines.
+        KeyCode::Char('p') => Object::Paragraph,
         _ => return None,
     };
     Some(Token::Object(o))

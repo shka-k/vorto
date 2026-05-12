@@ -56,6 +56,11 @@ pub enum MotionKind {
     FileEnd,
     SearchNext,
     SearchPrev,
+    /// `{` — move to the previous blank line (or file start). Treats
+    /// the buffer as paragraphs separated by all-whitespace lines.
+    ParagraphBack,
+    /// `}` — move to the next blank line (or file end).
+    ParagraphForward,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +83,10 @@ pub enum Object {
     Function,
     Class,
     Parameter,
+    /// `p` — vim's paragraph: a contiguous run of non-blank lines
+    /// bordered by blank lines (or file start/end). Char-class
+    /// equivalent at the line level: `is_blank` vs not.
+    Paragraph,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

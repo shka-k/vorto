@@ -605,6 +605,16 @@ impl App {
                     self.jump_search(!self.search.last_forward);
                 }
             }
+            M::ParagraphForward => {
+                for _ in 0..n {
+                    self.buffer.move_paragraph_forward();
+                }
+            }
+            M::ParagraphBack => {
+                for _ in 0..n {
+                    self.buffer.move_paragraph_backward();
+                }
+            }
         }
     }
 

@@ -402,6 +402,8 @@ fn pending_hints(
                     ("a", "around …"),
                     ("w", "word"),
                     ("b", "back"),
+                    ("}", "paragraph fwd"),
+                    ("{", "paragraph back"),
                     ("$", "line end"),
                     ("0", "line start"),
                     ("h", "left"),
@@ -420,11 +422,15 @@ fn pending_hints(
                 name,
                 vec![
                     ("w", "word"),
+                    ("p", "paragraph"),
                     ("\"", "double-quotes"),
                     ("'", "single-quotes"),
                     ("(", "parens"),
                     ("{", "braces"),
                     ("[", "brackets"),
+                    ("f", "function (ts)"),
+                    ("c", "class (ts)"),
+                    ("a", "argument (ts)"),
                 ],
             )
         }
