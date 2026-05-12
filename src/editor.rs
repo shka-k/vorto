@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::action::MotionKind;
+use crate::action::{MotionKind, Object, Scope};
 
 #[derive(Debug, Default)]
 pub struct Buffer {
@@ -403,6 +403,45 @@ impl Buffer {
         self.dirty = true;
     }
 
+    /// Find the cursor range covered by a text object on the current line.
+    /// Returns `None` if no matching object surrounds (or is to the right
+    /// of) the cursor — caller should report "no match" to the user.
+    ///
+    /// Scope semantics:
+    ///   - `Inner`  → the content *between* the delimiters
+    ///   - `Around` → the content *plus* the delimiters
+    ///
+    /// Currently restricted to the cursor's line — multi-line text
+    /// objects (e.g. `i{` spanning many lines) are out of scope.
+    pub fn text_object_range(&self, scope: Scope, object: Object) -> Option<(Cursor, Cursor)> {
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        let chars: Vec<char> = self.lines[row].chars().collect();
+        let (open, close) = delim(object);
+
+        // Find the matching pair on the line.
+        let (start_col, end_col) = if open == close {
+            // Symmetric (quote-like): the nearest `open` <= col and the next `open` > col.
+            let left = (0..=col).rev().find(|&i| chars.get(i) == Some(&open))?;
+            let right = ((left + 1)..chars.len()).find(|&i| chars[i] == open)?;
+            (left, right)
+        } else {
+            // Asymmetric (bracket-like): track depth so nested pairs match.
+            let left = find_open_left(&chars, col, open, close)?;
+            let right = find_close_right(&chars, left, open, close)?;
+            (left, right)
+        };
+
+        let (from_col, to_col) = match scope {
+            Scope::Inner => (start_col + 1, end_col),
+            Scope::Around => (start_col, end_col + 1),
+        };
+        Some((
+            Cursor { row, col: from_col },
+            Cursor { row, col: to_col },
+        ))
+    }
+
     /// Copy text between two cursors into the yank register.
     pub fn yank_range(&mut self, from: Cursor, to: Cursor) {
         let (from, to) = order(from, to);
@@ -437,6 +476,61 @@ fn order(a: Cursor, b: Cursor) -> (Cursor, Cursor) {
     } else {
         (b, a)
     }
+}
+
+fn delim(object: Object) -> (char, char) {
+    match object {
+        Object::DoubleQuote => ('"', '"'),
+        Object::SingleQuote => ('\'', '\''),
+        Object::Paren => ('(', ')'),
+        Object::Brace => ('{', '}'),
+        Object::Bracket => ('[', ']'),
+        // `iw` (inner word) — not really a delimited object; treat as a
+        // pair of non-existent chars so callers can branch. For now, the
+        // word object isn't matched specially: callers can use
+        // motion_target(WordBack/WordForward) instead.
+        Object::Word => ('\0', '\0'),
+    }
+}
+
+/// Search left (and including) `from` for an unmatched `open`. Tracks
+/// nesting depth so `({foo})` with cursor inside the inner braces sees
+/// the inner `{`, not the outer `(`.
+fn find_open_left(chars: &[char], from: usize, open: char, close: char) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut i = from;
+    loop {
+        let c = chars[i];
+        if c == close {
+            depth += 1;
+        } else if c == open {
+            if depth == 0 {
+                return Some(i);
+            }
+            depth -= 1;
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
+
+/// Search right from after an `open` position for the matching `close`,
+/// honoring nesting.
+fn find_close_right(chars: &[char], open_pos: usize, open: char, close: char) -> Option<usize> {
+    let mut depth: i32 = 0;
+    for (i, &c) in chars.iter().enumerate().skip(open_pos + 1) {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            if depth == 0 {
+                return Some(i);
+            }
+            depth -= 1;
+        }
+    }
+    None
 }
 
 fn char_to_byte(s: &str, char_idx: usize) -> usize {

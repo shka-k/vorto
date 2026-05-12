@@ -386,8 +386,16 @@ impl App {
                 }
                 Ok(())
             }
-            Target::TextObject { .. } => {
-                self.status = Status::error("text objects not implemented yet (Stage 3)");
+            Target::TextObject { scope, object } => {
+                for _ in 0..outer_count {
+                    match self.buffer.text_object_range(scope, object) {
+                        Some((start, end)) => self.apply_op_range(op, start, end),
+                        None => {
+                            self.status = Status::error("no matching object");
+                            break;
+                        }
+                    }
+                }
                 Ok(())
             }
         }
