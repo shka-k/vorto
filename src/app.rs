@@ -262,6 +262,12 @@ impl App {
     // ────────────────────────────────────────────────────────────────────
 
     fn evaluate(&mut self, expr: Expr, ctx: Ctx) -> Result<()> {
+        // Take an undo snapshot before any Expr that's going to change
+        // the buffer (or kick off an Insert-mode session). Pure cursor
+        // moves and yanks intentionally don't snapshot.
+        if Self::expr_modifies_buffer(&expr) {
+            self.buffer.snapshot();
+        }
         match expr {
             Expr::Direct { kind, count } => self.eval_direct(kind, count, ctx),
             Expr::Motion(m) => {
@@ -273,6 +279,22 @@ impl App {
                 target,
                 outer_count,
             } => self.eval_op(op, target, outer_count),
+        }
+    }
+
+    fn expr_modifies_buffer(expr: &Expr) -> bool {
+        use DirectKind as D;
+        match expr {
+            Expr::Direct { kind, .. } => matches!(
+                kind,
+                D::OpenLineBelow
+                    | D::OpenLineAbove
+                    | D::Paste
+                    | D::DeleteCharUnderCursor
+                    | D::EnterMode(Mode::Insert)
+            ),
+            Expr::Motion(_) => false,
+            Expr::Op { op, .. } => !matches!(op, Operator::Yank),
         }
     }
 
@@ -295,7 +317,14 @@ impl App {
                 }
             }
             D::Undo => {
-                self.status = Status::error("undo not implemented yet");
+                if !self.buffer.undo() {
+                    self.status = Status::error("already at oldest change");
+                }
+            }
+            D::Redo => {
+                if !self.buffer.redo() {
+                    self.status = Status::error("already at newest change");
+                }
             }
             D::DeleteCharUnderCursor => {
                 for _ in 0..count {

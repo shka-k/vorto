@@ -95,6 +95,15 @@ pub fn tokenize(prev: &[Token], mode: Mode, key: KeyEvent) -> Option<Token> {
 }
 
 fn tokenize_normal(ctx: Ctx, prev: &[Token], key: KeyEvent) -> Option<Token> {
+    // Ctrl-r is redo, vim's convention. Works in any context.
+    if key
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('r')
+    {
+        return Some(Token::Direct(DirectKind::Redo));
+    }
+
     let code = key.code;
 
     // Digits: always count-extending if a Count is already in flight,

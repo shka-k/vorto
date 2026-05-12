@@ -12,7 +12,22 @@ pub struct Buffer {
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub yank: String,
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
 }
+
+/// Frozen buffer state for the undo/redo history.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    lines: Vec<String>,
+    cursor: Cursor,
+    dirty: bool,
+}
+
+/// Cap on the undo history so a long editing session doesn't grow without
+/// bound. 200 is enough to be useful and well under any RAM concern for
+/// small/medium files.
+const MAX_UNDO_DEPTH: usize = 200;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
@@ -44,6 +59,8 @@ impl Buffer {
             path: Some(path.to_path_buf()),
             dirty: false,
             yank: String::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         })
     }
 
@@ -256,6 +273,59 @@ impl Buffer {
         self.cursor.row += 1;
         self.cursor.col = 0;
         self.dirty = true;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Undo / redo
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Save the current buffer state to the undo stack and clear redo.
+    /// Callers should invoke this immediately *before* a mutation so the
+    /// stored state represents "what to come back to" on undo.
+    pub fn snapshot(&mut self) {
+        self.undo_stack.push(Snapshot {
+            lines: self.lines.clone(),
+            cursor: self.cursor,
+            dirty: self.dirty,
+        });
+        self.redo_stack.clear();
+        if self.undo_stack.len() > MAX_UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    /// Step back one snapshot. Returns false when the undo stack is empty.
+    pub fn undo(&mut self) -> bool {
+        let Some(prev) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.redo_stack.push(Snapshot {
+            lines: self.lines.clone(),
+            cursor: self.cursor,
+            dirty: self.dirty,
+        });
+        self.lines = prev.lines;
+        self.cursor = prev.cursor;
+        self.dirty = prev.dirty;
+        self.clamp_col(false);
+        true
+    }
+
+    /// Step forward through redo history. Returns false when empty.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.undo_stack.push(Snapshot {
+            lines: self.lines.clone(),
+            cursor: self.cursor,
+            dirty: self.dirty,
+        });
+        self.lines = next.lines;
+        self.cursor = next.cursor;
+        self.dirty = next.dirty;
+        self.clamp_col(false);
+        true
     }
 
     // ────────────────────────────────────────────────────────────────────

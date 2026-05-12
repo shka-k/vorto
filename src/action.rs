@@ -82,6 +82,7 @@ pub enum DirectKind {
     OpenLineAbove,
     Paste,
     Undo,
+    Redo,
     DeleteCharUnderCursor,
     Quit,
     QuitForce,
