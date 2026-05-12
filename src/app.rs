@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -9,7 +10,9 @@ use crate::action::{
 use crate::config::CursorShapes;
 use crate::editor::{Buffer, Cursor};
 use crate::fuzzy::{Finder, FuzzyKind};
+use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
+use crate::languages::Language;
 use crate::mode::Mode;
 use crate::search::SearchState;
 
@@ -68,6 +71,14 @@ pub struct App {
     /// Anchor cursor for visual modes — the position the selection was
     /// started from. `None` outside of any visual mode.
     pub visual_anchor: Option<Cursor>,
+    /// Tree-sitter grammar loader. Lives for the whole program so the
+    /// loaded `Language` pointers stay valid.
+    pub loader: Loader,
+    /// Resolved language registry (built-in defaults overlaid with
+    /// `[languages.<name>]` from the user's config).
+    pub languages: HashMap<String, Language>,
+    /// `ext -> language name` lookup, built once from `languages`.
+    pub extension_index: HashMap<String, String>,
     pub should_quit: bool,
 }
 
@@ -89,7 +100,12 @@ pub enum Selection {
 }
 
 impl App {
-    pub fn with_keymap(keymap: Keymap) -> Self {
+    pub fn new(
+        keymap: Keymap,
+        loader: Loader,
+        languages: HashMap<String, Language>,
+        extension_index: HashMap<String, String>,
+    ) -> Self {
         Self {
             buffer: Buffer::new(),
             mode: Mode::Normal,
@@ -100,6 +116,9 @@ impl App {
             keymap,
             cursor_shapes: CursorShapes::default(),
             visual_anchor: None,
+            loader,
+            languages,
+            extension_index,
             should_quit: false,
         }
     }
@@ -134,8 +153,38 @@ impl App {
 
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
         self.buffer = Buffer::load(path)?;
+        self.attach_highlighter();
         self.status = Status::info(format!("opened {}", path.display()));
         Ok(())
+    }
+
+    /// Look up a language for the current buffer's file extension and,
+    /// when one matches, attach a fresh [`Highlighter`]. Failures are
+    /// surfaced as a non-fatal status message; the buffer keeps working
+    /// without syntax highlighting.
+    fn attach_highlighter(&mut self) {
+        self.buffer.highlighter = None;
+        let ext = self
+            .buffer
+            .path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        let Some(ext) = ext else { return };
+        let Some(name) = self.extension_index.get(&ext).cloned() else {
+            return;
+        };
+        let Some(spec) = self.languages.get(&name).cloned() else {
+            return;
+        };
+        match self.loader.highlighter_for(&spec) {
+            Ok(h) => self.buffer.highlighter = Some(h),
+            Err(e) => {
+                self.status =
+                    Status::error(format!("highlight ({}): {}", name, root_cause(&e)));
+            }
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -706,6 +755,13 @@ impl CommandBind {
     pub fn find(name: &str) -> Option<&'static CommandBind> {
         COMMAND_BINDS.iter().find(|b| b.name == name)
     }
+}
+
+/// Walk an anyhow error chain to its innermost cause — keeps the
+/// status-bar message focused on the actual filesystem / parser error
+/// rather than the wrapping context.
+fn root_cause(e: &anyhow::Error) -> String {
+    e.chain().last().map(|x| x.to_string()).unwrap_or_else(|| e.to_string())
 }
 
 pub const COMMAND_BINDS: &[CommandBind] = &[

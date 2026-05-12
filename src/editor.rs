@@ -4,14 +4,22 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::action::{MotionKind, Object, Scope};
+use crate::highlight::Highlighter;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Buffer {
     pub lines: Vec<String>,
     pub cursor: Cursor,
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub yank: String,
+    /// Monotonically increases on every content-modifying call. Used by
+    /// the highlighter to decide whether its cached tree is stale.
+    pub version: u64,
+    /// Per-buffer tree-sitter state, attached at file-open time when a
+    /// matching grammar + query are available. `None` means "no syntax
+    /// highlighting for this buffer", which is the safe fallback.
+    pub highlighter: Option<Highlighter>,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
 }
@@ -59,6 +67,8 @@ impl Buffer {
             path: Some(path.to_path_buf()),
             dirty: false,
             yank: String::new(),
+            version: 0,
+            highlighter: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })
@@ -75,6 +85,25 @@ impl Buffer {
     pub fn save_as(&mut self, path: &Path) -> Result<()> {
         self.path = Some(path.to_path_buf());
         self.save()
+    }
+
+    /// Mark the buffer dirty and bump the version counter. Every
+    /// content-mutating call funnels through here so the highlighter
+    /// can detect staleness with a single integer compare.
+    fn touch(&mut self) {
+        self.dirty = true;
+        self.version = self.version.wrapping_add(1);
+    }
+
+    /// Run the attached highlighter against the current buffer text if
+    /// the cached parse is older than the buffer version. No-op when
+    /// no highlighter is attached.
+    pub fn refresh_highlights(&mut self) {
+        let Some(h) = self.highlighter.as_mut() else {
+            return;
+        };
+        let source = self.lines.join("\n");
+        h.refresh(&source, self.version);
     }
 
     pub fn current_line(&self) -> &str {
@@ -192,7 +221,7 @@ impl Buffer {
         let byte_idx = char_to_byte(line, self.cursor.col);
         line.insert(byte_idx, c);
         self.cursor.col += 1;
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn insert_newline(&mut self) {
@@ -203,20 +232,20 @@ impl Buffer {
         self.lines.insert(self.cursor.row + 1, right.to_string());
         self.cursor.row += 1;
         self.cursor.col = 0;
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn insert_line_below(&mut self) {
         self.lines.insert(self.cursor.row + 1, String::new());
         self.cursor.row += 1;
         self.cursor.col = 0;
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn insert_line_above(&mut self) {
         self.lines.insert(self.cursor.row, String::new());
         self.cursor.col = 0;
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn delete_char_under_cursor(&mut self) {
@@ -225,7 +254,7 @@ impl Buffer {
             let byte_idx = char_to_byte(line, self.cursor.col);
             let ch = line[byte_idx..].chars().next().unwrap();
             line.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
-            self.dirty = true;
+            self.touch();
             self.clamp_col(false);
         }
     }
@@ -237,13 +266,13 @@ impl Buffer {
             let ch = line[byte_idx..].chars().next().unwrap();
             line.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
             self.cursor.col -= 1;
-            self.dirty = true;
+            self.touch();
         } else if self.cursor.row > 0 {
             let line = self.lines.remove(self.cursor.row);
             self.cursor.row -= 1;
             self.cursor.col = self.current_line_len();
             self.lines[self.cursor.row].push_str(&line);
-            self.dirty = true;
+            self.touch();
         }
     }
 
@@ -258,7 +287,7 @@ impl Buffer {
             }
         }
         self.clamp_col(false);
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn yank_line(&mut self) {
@@ -272,7 +301,7 @@ impl Buffer {
         self.lines.insert(self.cursor.row + 1, self.yank.clone());
         self.cursor.row += 1;
         self.cursor.col = 0;
-        self.dirty = true;
+        self.touch();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -307,6 +336,7 @@ impl Buffer {
         self.lines = prev.lines;
         self.cursor = prev.cursor;
         self.dirty = prev.dirty;
+        self.version = self.version.wrapping_add(1);
         self.clamp_col(false);
         true
     }
@@ -324,6 +354,7 @@ impl Buffer {
         self.lines = next.lines;
         self.cursor = next.cursor;
         self.dirty = next.dirty;
+        self.version = self.version.wrapping_add(1);
         self.clamp_col(false);
         true
     }
@@ -470,7 +501,7 @@ impl Buffer {
         }
         self.cursor = from;
         self.clamp_col(false);
-        self.dirty = true;
+        self.touch();
     }
 
     /// Find the cursor range covered by a text object on the current line.
@@ -532,7 +563,7 @@ impl Buffer {
         }
         self.cursor.col = 0;
         self.clamp_col(false);
-        self.dirty = true;
+        self.touch();
     }
 
     /// Yank a column rectangle `[r0..=r1] × [c0..=c1]` into the yank
@@ -580,7 +611,7 @@ impl Buffer {
         self.cursor.row = r0;
         self.cursor.col = c0;
         self.clamp_col(false);
-        self.dirty = true;
+        self.touch();
     }
 
     /// Cursor one position past `c` (next char on the line, or first

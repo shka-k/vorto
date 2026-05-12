@@ -3,9 +3,12 @@ mod app;
 mod config;
 mod editor;
 mod fuzzy;
+mod highlight;
 mod keymap;
+mod languages;
 mod mode;
 mod search;
+mod theme;
 mod ui;
 
 use std::io::{self, Stdout, Write};
@@ -36,7 +39,11 @@ fn main() -> Result<()> {
     let cfg = config::load_or_default(cfg_path.as_deref())?;
     config::apply(&cfg, &mut keymap)?;
 
-    let mut app = App::with_keymap(keymap);
+    let languages = languages::resolve(cfg.languages.clone());
+    let extension_index = languages::build_extension_index(&languages);
+    let loader = highlight::Loader::new(config::grammar_dir(&cfg), config::query_dir(&cfg));
+
+    let mut app = App::new(keymap, loader, languages, extension_index);
     app.cursor_shapes = config::resolve_cursor_shapes(&cfg.cursor)?;
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;
@@ -57,6 +64,7 @@ fn main() -> Result<()> {
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let mut last_shape: Option<CursorShape> = None;
     while !app.should_quit {
+        app.buffer.refresh_highlights();
         terminal.draw(|f| ui::draw(f, app))?;
         let shape = app.cursor_shapes.for_mode(app.mode);
         if last_shape != Some(shape) {

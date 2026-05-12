@@ -25,6 +25,7 @@ use serde::Deserialize;
 use crate::action::{DirectKind, MotionKind, Operator, PromptKind, Token};
 use crate::fuzzy::FuzzyKind;
 use crate::keymap::{KeySig, Keymap, LEADER};
+use crate::languages::LanguageConfig;
 use crate::mode::Mode;
 
 // ────────────────────────────────────────────────────────────────────────
@@ -37,6 +38,44 @@ pub struct Config {
     pub bind: Vec<Binding>,
     #[serde(default)]
     pub cursor: CursorConfig,
+    /// `[languages.<name>]` blocks. Resolved against built-in defaults
+    /// at startup — see `languages::resolve`.
+    #[serde(default)]
+    pub languages: std::collections::HashMap<String, LanguageConfig>,
+    /// Directory holding `<grammar>.{so,dylib,dll}`. Defaults to
+    /// `<config>/grammars`.
+    pub grammar_dir: Option<String>,
+    /// Directory holding `<lang>/highlights.scm`. Defaults to
+    /// `<config>/queries`.
+    pub query_dir: Option<String>,
+}
+
+/// Resolve `grammar_dir` to an absolute path, falling back to
+/// `<config>/grammars` when the user hasn't set one.
+pub fn grammar_dir(c: &Config) -> PathBuf {
+    c.grammar_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_subdir("grammars"))
+}
+
+/// Resolve `query_dir` to an absolute path, falling back to
+/// `<config>/queries`.
+pub fn query_dir(c: &Config) -> PathBuf {
+    c.query_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_subdir("queries"))
+}
+
+fn default_subdir(name: &str) -> PathBuf {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("vorto").join(name);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".config/vorto").join(name);
+    }
+    PathBuf::from(name)
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,6 +466,25 @@ normal = "diamond"
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
         assert!(resolve_cursor_shapes(&cfg.cursor).is_err());
+    }
+
+    #[test]
+    fn parse_languages_table() {
+        let toml = r#"
+[languages.rust]
+extensions = ["rs", "rlib"]
+
+[languages.fish]
+extensions = ["fish"]
+grammar = "fish-shell"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.languages.len(), 2);
+        assert_eq!(
+            cfg.languages["rust"].extensions.as_deref(),
+            Some(&["rs".to_string(), "rlib".to_string()][..])
+        );
+        assert_eq!(cfg.languages["fish"].grammar.as_deref(), Some("fish-shell"));
     }
 
     #[test]

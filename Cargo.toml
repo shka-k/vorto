@@ -9,3 +9,5 @@ crossterm = "0.28"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+tree-sitter = "0.26"
+libloading = "0.8"

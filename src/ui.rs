@@ -7,7 +7,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph
 use crate::action::{Operator, Token};
 use crate::app::{App, COMMAND_BINDS, Prompt, Selection};
 use crate::fuzzy::{Finder, FuzzyKind};
+use crate::highlight::Capture;
 use crate::mode::Mode;
+use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -123,6 +125,14 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
 
     let sel = app.selection();
+    let last_visible = scroll + height;
+    let captures = app
+        .buffer
+        .highlighter
+        .as_ref()
+        .map(|h| h.captures_in_rows(scroll, last_visible))
+        .unwrap_or_default();
+
     let visible: Vec<Line> = app
         .buffer
         .lines
@@ -133,7 +143,7 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, line)| {
             let num = format!("{:>4} ", i + 1);
             let mut spans = vec![Span::styled(num, Style::default().fg(Color::DarkGray))];
-            spans.extend(render_line(i, line, sel.as_ref()));
+            spans.extend(render_line(i, line, sel.as_ref(), &captures));
             Line::from(spans)
         })
         .collect();
@@ -156,14 +166,20 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
 /// both dark and light terminals.
 const SEL_BG: Color = Color::Rgb(58, 78, 122);
 
-/// Render one buffer line, splitting it into selected/unselected spans.
-/// `row` is the line's index in the buffer; `sel` is the live visual
-/// selection (if any). Empty lines that are fully covered by the
-/// selection still get a one-cell highlight so the user sees them.
-fn render_line(row: usize, line: &str, sel: Option<&Selection>) -> Vec<Span<'static>> {
-    let plain = Style::default();
-    let hl = Style::default().bg(SEL_BG);
-
+/// Render one buffer line, layering syntax-highlight captures
+/// (foreground) underneath the visual-selection background. Spans
+/// group consecutive characters that share the same resolved style so
+/// the terminal sees as few escape changes as possible.
+///
+/// `captures` is the row-range slice produced by the highlighter for
+/// the visible window; we filter per row internally rather than
+/// re-extracting per call.
+fn render_line(
+    row: usize,
+    line: &str,
+    sel: Option<&Selection>,
+    captures: &[Capture],
+) -> Vec<Span<'static>> {
     let is_selected = |col: usize| -> bool {
         let Some(sel) = sel else { return false };
         match *sel {
@@ -187,36 +203,58 @@ fn render_line(row: usize, line: &str, sel: Option<&Selection>) -> Vec<Span<'sta
 
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
-        // Empty line — still surface a marker when the selection covers
-        // this row (line-wise, or charwise that wraps through it).
-        if is_selected(0)
-            && matches!(
-                sel,
-                Some(Selection::Line { .. })
-                    | Some(Selection::Char { .. })
-                    | Some(Selection::Block { .. })
-            )
-        {
-            return vec![Span::styled(" ".to_string(), hl)];
+        if is_selected(0) {
+            return vec![Span::styled(" ".to_string(), Style::default().bg(SEL_BG))];
         }
         return Vec::new();
     }
 
+    // Build the per-character base (highlight) style. Captures are
+    // sorted in document order; later-arriving captures overwrite
+    // earlier ones for the same character, matching the convention
+    // that more-specific rules appear later in `highlights.scm`.
+    let mut base: Vec<Style> = vec![Style::default(); chars.len()];
+    for cap in captures {
+        if cap.end_row < row || cap.start_row > row {
+            continue;
+        }
+        let lo = if cap.start_row == row { cap.start_col } else { 0 };
+        let hi = if cap.end_row == row {
+            cap.end_col.min(chars.len())
+        } else {
+            chars.len()
+        };
+        if lo >= hi {
+            continue;
+        }
+        let style = theme::style_for(&cap.name);
+        for slot in base.iter_mut().take(hi).skip(lo) {
+            *slot = style;
+        }
+    }
+
+    // Overlay the visual-selection background per char.
+    let style_at = |col: usize| -> Style {
+        let mut s = base[col];
+        if is_selected(col) {
+            s = s.bg(SEL_BG);
+        }
+        s
+    };
+
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut buf_sel = is_selected(0);
+    let mut buf_style = style_at(0);
     for (col, &c) in chars.iter().enumerate() {
-        let s = is_selected(col);
-        if s != buf_sel && !buf.is_empty() {
-            let style = if buf_sel { hl } else { plain };
-            spans.push(Span::styled(std::mem::take(&mut buf), style));
-            buf_sel = s;
+        let s = style_at(col);
+        if s != buf_style && !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+            buf_style = s;
         }
         buf.push(c);
     }
     if !buf.is_empty() {
-        let style = if buf_sel { hl } else { plain };
-        spans.push(Span::styled(buf, style));
+        spans.push(Span::styled(buf, buf_style));
     }
     spans
 }

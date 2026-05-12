@@ -1,0 +1,226 @@
+//! Language registry.
+//!
+//! Per-language configuration (extensions, grammar, query paths) is
+//! seeded from built-in Rust defaults and then overlaid with whatever
+//! `[languages.<name>]` tables the user supplies in `config.toml`.
+//!
+//! Overlay rule (field-level): a user-supplied `Some(_)` field replaces
+//! the default; `None` (= unset) leaves the default in place. Subtables
+//! — when we add them later (LSP, formatter) — are replaced whole, not
+//! deep-merged.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use serde::Deserialize;
+
+/// Raw, partially-filled language entry as it appears in TOML or in the
+/// built-in defaults table. Every field is `Option<T>` so the overlay
+/// step can distinguish "user wrote nothing" from a meaningful empty
+/// value. Resolves into [`Language`] after merging.
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct LanguageConfig {
+    pub extensions: Option<Vec<String>>,
+    /// Grammar filename stem (without the `.so` / `.dylib` / `.dll`
+    /// extension). Defaults to the language name itself.
+    pub grammar: Option<String>,
+    /// Override directory for `<grammar>.{so,dylib,dll}` — overrides the
+    /// global grammar dir for just this language.
+    pub grammar_dir: Option<PathBuf>,
+    /// Override directory for `<lang>/highlights.scm` — overrides the
+    /// global query dir for just this language.
+    pub query_dir: Option<PathBuf>,
+}
+
+impl LanguageConfig {
+    /// Overlay `user` onto `self`. Any `Some` field in `user` wins; the
+    /// rest of `self` survives.
+    pub fn overlay(&mut self, user: LanguageConfig) {
+        if user.extensions.is_some() {
+            self.extensions = user.extensions;
+        }
+        if user.grammar.is_some() {
+            self.grammar = user.grammar;
+        }
+        if user.grammar_dir.is_some() {
+            self.grammar_dir = user.grammar_dir;
+        }
+        if user.query_dir.is_some() {
+            self.query_dir = user.query_dir;
+        }
+    }
+}
+
+/// Fully-resolved language record after `resolve()` has merged user
+/// config over built-ins. This is what the runtime works with.
+#[derive(Debug, Clone)]
+pub struct Language {
+    pub name: String,
+    pub extensions: Vec<String>,
+    pub grammar: String,
+    pub grammar_dir: Option<PathBuf>,
+    pub query_dir: Option<PathBuf>,
+}
+
+impl Language {
+    fn from_config(name: &str, c: LanguageConfig) -> Self {
+        Self {
+            name: name.to_string(),
+            extensions: c.extensions.unwrap_or_default(),
+            grammar: c.grammar.unwrap_or_else(|| name.to_string()),
+            grammar_dir: c.grammar_dir,
+            query_dir: c.query_dir,
+        }
+    }
+}
+
+/// Built-in defaults. To support a new language out-of-the-box, add it
+/// here. Users can still override every field via `[languages.<name>]`
+/// in their config, and they can add entirely new languages with the
+/// same syntax.
+pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
+    let mut m = HashMap::new();
+    m.insert(
+        "rust".into(),
+        LanguageConfig {
+            extensions: Some(vec!["rs".into()]),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "python".into(),
+        LanguageConfig {
+            extensions: Some(vec!["py".into()]),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "toml".into(),
+        LanguageConfig {
+            extensions: Some(vec!["toml".into()]),
+            ..Default::default()
+        },
+    );
+    m
+}
+
+/// Merge user TOML over built-in defaults and turn each entry into a
+/// resolved [`Language`]. User-defined languages absent from the
+/// defaults are added as new entries.
+pub fn resolve(user: HashMap<String, LanguageConfig>) -> HashMap<String, Language> {
+    let mut merged = builtin_languages();
+    for (name, user_lang) in user {
+        merged
+            .entry(name)
+            .and_modify(|d| d.overlay(user_lang.clone()))
+            .or_insert(user_lang);
+    }
+    merged
+        .into_iter()
+        .map(|(name, cfg)| {
+            let lang = Language::from_config(&name, cfg);
+            (name, lang)
+        })
+        .collect()
+}
+
+/// Build an `extension → language name` lookup index. The mapping is
+/// many-to-one (multiple extensions can resolve to the same language).
+/// Last-wins on collisions; collisions across languages should be rare
+/// enough that we don't bother surfacing them.
+pub fn build_extension_index(langs: &HashMap<String, Language>) -> HashMap<String, String> {
+    let mut idx = HashMap::new();
+    for (name, lang) in langs {
+        for ext in &lang.extensions {
+            idx.insert(ext.clone(), name.clone());
+        }
+    }
+    idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtins_include_rust() {
+        let m = builtin_languages();
+        assert!(m.contains_key("rust"));
+        assert_eq!(
+            m["rust"].extensions.as_ref().map(|v| v.as_slice()),
+            Some(&["rs".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn overlay_replaces_only_provided_fields() {
+        let mut base = LanguageConfig {
+            extensions: Some(vec!["rs".into()]),
+            grammar: Some("rust".into()),
+            ..Default::default()
+        };
+        let user = LanguageConfig {
+            grammar: Some("rust-tree-sitter".into()),
+            ..Default::default()
+        };
+        base.overlay(user);
+        // grammar overridden
+        assert_eq!(base.grammar.as_deref(), Some("rust-tree-sitter"));
+        // extensions survived
+        assert_eq!(base.extensions.as_deref(), Some(&["rs".to_string()][..]));
+    }
+
+    #[test]
+    fn resolve_adds_user_only_language() {
+        let mut user = HashMap::new();
+        user.insert(
+            "fish".into(),
+            LanguageConfig {
+                extensions: Some(vec!["fish".into()]),
+                ..Default::default()
+            },
+        );
+        let langs = resolve(user);
+        assert!(langs.contains_key("fish"));
+        assert_eq!(langs["fish"].grammar, "fish"); // grammar defaults to name
+    }
+
+    #[test]
+    fn resolve_user_overrides_default_extensions() {
+        let mut user = HashMap::new();
+        user.insert(
+            "rust".into(),
+            LanguageConfig {
+                extensions: Some(vec!["rs".into(), "rlib".into()]),
+                ..Default::default()
+            },
+        );
+        let langs = resolve(user);
+        assert_eq!(langs["rust"].extensions, vec!["rs", "rlib"]);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_default_when_user_omits_field() {
+        let mut user = HashMap::new();
+        user.insert(
+            "rust".into(),
+            LanguageConfig {
+                grammar: Some("rust-custom".into()),
+                ..Default::default()
+            },
+        );
+        let langs = resolve(user);
+        // grammar overridden
+        assert_eq!(langs["rust"].grammar, "rust-custom");
+        // extensions fell back to default
+        assert_eq!(langs["rust"].extensions, vec!["rs"]);
+    }
+
+    #[test]
+    fn extension_index_routes_to_language_name() {
+        let langs = resolve(HashMap::new());
+        let idx = build_extension_index(&langs);
+        assert_eq!(idx.get("rs"), Some(&"rust".to_string()));
+        assert_eq!(idx.get("py"), Some(&"python".to_string()));
+    }
+}
