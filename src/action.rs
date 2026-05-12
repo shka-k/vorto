@@ -106,10 +106,7 @@ pub enum PromptKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Standalone action, optionally repeated (e.g. `5p` could be "5 pastes").
-    Direct {
-        kind: DirectKind,
-        count: u32,
-    },
+    Direct { kind: DirectKind, count: u32 },
     /// Cursor movement only — no operator wrapping it.
     Motion(MotionExpr),
     /// Operator applied to a target.

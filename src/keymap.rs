@@ -202,13 +202,10 @@ fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
     use MotionKind as M;
 
     // The most recent Op token is the one we're following.
-    let pending_op = prev
-        .iter()
-        .rev()
-        .find_map(|t| match t {
-            Token::Op(o) => Some(*o),
-            _ => None,
-        })?;
+    let pending_op = prev.iter().rev().find_map(|t| match t {
+        Token::Op(o) => Some(*o),
+        _ => None,
+    })?;
 
     // Operator key pressed again: SelfDouble (dd, yy, cc).
     let same_key = matches!(
@@ -373,11 +370,11 @@ fn is_valid_prefix(tokens: &[Token]) -> bool {
     // Strip leading counts — they're transparent to validity.
     let (_, rest) = take_count(tokens);
     match rest {
-        [] => true,                              // just counts so far
-        [LeaderPrefix] => true,                  // <space> waiting for follower
-        [GotoPrefix] => true,                    // g waiting for the second g
-        [Op(_)] => true,                         // d / y / c waiting
-        [Op(_), Scope(_)] => true,               // di waiting for an object
+        [] => true,                // just counts so far
+        [LeaderPrefix] => true,    // <space> waiting for follower
+        [GotoPrefix] => true,      // g waiting for the second g
+        [Op(_)] => true,           // d / y / c waiting
+        [Op(_), Scope(_)] => true, // di waiting for an object
         [Op(_), Count(_), ..] => {
             // After Op + inner counts, only Scope (heading for text object)
             // is a continuation we can still extend.

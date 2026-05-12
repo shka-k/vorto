@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token};
+use crate::action::{
+    Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token,
+};
 use crate::editor::Buffer;
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::keymap;
@@ -361,14 +363,38 @@ impl App {
         let allow_after = matches!(self.mode, Mode::Insert);
         let n = m.count;
         match m.motion {
-            M::Left => for _ in 0..n { self.buffer.move_left(); },
-            M::Right => for _ in 0..n { self.buffer.move_right(allow_after); },
-            M::Up => for _ in 0..n { self.buffer.move_up(); },
-            M::Down => for _ in 0..n { self.buffer.move_down(); },
+            M::Left => {
+                for _ in 0..n {
+                    self.buffer.move_left();
+                }
+            }
+            M::Right => {
+                for _ in 0..n {
+                    self.buffer.move_right(allow_after);
+                }
+            }
+            M::Up => {
+                for _ in 0..n {
+                    self.buffer.move_up();
+                }
+            }
+            M::Down => {
+                for _ in 0..n {
+                    self.buffer.move_down();
+                }
+            }
             M::LineStart => self.buffer.move_line_start(),
             M::LineEnd => self.buffer.move_line_end(),
-            M::WordForward => for _ in 0..n { self.buffer.move_word_forward(); },
-            M::WordBack => for _ in 0..n { self.buffer.move_word_backward(); },
+            M::WordForward => {
+                for _ in 0..n {
+                    self.buffer.move_word_forward();
+                }
+            }
+            M::WordBack => {
+                for _ in 0..n {
+                    self.buffer.move_word_backward();
+                }
+            }
             // `gg` with no count goes to line 1; `5gg` to line 5.
             M::FileStart => {
                 if n > 1 {
@@ -385,8 +411,16 @@ impl App {
                     self.buffer.move_file_end();
                 }
             }
-            M::SearchNext => for _ in 0..n { self.jump_search(self.search.last_forward); },
-            M::SearchPrev => for _ in 0..n { self.jump_search(!self.search.last_forward); },
+            M::SearchNext => {
+                for _ in 0..n {
+                    self.jump_search(self.search.last_forward);
+                }
+            }
+            M::SearchPrev => {
+                for _ in 0..n {
+                    self.jump_search(!self.search.last_forward);
+                }
+            }
         }
     }
 
@@ -436,7 +470,12 @@ impl App {
 
     /// Apply an operator over the range [start, end). Used by Op + Motion
     /// targets — the motion already produced the endpoint cursor.
-    fn apply_op_range(&mut self, op: Operator, start: crate::editor::Cursor, end: crate::editor::Cursor) {
+    fn apply_op_range(
+        &mut self,
+        op: Operator,
+        start: crate::editor::Cursor,
+        end: crate::editor::Cursor,
+    ) {
         match op {
             Operator::Delete => self.buffer.delete_range(start, end),
             Operator::Yank => {
@@ -527,11 +566,39 @@ impl CommandBind {
 }
 
 pub const COMMAND_BINDS: &[CommandBind] = &[
-    CommandBind { name: "q",    description: "quit",                kind: DirectKind::Quit },
-    CommandBind { name: "q!",   description: "force quit",          kind: DirectKind::QuitForce },
-    CommandBind { name: "w",    description: "save (or :w <path>)", kind: DirectKind::Save },
-    CommandBind { name: "wq",   description: "save & quit",         kind: DirectKind::SaveAndQuit },
-    CommandBind { name: "x",    description: "save & quit",         kind: DirectKind::SaveAndQuit },
-    CommandBind { name: "e",    description: "open <path>",         kind: DirectKind::Open },
-    CommandBind { name: "goto", description: "go to line <n>",      kind: DirectKind::GotoLine },
+    CommandBind {
+        name: "q",
+        description: "quit",
+        kind: DirectKind::Quit,
+    },
+    CommandBind {
+        name: "q!",
+        description: "force quit",
+        kind: DirectKind::QuitForce,
+    },
+    CommandBind {
+        name: "w",
+        description: "save (or :w <path>)",
+        kind: DirectKind::Save,
+    },
+    CommandBind {
+        name: "wq",
+        description: "save & quit",
+        kind: DirectKind::SaveAndQuit,
+    },
+    CommandBind {
+        name: "x",
+        description: "save & quit",
+        kind: DirectKind::SaveAndQuit,
+    },
+    CommandBind {
+        name: "e",
+        description: "open <path>",
+        kind: DirectKind::Open,
+    },
+    CommandBind {
+        name: "goto",
+        description: "go to line <n>",
+        kind: DirectKind::GotoLine,
+    },
 ];

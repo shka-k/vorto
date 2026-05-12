@@ -506,10 +506,7 @@ impl Buffer {
             Scope::Inner => (start_col + 1, end_col),
             Scope::Around => (start_col, end_col + 1),
         };
-        Some((
-            Cursor { row, col: from_col },
-            Cursor { row, col: to_col },
-        ))
+        Some((Cursor { row, col: from_col }, Cursor { row, col: to_col }))
     }
 
     /// Copy text between two cursors into the yank register.
