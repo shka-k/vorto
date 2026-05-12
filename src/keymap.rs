@@ -333,6 +333,10 @@ fn object_token(code: KeyCode) -> Option<Token> {
         KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => Object::Paren,
         KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => Object::Brace,
         KeyCode::Char('[') | KeyCode::Char(']') => Object::Bracket,
+        // Tree-sitter text objects (Helix convention).
+        KeyCode::Char('f') => Object::Function,
+        KeyCode::Char('c') => Object::Class,
+        KeyCode::Char('a') => Object::Parameter,
         _ => return None,
     };
     Some(Token::Object(o))

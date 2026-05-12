@@ -504,17 +504,27 @@ impl Buffer {
         self.touch();
     }
 
-    /// Find the cursor range covered by a text object on the current line.
-    /// Returns `None` if no matching object surrounds (or is to the right
-    /// of) the cursor — caller should report "no match" to the user.
+    /// Find the cursor range covered by a text object.
+    ///
+    /// Two backends, dispatched on `object`:
+    ///
+    /// * **Char-scan** for quote/bracket/word objects: a single-line
+    ///   search using delimiter pairs. Returns `None` if no matching
+    ///   pair surrounds (or is to the right of) the cursor.
+    /// * **Tree-sitter** for syntactic objects (function/class/parameter):
+    ///   queries the attached `Highlighter`'s `textobjects.scm`. Can
+    ///   span multiple lines. Returns `None` when no highlighter is
+    ///   attached, the language has no textobjects query, or no node
+    ///   of the requested kind contains the cursor.
     ///
     /// Scope semantics:
     ///   - `Inner`  → the content *between* the delimiters
     ///   - `Around` → the content *plus* the delimiters
-    ///
-    /// Currently restricted to the cursor's line — multi-line text
-    /// objects (e.g. `i{` spanning many lines) are out of scope.
     pub fn text_object_range(&self, scope: Scope, object: Object) -> Option<(Cursor, Cursor)> {
+        if let Some(target) = ts_target(object, scope) {
+            return self.text_object_range_ts(target);
+        }
+
         let row = self.cursor.row;
         let col = self.cursor.col;
         let chars: Vec<char> = self.lines[row].chars().collect();
@@ -538,6 +548,14 @@ impl Buffer {
             Scope::Around => (start_col, end_col + 1),
         };
         Some((Cursor { row, col: from_col }, Cursor { row, col: to_col }))
+    }
+
+    /// Tree-sitter backed branch of [`text_object_range`]. `target` is
+    /// the textobjects capture name to look up (e.g. `function.inner`).
+    fn text_object_range_ts(&self, target: &str) -> Option<(Cursor, Cursor)> {
+        let h = self.highlighter.as_ref()?;
+        let (sr, sc, er, ec) = h.find_text_object(target, self.cursor.row, self.cursor.col)?;
+        Some((Cursor { row: sr, col: sc }, Cursor { row: er, col: ec }))
     }
 
     /// Yank a run of whole lines (inclusive of both endpoints).
@@ -683,7 +701,25 @@ fn delim(object: Object) -> (char, char) {
         // word object isn't matched specially: callers can use
         // motion_target(WordBack/WordForward) instead.
         Object::Word => ('\0', '\0'),
+        // Syntactic objects are handled via tree-sitter — the
+        // caller should never reach `delim` for these.
+        Object::Function | Object::Class | Object::Parameter => ('\0', '\0'),
     }
+}
+
+/// Map a tree-sitter-backed [`Object`] + [`Scope`] to the capture name
+/// the editor will ask the textobjects query for (e.g. `function.outer`).
+/// Returns `None` for objects handled by the char-scan path.
+fn ts_target(object: Object, scope: Scope) -> Option<&'static str> {
+    Some(match (object, scope) {
+        (Object::Function, Scope::Inner) => "function.inner",
+        (Object::Function, Scope::Around) => "function.outer",
+        (Object::Class, Scope::Inner) => "class.inner",
+        (Object::Class, Scope::Around) => "class.outer",
+        (Object::Parameter, Scope::Inner) => "parameter.inner",
+        (Object::Parameter, Scope::Around) => "parameter.outer",
+        _ => return None,
+    })
 }
 
 /// Search left (and including) `from` for an unmatched `open`. Tracks

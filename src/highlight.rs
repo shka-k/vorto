@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use libloading::{Library, Symbol};
-use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{
+    Language, Parser, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree,
+};
 
 use crate::languages::Language as LangSpec;
 
@@ -52,11 +54,14 @@ impl Loader {
     }
 
     /// Try to build a fresh [`Highlighter`] for `spec`. Loads the
-    /// grammar (cached) and compiles its highlights query.
+    /// grammar (cached), compiles its highlights query, and — if a
+    /// `textobjects.scm` is also present — its text-object query. The
+    /// text-object query is optional; missing files are not an error.
     pub fn highlighter_for(&mut self, spec: &LangSpec) -> Result<Highlighter> {
         let lang = self.load_language(spec)?;
-        let query_src = self.read_query(spec, "highlights")?;
-        Highlighter::new(lang, &query_src)
+        let highlights_src = self.read_query(spec, "highlights")?;
+        let textobjects_src = self.read_query(spec, "textobjects").ok();
+        Highlighter::new(lang, &highlights_src, textobjects_src.as_deref())
     }
 
     /// Resolve `spec.grammar` to a `tree_sitter::Language`, loading the
@@ -124,13 +129,18 @@ fn library_path(dir: &Path, name: &str) -> Result<PathBuf> {
 // Highlighter
 // ────────────────────────────────────────────────────────────────────────
 
-/// Per-buffer state: parser, tree, query, and the source the tree was
-/// built from. Refreshes the tree only when `refresh()` is called with
-/// a version newer than the one already cached, so callers can poke at
-/// it freely from a hot draw loop.
+/// Per-buffer state: parser, tree, queries, and the source the tree
+/// was built from. Refreshes the tree only when `refresh()` is called
+/// with a version newer than the one already cached, so callers can
+/// poke at it freely from a hot draw loop.
 pub struct Highlighter {
     parser: Parser,
     query: Query,
+    /// Optional secondary query for `textobjects.scm`. Drives the
+    /// tree-sitter-aware text objects (`if`/`af` for function, etc.).
+    /// `None` when the language has no textobjects file installed.
+    textobjects: Option<Query>,
+    textobject_capture_names: Vec<String>,
     tree: Option<Tree>,
     source: String,
     parsed_version: Option<u64>,
@@ -138,16 +148,31 @@ pub struct Highlighter {
 }
 
 impl Highlighter {
-    fn new(language: Language, query_src: &str) -> Result<Self> {
+    fn new(
+        language: Language,
+        highlights_src: &str,
+        textobjects_src: Option<&str>,
+    ) -> Result<Self> {
         let mut parser = Parser::new();
         parser
             .set_language(&language)
             .context("setting parser language (ABI mismatch?)")?;
-        let query = Query::new(&language, query_src).context("compiling highlights query")?;
+        let query =
+            Query::new(&language, highlights_src).context("compiling highlights query")?;
         let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let (textobjects, textobject_capture_names) = match textobjects_src {
+            Some(src) => {
+                let q = Query::new(&language, src).context("compiling textobjects query")?;
+                let names = q.capture_names().iter().map(|s| s.to_string()).collect();
+                (Some(q), names)
+            }
+            None => (None, Vec::new()),
+        };
         Ok(Self {
             parser,
             query,
+            textobjects,
+            textobject_capture_names,
             tree: None,
             source: String::new(),
             parsed_version: None,
@@ -210,6 +235,155 @@ impl Highlighter {
         out.sort_by_key(|c| (c.start_row, c.start_col));
         out
     }
+
+    /// Find the smallest text-object range matching `target` (a query
+    /// capture name like `"function.outer"`) that contains the cursor.
+    /// Returns `None` when no `textobjects.scm` is loaded, the tree
+    /// hasn't been built yet, or no match contains the cursor.
+    ///
+    /// Both direct captures and ranges synthesized via the
+    /// `(#make-range! "name" @start @end)` predicate are considered —
+    /// the latter is how `nvim-treesitter-textobjects` defines most
+    /// `.inner` ranges (function/class body excluding braces, etc.).
+    /// Returned coordinates are `(start_row, start_col_chars,
+    /// end_row, end_col_chars)`, with `end` exclusive — ready to feed
+    /// into `Buffer::delete_range` / `yank_range`.
+    pub fn find_text_object(
+        &self,
+        target: &str,
+        cursor_row: usize,
+        cursor_col_chars: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
+        let tree = self.tree.as_ref()?;
+        let query = self.textobjects.as_ref()?;
+
+        // Cursor as a tree-sitter Point: row is line index, column is
+        // byte offset within that line.
+        let cursor_pt = (cursor_row, char_to_byte_col(&self.source, cursor_row, cursor_col_chars));
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_bytes());
+
+        // Best candidate so far, tracked by byte-length so we pick the
+        // innermost. (Multiple matches can contain the cursor when
+        // text objects nest, e.g. inner function inside outer impl.)
+        let mut best: Option<Candidate> = None;
+
+        while let Some(m) = matches.next() {
+            // 1. Direct captures with the target name.
+            for cap in m.captures {
+                let name = self
+                    .textobject_capture_names
+                    .get(cap.index as usize)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if name != target {
+                    continue;
+                }
+                let node = cap.node;
+                consider(
+                    &mut best,
+                    node.start_byte()..node.end_byte(),
+                    point(node.start_position()),
+                    point(node.end_position()),
+                    cursor_pt,
+                );
+            }
+
+            // 2. Ranges synthesized via `#make-range!` predicates on
+            //    this pattern.
+            for pred in query.general_predicates(m.pattern_index) {
+                if pred.operator.as_ref() != "make-range!" {
+                    continue;
+                }
+                let (name, start_idx, end_idx) = match pred.args.as_ref() {
+                    [QueryPredicateArg::String(n), QueryPredicateArg::Capture(s), QueryPredicateArg::Capture(e)] => {
+                        (n.as_ref(), *s, *e)
+                    }
+                    _ => continue,
+                };
+                if name != target {
+                    continue;
+                }
+                // Span = (min start across all `_start` captures) ..
+                //        (max end across all `_end` captures).
+                let mut span_start: Option<tree_sitter::Node> = None;
+                let mut span_end: Option<tree_sitter::Node> = None;
+                for cap in m.captures {
+                    if cap.index == start_idx {
+                        span_start = match span_start {
+                            None => Some(cap.node),
+                            Some(prev) if cap.node.start_byte() < prev.start_byte() => {
+                                Some(cap.node)
+                            }
+                            other => other,
+                        };
+                    }
+                    if cap.index == end_idx {
+                        span_end = match span_end {
+                            None => Some(cap.node),
+                            Some(prev) if cap.node.end_byte() > prev.end_byte() => Some(cap.node),
+                            other => other,
+                        };
+                    }
+                }
+                if let (Some(s), Some(e)) = (span_start, span_end) {
+                    consider(
+                        &mut best,
+                        s.start_byte()..e.end_byte(),
+                        point(s.start_position()),
+                        point(e.end_position()),
+                        cursor_pt,
+                    );
+                }
+            }
+        }
+
+        let c = best?;
+        Some((
+            c.start.0,
+            byte_to_char_col(&self.source, c.start.0, c.start.1),
+            c.end.0,
+            byte_to_char_col(&self.source, c.end.0, c.end.1),
+        ))
+    }
+}
+
+/// Candidate text-object range during the inner search. Keeps both
+/// byte and Point info so we can compare sizes cheaply while still
+/// returning row/col coordinates at the end.
+struct Candidate {
+    bytes: std::ops::Range<usize>,
+    start: (usize, usize),
+    end: (usize, usize),
+}
+
+fn point(p: tree_sitter::Point) -> (usize, usize) {
+    (p.row, p.column)
+}
+
+/// Replace `best` with `range` when it contains the cursor and is
+/// strictly smaller than what's there. "Smaller" is by byte count, so
+/// nested objects (e.g. inner function inside an outer impl) resolve
+/// to the innermost one.
+fn consider(
+    best: &mut Option<Candidate>,
+    bytes: std::ops::Range<usize>,
+    start: (usize, usize),
+    end: (usize, usize),
+    cursor: (usize, usize),
+) {
+    if !(start <= cursor && cursor < end) {
+        return;
+    }
+    let len = bytes.end - bytes.start;
+    let take = match best {
+        None => true,
+        Some(c) => len < c.bytes.end - c.bytes.start,
+    };
+    if take {
+        *best = Some(Candidate { bytes, start, end });
+    }
 }
 
 /// Translate a byte column on `row` into a character column. Tree-sitter
@@ -219,6 +393,16 @@ fn byte_to_char_col(source: &str, row: usize, byte_col: usize) -> usize {
     let line = source.lines().nth(row).unwrap_or("");
     let take = byte_col.min(line.len());
     line[..take].chars().count()
+}
+
+/// Inverse of [`byte_to_char_col`]: given a character column, return
+/// the byte column. Saturates at end-of-line.
+fn char_to_byte_col(source: &str, row: usize, char_col: usize) -> usize {
+    let line = source.lines().nth(row).unwrap_or("");
+    line.char_indices()
+        .nth(char_col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len())
 }
 
 /// One styled range delivered by the query engine. Coordinates are

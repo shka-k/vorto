@@ -72,6 +72,12 @@ pub enum Object {
     Paren,
     Brace,
     Bracket,
+    // Syntactic objects resolved through tree-sitter `textobjects.scm`.
+    // `Inner` / `Around` map to the query capture suffixes `.inner` /
+    // `.outer` respectively.
+    Function,
+    Class,
+    Parameter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
