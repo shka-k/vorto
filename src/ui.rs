@@ -8,6 +8,7 @@ use crate::action::{Operator, Token};
 use crate::app::{App, COMMAND_BINDS, Prompt, Selection};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Capture;
+use crate::keymap::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 use crate::mode::Mode;
 use crate::theme;
 
@@ -379,60 +380,46 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
 /// Hint entries for the current token state. Returns `None` when nothing
 /// useful can be hinted (initial state, or in the middle of a count
 /// without further context).
-fn pending_hints(
-    tokens: &[Token],
-) -> Option<(&'static str, Vec<(&'static str, &'static str)>)> {
+fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'static str)>)> {
     // Find the trailing non-Count token — counts don't change what the
     // hint context is.
     let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)))?;
-    let (name, entries): (&'static str, Vec<(&'static str, &'static str)>) = match last {
-        Token::LeaderPrefix => ("leader", vec![("f", "fuzzy files"), ("l", "fuzzy lines")]),
-        Token::GotoPrefix => ("goto", vec![("g", "goto file start")]),
+    let (name, entries) = match last {
+        Token::LeaderPrefix => (
+            "leader",
+            vec![
+                ("f".to_string(), "fuzzy files"),
+                ("l".to_string(), "fuzzy lines"),
+            ],
+        ),
+        Token::GotoPrefix => ("goto", vec![("g".to_string(), "goto file start")]),
         Token::Op(op) => {
+            // Each operator's repeat-self shortcut (dd/yy/cc) is the only
+            // hint entry that depends on `op`; the rest of the menu is
+            // the static OpPending binding table.
             let (name, self_key, self_label) = match op {
                 Operator::Delete => ("delete", "d", "delete line (dd)"),
                 Operator::Yank => ("yank", "y", "yank line (yy)"),
                 Operator::Change => ("change", "c", "change line (cc)"),
             };
-            (
-                name,
-                vec![
-                    (self_key, self_label),
-                    ("i", "inner …"),
-                    ("a", "around …"),
-                    ("w", "word"),
-                    ("b", "back"),
-                    ("}", "paragraph fwd"),
-                    ("{", "paragraph back"),
-                    ("$", "line end"),
-                    ("0", "line start"),
-                    ("h", "left"),
-                    ("l", "right"),
-                    ("j", "down"),
-                    ("k", "up"),
-                ],
-            )
+            let mut entries = vec![(self_key.to_string(), self_label)];
+            entries.extend(
+                OP_PENDING_BINDINGS
+                    .iter()
+                    .map(|b| (b.display_key(), b.label)),
+            );
+            (name, entries)
         }
         Token::Scope(scope) => {
             let name = match scope {
                 crate::action::Scope::Inner => "inner",
                 crate::action::Scope::Around => "around",
             };
-            (
-                name,
-                vec![
-                    ("w", "word"),
-                    ("p", "paragraph"),
-                    ("\"", "double-quotes"),
-                    ("'", "single-quotes"),
-                    ("(", "parens"),
-                    ("{", "braces"),
-                    ("[", "brackets"),
-                    ("f", "function (ts)"),
-                    ("c", "class (ts)"),
-                    ("a", "argument (ts)"),
-                ],
-            )
+            let entries = OBJECT_BINDINGS
+                .iter()
+                .map(|b| (b.display_key(), b.label))
+                .collect();
+            (name, entries)
         }
         _ => return None,
     };
