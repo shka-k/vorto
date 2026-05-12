@@ -62,7 +62,7 @@ fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
     }
 
     let rows = hints.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
-    let height = rows as u16 + 2 * HINT_PAD_Y;
+    let height = rows as u16 + 2 * HINT_PAD_Y + 2;
 
     let screen = f.area();
     let area = Rect {
@@ -76,7 +76,14 @@ fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
     }
 
     let bg = Style::default().bg(HINT_BG);
+    let title = " commands ";
     let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(bg.fg(Color::DarkGray))
+        .title(Span::styled(
+            title,
+            bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
         .style(bg)
         .padding(Padding::new(HINT_PAD_X, HINT_PAD_X, HINT_PAD_Y, HINT_PAD_Y));
     let inner = block.inner(area);
@@ -206,7 +213,7 @@ const PENDING_HINT_ROWS_MAX: u16 = 12;
 /// stream is mid-sequence. Derives hints by inspecting the trailing
 /// token to figure out which parse context we're in.
 fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
-    let entries = match pending_hints(&app.tokens) {
+    let (name, entries) = match pending_hints(&app.tokens) {
         Some(p) => p,
         None => return,
     };
@@ -215,8 +222,8 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
     }
 
     let rows = (entries.len() as u16).min(PENDING_HINT_ROWS_MAX);
-    let width = PENDING_HINT_WIDTH + 2 * HINT_PAD_X;
-    let height = rows + 2 * HINT_PAD_Y;
+    let width = PENDING_HINT_WIDTH + 2 * HINT_PAD_X + 2;
+    let height = rows + 2 * HINT_PAD_Y + 2;
 
     let screen = f.area();
     let x = screen.width.saturating_sub(width);
@@ -232,7 +239,14 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
     }
 
     let bg = Style::default().bg(HINT_BG);
+    let title = format!(" {} ", name);
     let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(bg.fg(Color::DarkGray))
+        .title(Span::styled(
+            title,
+            bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
         .style(bg)
         .padding(Padding::new(HINT_PAD_X, HINT_PAD_X, HINT_PAD_Y, HINT_PAD_Y));
     let inner = block.inner(area);
@@ -259,44 +273,58 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
 /// Hint entries for the current token state. Returns `None` when nothing
 /// useful can be hinted (initial state, or in the middle of a count
 /// without further context).
-fn pending_hints(tokens: &[Token]) -> Option<Vec<(&'static str, &'static str)>> {
+fn pending_hints(
+    tokens: &[Token],
+) -> Option<(&'static str, Vec<(&'static str, &'static str)>)> {
     // Find the trailing non-Count token — counts don't change what the
     // hint context is.
     let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)))?;
-    let entries: Vec<(&'static str, &'static str)> = match last {
-        Token::LeaderPrefix => vec![("f", "fuzzy files"), ("l", "fuzzy lines")],
-        Token::GotoPrefix => vec![("g", "goto file start")],
+    let (name, entries): (&'static str, Vec<(&'static str, &'static str)>) = match last {
+        Token::LeaderPrefix => ("leader", vec![("f", "fuzzy files"), ("l", "fuzzy lines")]),
+        Token::GotoPrefix => ("goto", vec![("g", "goto file start")]),
         Token::Op(op) => {
-            let (self_key, self_label) = match op {
-                Operator::Delete => ("d", "delete line (dd)"),
-                Operator::Yank => ("y", "yank line (yy)"),
-                Operator::Change => ("c", "change line (cc)"),
+            let (name, self_key, self_label) = match op {
+                Operator::Delete => ("delete", "d", "delete line (dd)"),
+                Operator::Yank => ("yank", "y", "yank line (yy)"),
+                Operator::Change => ("change", "c", "change line (cc)"),
             };
-            vec![
-                (self_key, self_label),
-                ("i", "inner …"),
-                ("a", "around …"),
-                ("w", "word"),
-                ("b", "back"),
-                ("$", "line end"),
-                ("0", "line start"),
-                ("h", "left"),
-                ("l", "right"),
-                ("j", "down"),
-                ("k", "up"),
-            ]
+            (
+                name,
+                vec![
+                    (self_key, self_label),
+                    ("i", "inner …"),
+                    ("a", "around …"),
+                    ("w", "word"),
+                    ("b", "back"),
+                    ("$", "line end"),
+                    ("0", "line start"),
+                    ("h", "left"),
+                    ("l", "right"),
+                    ("j", "down"),
+                    ("k", "up"),
+                ],
+            )
         }
-        Token::Scope(_) => vec![
-            ("w", "word"),
-            ("\"", "double-quotes"),
-            ("'", "single-quotes"),
-            ("(", "parens"),
-            ("{", "braces"),
-            ("[", "brackets"),
-        ],
+        Token::Scope(scope) => {
+            let name = match scope {
+                crate::action::Scope::Inner => "inner",
+                crate::action::Scope::Around => "around",
+            };
+            (
+                name,
+                vec![
+                    ("w", "word"),
+                    ("\"", "double-quotes"),
+                    ("'", "single-quotes"),
+                    ("(", "parens"),
+                    ("{", "braces"),
+                    ("[", "brackets"),
+                ],
+            )
+        }
         _ => return None,
     };
-    Some(entries)
+    Some((name, entries))
 }
 
 /// Render the un-resolved token stream as a short vim-style hint
