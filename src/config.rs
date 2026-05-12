@@ -50,6 +50,8 @@ pub struct CursorConfig {
     pub normal: Option<String>,
     pub insert: Option<String>,
     pub visual: Option<String>,
+    pub visual_line: Option<String>,
+    pub visual_block: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,8 @@ pub struct CursorShapes {
     pub normal: CursorShape,
     pub insert: CursorShape,
     pub visual: CursorShape,
+    pub visual_line: CursorShape,
+    pub visual_block: CursorShape,
 }
 
 impl Default for CursorShapes {
@@ -85,6 +89,8 @@ impl Default for CursorShapes {
             normal: CursorShape::Block,
             insert: CursorShape::Bar,
             visual: CursorShape::Underbar,
+            visual_line: CursorShape::Underbar,
+            visual_block: CursorShape::Underbar,
         }
     }
 }
@@ -95,6 +101,8 @@ impl CursorShapes {
             Mode::Normal => self.normal,
             Mode::Insert => self.insert,
             Mode::Visual => self.visual,
+            Mode::VisualLine => self.visual_line,
+            Mode::VisualBlock => self.visual_block,
         }
     }
 }
@@ -123,6 +131,12 @@ pub fn resolve_cursor_shapes(c: &CursorConfig) -> Result<CursorShapes> {
     }
     if let Some(s) = &c.visual {
         shapes.visual = parse_cursor_shape(s).with_context(|| "cursor.visual")?;
+    }
+    if let Some(s) = &c.visual_line {
+        shapes.visual_line = parse_cursor_shape(s).with_context(|| "cursor.visual_line")?;
+    }
+    if let Some(s) = &c.visual_block {
+        shapes.visual_block = parse_cursor_shape(s).with_context(|| "cursor.visual_block")?;
     }
     Ok(shapes)
 }
@@ -292,6 +306,8 @@ pub fn action_to_token(name: &str) -> Option<Token> {
         "enter-insert" => Direct(D::EnterMode(Mode::Insert)),
         "enter-normal" => Direct(D::EnterMode(Mode::Normal)),
         "enter-visual" => Direct(D::EnterMode(Mode::Visual)),
+        "enter-visual-line" => Direct(D::EnterMode(Mode::VisualLine)),
+        "enter-visual-block" => Direct(D::EnterMode(Mode::VisualBlock)),
         "open-line-below" => Direct(D::OpenLineBelow),
         "open-line-above" => Direct(D::OpenLineAbove),
         "paste" => Direct(D::Paste),

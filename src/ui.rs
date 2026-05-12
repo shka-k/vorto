@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 use crate::action::{Operator, Token};
-use crate::app::{App, COMMAND_BINDS, Prompt};
+use crate::app::{App, COMMAND_BINDS, Prompt, Selection};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::mode::Mode;
 
@@ -122,6 +122,7 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let cursor_row = app.buffer.cursor.row;
     let scroll = cursor_row.saturating_sub(height.saturating_sub(1));
 
+    let sel = app.selection();
     let visible: Vec<Line> = app
         .buffer
         .lines
@@ -131,10 +132,9 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .take(height)
         .map(|(i, line)| {
             let num = format!("{:>4} ", i + 1);
-            Line::from(vec![
-                Span::styled(num, Style::default().fg(Color::DarkGray)),
-                Span::raw(line.clone()),
-            ])
+            let mut spans = vec![Span::styled(num, Style::default().fg(Color::DarkGray))];
+            spans.extend(render_line(i, line, sel.as_ref()));
+            Line::from(spans)
         })
         .collect();
 
@@ -150,6 +150,75 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(title);
     let para = Paragraph::new(visible).block(block);
     f.render_widget(para, area);
+}
+
+/// Color used to paint visually-selected text. Picked to read clearly on
+/// both dark and light terminals.
+const SEL_BG: Color = Color::Rgb(58, 78, 122);
+
+/// Render one buffer line, splitting it into selected/unselected spans.
+/// `row` is the line's index in the buffer; `sel` is the live visual
+/// selection (if any). Empty lines that are fully covered by the
+/// selection still get a one-cell highlight so the user sees them.
+fn render_line(row: usize, line: &str, sel: Option<&Selection>) -> Vec<Span<'static>> {
+    let plain = Style::default();
+    let hl = Style::default().bg(SEL_BG);
+
+    let is_selected = |col: usize| -> bool {
+        let Some(sel) = sel else { return false };
+        match *sel {
+            Selection::Char { from, to } => {
+                if row < from.row || row > to.row {
+                    return false;
+                }
+                let lo = if row == from.row { from.col } else { 0 };
+                if row < to.row {
+                    col >= lo
+                } else {
+                    col >= lo && col <= to.col
+                }
+            }
+            Selection::Line { from_row, to_row } => row >= from_row && row <= to_row,
+            Selection::Block { r0, c0, r1, c1 } => {
+                row >= r0 && row <= r1 && col >= c0 && col <= c1
+            }
+        }
+    };
+
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        // Empty line — still surface a marker when the selection covers
+        // this row (line-wise, or charwise that wraps through it).
+        if is_selected(0)
+            && matches!(
+                sel,
+                Some(Selection::Line { .. })
+                    | Some(Selection::Char { .. })
+                    | Some(Selection::Block { .. })
+            )
+        {
+            return vec![Span::styled(" ".to_string(), hl)];
+        }
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut buf_sel = is_selected(0);
+    for (col, &c) in chars.iter().enumerate() {
+        let s = is_selected(col);
+        if s != buf_sel && !buf.is_empty() {
+            let style = if buf_sel { hl } else { plain };
+            spans.push(Span::styled(std::mem::take(&mut buf), style));
+            buf_sel = s;
+        }
+        buf.push(c);
+    }
+    if !buf.is_empty() {
+        let style = if buf_sel { hl } else { plain };
+        spans.push(Span::styled(buf, style));
+    }
+    spans
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -400,6 +469,8 @@ fn mode_color(mode: Mode) -> Color {
         Mode::Normal => Color::Cyan,
         Mode::Insert => Color::Green,
         Mode::Visual => Color::Magenta,
+        Mode::VisualLine => Color::LightMagenta,
+        Mode::VisualBlock => Color::LightRed,
     }
 }
 

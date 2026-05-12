@@ -509,6 +509,101 @@ impl Buffer {
         Some((Cursor { row, col: from_col }, Cursor { row, col: to_col }))
     }
 
+    /// Yank a run of whole lines (inclusive of both endpoints).
+    pub fn yank_lines(&mut self, from_row: usize, to_row: usize) {
+        let (a, b) = (from_row.min(to_row), from_row.max(to_row));
+        let b = b.min(self.lines.len().saturating_sub(1));
+        self.yank = self.lines[a..=b].join("\n");
+    }
+
+    /// Delete a run of whole lines (inclusive). Also stashes them in
+    /// the yank register, matching vim's `dd` / visual-line `d`.
+    pub fn delete_lines(&mut self, from_row: usize, to_row: usize) {
+        let (a, b) = (from_row.min(to_row), from_row.max(to_row));
+        let b = b.min(self.lines.len().saturating_sub(1));
+        self.yank = self.lines[a..=b].join("\n");
+        if a == 0 && b + 1 >= self.lines.len() {
+            self.lines.clear();
+            self.lines.push(String::new());
+            self.cursor.row = 0;
+        } else {
+            self.lines.drain(a..=b);
+            self.cursor.row = a.min(self.lines.len().saturating_sub(1));
+        }
+        self.cursor.col = 0;
+        self.clamp_col(false);
+        self.dirty = true;
+    }
+
+    /// Yank a column rectangle `[r0..=r1] × [c0..=c1]` into the yank
+    /// register, rows joined by `\n`. Lines shorter than `c1` simply
+    /// contribute their truncated slice.
+    pub fn yank_block(&mut self, r0: usize, c0: usize, r1: usize, c1: usize) {
+        let (r0, r1) = (r0.min(r1), r0.max(r1));
+        let (c0, c1) = (c0.min(c1), c0.max(c1));
+        let r1 = r1.min(self.lines.len().saturating_sub(1));
+        let mut text = String::new();
+        for r in r0..=r1 {
+            if r > r0 {
+                text.push('\n');
+            }
+            let line = &self.lines[r];
+            let chars: Vec<char> = line.chars().collect();
+            let lo = c0.min(chars.len());
+            let hi = (c1 + 1).min(chars.len());
+            if lo < hi {
+                text.extend(&chars[lo..hi]);
+            }
+        }
+        self.yank = text;
+    }
+
+    /// Delete a column rectangle, stashing into yank. Shorter lines are
+    /// trimmed at their end rather than padded.
+    pub fn delete_block(&mut self, r0: usize, c0: usize, r1: usize, c1: usize) {
+        let (r0, r1) = (r0.min(r1), r0.max(r1));
+        let (c0, c1) = (c0.min(c1), c0.max(c1));
+        let r1 = r1.min(self.lines.len().saturating_sub(1));
+        self.yank_block(r0, c0, r1, c1);
+        for r in r0..=r1 {
+            let line = self.lines[r].clone();
+            let nchars = line.chars().count();
+            let lo = c0.min(nchars);
+            let hi = (c1 + 1).min(nchars);
+            if lo >= hi {
+                continue;
+            }
+            let lo_b = char_to_byte(&line, lo);
+            let hi_b = char_to_byte(&line, hi);
+            self.lines[r].replace_range(lo_b..hi_b, "");
+        }
+        self.cursor.row = r0;
+        self.cursor.col = c0;
+        self.clamp_col(false);
+        self.dirty = true;
+    }
+
+    /// Cursor one position past `c` (next char on the line, or first
+    /// column of the next line if at line end). Used to turn an
+    /// inclusive visual endpoint into the exclusive form `delete_range`
+    /// and `yank_range` expect.
+    pub fn advance_one(&self, c: Cursor) -> Cursor {
+        let line_len = self.lines[c.row].chars().count();
+        if c.col < line_len {
+            Cursor {
+                row: c.row,
+                col: c.col + 1,
+            }
+        } else if c.row + 1 < self.lines.len() {
+            Cursor {
+                row: c.row + 1,
+                col: 0,
+            }
+        } else {
+            c
+        }
+    }
+
     /// Copy text between two cursors into the yank register.
     pub fn yank_range(&mut self, from: Cursor, to: Cursor) {
         let (from, to) = order(from, to);

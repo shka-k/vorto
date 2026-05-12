@@ -7,7 +7,7 @@ use crate::action::{
     Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token,
 };
 use crate::config::CursorShapes;
-use crate::editor::Buffer;
+use crate::editor::{Buffer, Cursor};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::keymap::{self, Keymap};
 use crate::mode::Mode;
@@ -65,7 +65,27 @@ pub struct App {
     /// Per-mode cursor shapes (Block/Bar/Underbar) — applied by the main
     /// loop via `SetCursorStyle` after every draw.
     pub cursor_shapes: CursorShapes,
+    /// Anchor cursor for visual modes — the position the selection was
+    /// started from. `None` outside of any visual mode.
+    pub visual_anchor: Option<Cursor>,
     pub should_quit: bool,
+}
+
+/// Resolved visual-mode selection bounds, derived from the anchor and
+/// the cursor according to the current visual sub-mode.
+#[derive(Debug, Clone, Copy)]
+pub enum Selection {
+    /// Character-wise, inclusive of both endpoints (vim semantics).
+    Char { from: Cursor, to: Cursor },
+    /// Whole rows `[from_row..=to_row]`.
+    Line { from_row: usize, to_row: usize },
+    /// Column rectangle `[r0..=r1] × [c0..=c1]`.
+    Block {
+        r0: usize,
+        c0: usize,
+        r1: usize,
+        c1: usize,
+    },
 }
 
 impl App {
@@ -79,8 +99,37 @@ impl App {
             tokens: Vec::new(),
             keymap,
             cursor_shapes: CursorShapes::default(),
+            visual_anchor: None,
             should_quit: false,
         }
+    }
+
+    /// Current selection range, if the editor is in any visual mode and
+    /// an anchor is set. Returns `None` otherwise.
+    pub fn selection(&self) -> Option<Selection> {
+        let anchor = self.visual_anchor?;
+        let cursor = self.buffer.cursor;
+        Some(match self.mode {
+            Mode::Visual => {
+                let (from, to) = if (anchor.row, anchor.col) <= (cursor.row, cursor.col) {
+                    (anchor, cursor)
+                } else {
+                    (cursor, anchor)
+                };
+                Selection::Char { from, to }
+            }
+            Mode::VisualLine => Selection::Line {
+                from_row: anchor.row.min(cursor.row),
+                to_row: anchor.row.max(cursor.row),
+            },
+            Mode::VisualBlock => Selection::Block {
+                r0: anchor.row.min(cursor.row),
+                c0: anchor.col.min(cursor.col),
+                r1: anchor.row.max(cursor.row),
+                c1: anchor.col.max(cursor.col),
+            },
+            _ => return None,
+        })
     }
 
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
@@ -105,7 +154,9 @@ impl App {
         // is where the rich operator/motion/text-object grammar lives.
         match self.mode {
             Mode::Insert => return self.handle_insert_key(key),
-            Mode::Visual => return self.handle_visual_key(key),
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                return self.handle_visual_key(key);
+            }
             Mode::Normal => {}
         }
 
@@ -149,20 +200,95 @@ impl App {
     }
 
     fn handle_visual_key(&mut self, key: KeyEvent) -> Result<()> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.enter_mode(Mode::Normal),
             KeyCode::Char('h') | KeyCode::Left => self.buffer.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.buffer.move_right(false),
             KeyCode::Char('j') | KeyCode::Down => self.buffer.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.buffer.move_up(),
+            KeyCode::Char('w') => self.buffer.move_word_forward(),
+            KeyCode::Char('b') => self.buffer.move_word_backward(),
+            KeyCode::Char('0') | KeyCode::Home => self.buffer.move_line_start(),
+            KeyCode::Char('$') | KeyCode::End => self.buffer.move_line_end(),
+            KeyCode::Char('G') => self.buffer.move_file_end(),
+            // Toggle visual sub-modes: pressing the same trigger again
+            // exits, a different one switches without losing the anchor.
+            KeyCode::Char('v') if !ctrl => self.toggle_visual(Mode::Visual),
+            KeyCode::Char('v') if ctrl => self.toggle_visual(Mode::VisualBlock),
+            KeyCode::Char('V') => self.toggle_visual(Mode::VisualLine),
             KeyCode::Char('y') => {
-                self.buffer.yank_line();
-                self.status = Status::info("yanked");
+                self.apply_visual_op(Operator::Yank);
                 self.enter_mode(Mode::Normal);
+            }
+            KeyCode::Char('d') | KeyCode::Char('x') => {
+                self.buffer.snapshot();
+                self.apply_visual_op(Operator::Delete);
+                self.enter_mode(Mode::Normal);
+            }
+            KeyCode::Char('c') => {
+                self.buffer.snapshot();
+                self.apply_visual_op(Operator::Change);
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn toggle_visual(&mut self, target: Mode) {
+        if self.mode == target {
+            self.enter_mode(Mode::Normal);
+        } else {
+            // Switch sub-mode but keep the anchor — pressing `V` from
+            // charwise visual should extend the selection line-wise.
+            self.mode = target;
+        }
+    }
+
+    fn apply_visual_op(&mut self, op: Operator) {
+        let Some(sel) = self.selection() else { return };
+        match sel {
+            Selection::Char { from, to } => {
+                let end = self.buffer.advance_one(to);
+                match op {
+                    Operator::Yank => {
+                        self.buffer.yank_range(from, end);
+                        self.status = Status::info("yanked");
+                        self.buffer.cursor = from;
+                    }
+                    Operator::Delete => self.buffer.delete_range(from, end),
+                    Operator::Change => {
+                        self.buffer.delete_range(from, end);
+                        self.enter_mode(Mode::Insert);
+                    }
+                }
+            }
+            Selection::Line { from_row, to_row } => match op {
+                Operator::Yank => {
+                    self.buffer.yank_lines(from_row, to_row);
+                    self.status = Status::info("yanked");
+                    self.buffer.cursor.row = from_row;
+                    self.buffer.cursor.col = 0;
+                }
+                Operator::Delete => self.buffer.delete_lines(from_row, to_row),
+                Operator::Change => {
+                    self.buffer.delete_lines(from_row, to_row);
+                    self.enter_mode(Mode::Insert);
+                }
+            },
+            Selection::Block { r0, c0, r1, c1 } => match op {
+                Operator::Yank => {
+                    self.buffer.yank_block(r0, c0, r1, c1);
+                    self.status = Status::info("yanked");
+                    self.buffer.cursor = Cursor { row: r0, col: c0 };
+                }
+                Operator::Delete => self.buffer.delete_block(r0, c0, r1, c1),
+                Operator::Change => {
+                    self.buffer.delete_block(r0, c0, r1, c1);
+                    self.enter_mode(Mode::Insert);
+                }
+            },
+        }
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -539,6 +665,14 @@ impl App {
     }
 
     fn enter_mode(&mut self, mode: Mode) {
+        // Set or clear the visual anchor at the mode boundary. Entering
+        // any visual mode pins the anchor to the current cursor;
+        // entering Normal/Insert drops it.
+        if mode.is_visual() && !self.mode.is_visual() {
+            self.visual_anchor = Some(self.buffer.cursor);
+        } else if !mode.is_visual() {
+            self.visual_anchor = None;
+        }
         if mode == Mode::Normal {
             self.buffer.clamp_col(false);
         }

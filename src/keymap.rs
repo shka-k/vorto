@@ -128,6 +128,7 @@ impl Keymap {
             (KeyCode::Char('i'), Direct(D::EnterMode(Mode::Insert))),
             (KeyCode::Char('a'), Motion(M::Right)), // vim's append: stub
             (KeyCode::Char('v'), Direct(D::EnterMode(Mode::Visual))),
+            (KeyCode::Char('V'), Direct(D::EnterMode(Mode::VisualLine))),
             (KeyCode::Char('o'), Direct(D::OpenLineBelow)),
             (KeyCode::Char('O'), Direct(D::OpenLineAbove)),
             (KeyCode::Char('x'), Direct(D::DeleteCharUnderCursor)),
@@ -148,6 +149,13 @@ impl Keymap {
         for (code, token) in initial {
             self.bind_initial(KeySig::new(code, none), token);
         }
+
+        // Ctrl-V → visual-block. (Plain `v` and `V` are bound above; the
+        // SHIFT modifier on `V` is stripped by `KeySig::new`.)
+        self.bind_initial(
+            KeySig::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            Direct(D::EnterMode(Mode::VisualBlock)),
+        );
 
         let leader = [
             (
