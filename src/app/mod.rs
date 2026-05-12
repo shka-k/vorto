@@ -13,7 +13,7 @@ use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
 use crate::highlight::Loader;
-use crate::keymap::{self, Keymap};
+use crate::keymap::Keymap;
 use crate::languages::Language;
 use crate::lsp::{
     self, Diagnostic, Location, LspCoordinator, LspEvent, LspEventOutcome, WorkspaceEdit,
@@ -420,20 +420,20 @@ impl App {
         }
 
         // Normal mode: tokenize → classify → evaluate.
-        match self.keymap.tokenize(&self.tokens, self.mode, key) {
+        match eval::tokenize(&self.keymap, &self.tokens, self.mode, key) {
             Some(t) => self.tokens.push(t),
             None => {
                 self.tokens.clear();
                 return Ok(());
             }
         }
-        match keymap::classify(&self.tokens) {
-            keymap::Parse::Complete(expr) => {
+        match eval::classify(&self.tokens) {
+            eval::Parse::Complete(expr) => {
                 self.tokens.clear();
                 self.evaluate(expr, Ctx::default())?;
             }
-            keymap::Parse::Incomplete => {}
-            keymap::Parse::Invalid => self.tokens.clear(),
+            eval::Parse::Incomplete => {}
+            eval::Parse::Invalid => self.tokens.clear(),
         }
         Ok(())
     }
