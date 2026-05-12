@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 use crate::action::{Operator, Token};
 use crate::app::{App, COMMAND_BINDS, Prompt};
@@ -39,7 +39,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
 const HINT_MAX: usize = HINT_COLS * HINT_ROWS_MAX;
-const HINT_CELL_WIDTH: u16 = 28;
+/// Slightly darker than ANSI 8 (bright black) — sits clearly behind the
+/// buffer text without being pure black. Approximate `#1e1e1e`.
+const HINT_BG: Color = Color::Rgb(30, 30, 30);
+const HINT_PAD_X: u16 = 1;
+const HINT_PAD_Y: u16 = 1;
 
 fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
     // Once the user types a space they're entering an argument — hints
@@ -58,47 +62,52 @@ fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
     }
 
     let rows = hints.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
-    let width = HINT_CELL_WIDTH * HINT_COLS as u16 + 2;
-    let height = rows as u16 + 2;
+    let height = rows as u16 + 2 * HINT_PAD_Y;
 
-    let max_w = f.area().width.saturating_sub(cmd_area.x);
+    let screen = f.area();
     let area = Rect {
-        x: cmd_area.x,
+        x: 0,
         y: cmd_area.y.saturating_sub(height),
-        width: width.min(max_w),
+        width: screen.width,
         height: height.min(cmd_area.y),
     };
-    if area.height < 3 {
+    if area.height == 0 {
         return;
     }
 
-    f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).title(" commands ");
+    let bg = Style::default().bg(HINT_BG);
+    let block = Block::default()
+        .style(bg)
+        .padding(Padding::new(HINT_PAD_X, HINT_PAD_X, HINT_PAD_Y, HINT_PAD_Y));
     let inner = block.inner(area);
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 
-    let lines: Vec<Line> = (0..rows)
-        .map(|i| {
-            let mut spans = Vec::new();
-            for col in 0..HINT_COLS {
-                let Some(c) = hints.get(col * rows + i) else {
-                    continue;
-                };
-                spans.push(Span::styled(
-                    format!("{:5}", c.name),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    format!(" {:21}", c.description),
-                    Style::default().fg(Color::Gray),
-                ));
-            }
-            Line::from(spans)
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    // Split the inner area into two equal columns. Hints flow column-major
+    // (column 0 takes hints[0..rows], column 1 takes hints[rows..2*rows]).
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+
+    let render_column = |start: usize| -> Vec<Line<'static>> {
+        hints
+            .iter()
+            .skip(start)
+            .take(rows)
+            .map(|c| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:5}", c.name),
+                        bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!(" {}", c.description), bg.fg(Color::Gray)),
+                ])
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(render_column(0)).style(bg), columns[0]);
+    f.render_widget(Paragraph::new(render_column(rows)).style(bg), columns[1]);
 }
 
 fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
@@ -197,7 +206,7 @@ const PENDING_HINT_ROWS_MAX: u16 = 12;
 /// stream is mid-sequence. Derives hints by inspecting the trailing
 /// token to figure out which parse context we're in.
 fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
-    let (title, entries) = match pending_hints(&app.tokens) {
+    let entries = match pending_hints(&app.tokens) {
         Some(p) => p,
         None => return,
     };
@@ -206,8 +215,8 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
     }
 
     let rows = (entries.len() as u16).min(PENDING_HINT_ROWS_MAX);
-    let width = PENDING_HINT_WIDTH;
-    let height = rows + 2;
+    let width = PENDING_HINT_WIDTH + 2 * HINT_PAD_X;
+    let height = rows + 2 * HINT_PAD_Y;
 
     let screen = f.area();
     let x = screen.width.saturating_sub(width);
@@ -218,15 +227,16 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
         width: width.min(screen.width.saturating_sub(x)),
         height: height.min(status_area.y),
     };
-    if area.height < 3 {
+    if area.height == 0 {
         return;
     }
 
-    f.render_widget(Clear, area);
+    let bg = Style::default().bg(HINT_BG);
     let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", title));
+        .style(bg)
+        .padding(Padding::new(HINT_PAD_X, HINT_PAD_X, HINT_PAD_Y, HINT_PAD_Y));
     let inner = block.inner(area);
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 
     let body_rows = inner.height as usize;
@@ -237,25 +247,22 @@ fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
             Line::from(vec![
                 Span::styled(
                     format!("{:>4} ", k),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc.to_string(), Style::default().fg(Color::Gray)),
+                Span::styled(desc.to_string(), bg.fg(Color::Gray)),
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines).style(bg), inner);
 }
 
-/// Compute the hint panel title and entries for the current token state.
-/// Returns `None` when nothing useful can be hinted (initial state, or
-/// in the middle of a count without further context).
-fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(&'static str, &'static str)>)> {
+/// Hint entries for the current token state. Returns `None` when nothing
+/// useful can be hinted (initial state, or in the middle of a count
+/// without further context).
+fn pending_hints(tokens: &[Token]) -> Option<Vec<(&'static str, &'static str)>> {
     // Find the trailing non-Count token — counts don't change what the
     // hint context is.
-    let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)));
-    let last = last?;
+    let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)))?;
     let entries: Vec<(&'static str, &'static str)> = match last {
         Token::LeaderPrefix => vec![("f", "fuzzy files"), ("l", "fuzzy lines")],
         Token::GotoPrefix => vec![("g", "goto file start")],
@@ -289,14 +296,7 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(&'static str, &
         ],
         _ => return None,
     };
-    let title = match last {
-        Token::LeaderPrefix => "leader",
-        Token::GotoPrefix => "goto",
-        Token::Op(_) => "operator",
-        Token::Scope(_) => "object",
-        _ => "",
-    };
-    Some((title, entries))
+    Some(entries)
 }
 
 /// Render the un-resolved token stream as a short vim-style hint
