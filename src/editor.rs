@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::action::MotionKind;
+
 #[derive(Debug, Default)]
 pub struct Buffer {
     pub lines: Vec<String>,
@@ -12,7 +14,7 @@ pub struct Buffer {
     pub yank: String,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
     pub row: usize,
     pub col: usize,
@@ -254,6 +256,186 @@ impl Buffer {
         self.cursor.row += 1;
         self.cursor.col = 0;
         self.dirty = true;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Range-aware motion + edit helpers (for operator + motion: dw, yw, …)
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Where would `motion` (repeated `count` times) land if started from
+    /// `from`? Pure — does not modify cursor state.
+    pub fn motion_target(&self, from: Cursor, motion: MotionKind, count: u32) -> Cursor {
+        let mut c = from;
+        for _ in 0..count.max(1) {
+            c = self.motion_step(c, motion);
+        }
+        c
+    }
+
+    fn motion_step(&self, from: Cursor, motion: MotionKind) -> Cursor {
+        use MotionKind as M;
+        match motion {
+            M::Left => Cursor {
+                row: from.row,
+                col: from.col.saturating_sub(1),
+            },
+            M::Right => {
+                let max = self.lines[from.row].chars().count();
+                let limit = max.saturating_sub(1);
+                Cursor {
+                    row: from.row,
+                    col: (from.col + 1).min(limit),
+                }
+            }
+            M::Up => {
+                let row = from.row.saturating_sub(1);
+                let max = self.lines[row].chars().count();
+                Cursor {
+                    row,
+                    col: from.col.min(max.saturating_sub(1)),
+                }
+            }
+            M::Down => {
+                let row = (from.row + 1).min(self.lines.len().saturating_sub(1));
+                let max = self.lines[row].chars().count();
+                Cursor {
+                    row,
+                    col: from.col.min(max.saturating_sub(1)),
+                }
+            }
+            M::LineStart => Cursor {
+                row: from.row,
+                col: 0,
+            },
+            M::LineEnd => {
+                let max = self.lines[from.row].chars().count();
+                Cursor {
+                    row: from.row,
+                    col: max.saturating_sub(1),
+                }
+            }
+            M::WordForward => self.peek_word_forward(from),
+            M::WordBack => self.peek_word_back(from),
+            M::FileStart => Cursor { row: 0, col: 0 },
+            M::FileEnd => {
+                let last = self.lines.len().saturating_sub(1);
+                let max = self.lines[last].chars().count();
+                Cursor {
+                    row: last,
+                    col: max.saturating_sub(1),
+                }
+            }
+            // Search-relative motions need search state — caller computes
+            // those separately (see App::jump_search).
+            M::SearchNext | M::SearchPrev => from,
+        }
+    }
+
+    fn peek_word_forward(&self, from: Cursor) -> Cursor {
+        let chars: Vec<char> = self.lines[from.row].chars().collect();
+        let mut i = from.col;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() && from.row + 1 < self.lines.len() {
+            Cursor {
+                row: from.row + 1,
+                col: 0,
+            }
+        } else {
+            Cursor {
+                row: from.row,
+                col: i.min(chars.len().saturating_sub(1)),
+            }
+        }
+    }
+
+    fn peek_word_back(&self, from: Cursor) -> Cursor {
+        let chars: Vec<char> = self.lines[from.row].chars().collect();
+        if from.col == 0 {
+            if from.row > 0 {
+                let row = from.row - 1;
+                let col = self.lines[row].chars().count().saturating_sub(1);
+                return Cursor { row, col };
+            }
+            return from;
+        }
+        let mut i = from.col.saturating_sub(1);
+        while i > 0 && chars[i].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        Cursor {
+            row: from.row,
+            col: i,
+        }
+    }
+
+    /// Remove text between two cursors (inclusive of `from`, exclusive of
+    /// `to`). The order of `from`/`to` doesn't matter — they're sorted
+    /// internally. After deletion the cursor lands at the lower endpoint.
+    pub fn delete_range(&mut self, from: Cursor, to: Cursor) {
+        let (from, to) = order(from, to);
+        if from == to {
+            return;
+        }
+        if from.row == to.row {
+            let line = &mut self.lines[from.row];
+            let fb = char_to_byte(line, from.col);
+            let tb = char_to_byte(line, to.col);
+            line.replace_range(fb..tb, "");
+        } else {
+            let from_byte = char_to_byte(&self.lines[from.row], from.col);
+            let to_byte = char_to_byte(&self.lines[to.row], to.col);
+            let head: String = self.lines[from.row][..from_byte].to_string();
+            let tail: String = self.lines[to.row][to_byte..].to_string();
+            self.lines[from.row] = head + &tail;
+            let drain_end = (to.row + 1).min(self.lines.len());
+            self.lines.drain((from.row + 1)..drain_end);
+        }
+        self.cursor = from;
+        self.clamp_col(false);
+        self.dirty = true;
+    }
+
+    /// Copy text between two cursors into the yank register.
+    pub fn yank_range(&mut self, from: Cursor, to: Cursor) {
+        let (from, to) = order(from, to);
+        if from == to {
+            self.yank.clear();
+            return;
+        }
+        if from.row == to.row {
+            let line = &self.lines[from.row];
+            let fb = char_to_byte(line, from.col);
+            let tb = char_to_byte(line, to.col);
+            self.yank = line[fb..tb].to_string();
+        } else {
+            let mut text = String::new();
+            let from_byte = char_to_byte(&self.lines[from.row], from.col);
+            text.push_str(&self.lines[from.row][from_byte..]);
+            text.push('\n');
+            for i in (from.row + 1)..to.row {
+                text.push_str(&self.lines[i]);
+                text.push('\n');
+            }
+            let to_byte = char_to_byte(&self.lines[to.row], to.col);
+            text.push_str(&self.lines[to.row][..to_byte]);
+            self.yank = text;
+        }
+    }
+}
+
+fn order(a: Cursor, b: Cursor) -> (Cursor, Cursor) {
+    if (a.row, a.col) <= (b.row, b.col) {
+        (a, b)
+    } else {
+        (b, a)
     }
 }
 

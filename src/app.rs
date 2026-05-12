@@ -378,8 +378,12 @@ impl App {
                 }
                 Ok(())
             }
-            Target::Motion(_) => {
-                self.status = Status::error("operator + motion not implemented yet (Stage 2)");
+            Target::Motion(m) => {
+                for _ in 0..outer_count {
+                    let start = self.buffer.cursor;
+                    let end = self.buffer.motion_target(start, m.motion, m.count);
+                    self.apply_op_range(op, start, end);
+                }
                 Ok(())
             }
             Target::TextObject { .. } => {
@@ -392,6 +396,22 @@ impl App {
     // ────────────────────────────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────────────────────────────
+
+    /// Apply an operator over the range [start, end). Used by Op + Motion
+    /// targets — the motion already produced the endpoint cursor.
+    fn apply_op_range(&mut self, op: Operator, start: crate::editor::Cursor, end: crate::editor::Cursor) {
+        match op {
+            Operator::Delete => self.buffer.delete_range(start, end),
+            Operator::Yank => {
+                self.buffer.yank_range(start, end);
+                self.status = Status::info("yanked");
+            }
+            Operator::Change => {
+                self.buffer.delete_range(start, end);
+                self.enter_mode(Mode::Insert);
+            }
+        }
+    }
 
     fn jump_search(&mut self, forward: bool) {
         if let Some(c) = self.search.find_next(&self.buffer, forward) {
