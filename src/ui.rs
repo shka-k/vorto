@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Prompt};
+use crate::app::{App, Prompt, COMMAND_BINDS};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::mode::Mode;
 
@@ -24,9 +24,77 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     place_cursor(f, app, chunks[0]);
 
+    if let Prompt::Command(query) = &app.prompt {
+        draw_command_hints(f, query, chunks[2]);
+    }
     if let Prompt::Fuzzy(finder) = &app.prompt {
         draw_fuzzy(f, finder, f.area());
     }
+}
+
+const HINT_COLS: usize = 2;
+const HINT_ROWS_MAX: usize = 10;
+const HINT_MAX: usize = HINT_COLS * HINT_ROWS_MAX;
+const HINT_CELL_WIDTH: u16 = 28;
+
+fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
+    // Once the user types a space they're entering an argument — hints
+    // about the command name no longer help.
+    if query.contains(' ') {
+        return;
+    }
+
+    let hints: Vec<&crate::app::CommandBind> = COMMAND_BINDS
+        .iter()
+        .filter(|b| b.name.starts_with(query))
+        .take(HINT_MAX)
+        .collect();
+    if hints.is_empty() {
+        return;
+    }
+
+    let rows = hints.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
+    let width = HINT_CELL_WIDTH * HINT_COLS as u16 + 2;
+    let height = rows as u16 + 2;
+
+    let max_w = f.area().width.saturating_sub(cmd_area.x);
+    let area = Rect {
+        x: cmd_area.x,
+        y: cmd_area.y.saturating_sub(height),
+        width: width.min(max_w),
+        height: height.min(cmd_area.y),
+    };
+    if area.height < 3 {
+        return;
+    }
+
+    f.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(" commands ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines: Vec<Line> = (0..rows)
+        .map(|i| {
+            let mut spans = Vec::new();
+            for col in 0..HINT_COLS {
+                let Some(c) = hints.get(col * rows + i) else {
+                    continue;
+                };
+                spans.push(Span::styled(
+                    format!("{:5}", c.name),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!(" {:21}", c.description),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {

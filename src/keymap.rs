@@ -53,14 +53,8 @@ fn normal(key: KeyEvent, pending: Option<char>) -> Vec<Action> {
         KeyCode::Char('b') => vec![Action::Buffer(B::MoveWordBackward)],
         KeyCode::Char('i') => vec![Action::EnterMode(Mode::Insert)],
         KeyCode::Char('a') => vec![Action::Buffer(B::MoveRight)],
-        KeyCode::Char('o') => vec![
-            Action::Buffer(B::InsertLineBelow),
-            Action::EnterMode(Mode::Insert),
-        ],
-        KeyCode::Char('O') => vec![
-            Action::Buffer(B::InsertLineAbove),
-            Action::EnterMode(Mode::Insert),
-        ],
+        KeyCode::Char('o') => vec![Action::OpenLineBelow],
+        KeyCode::Char('O') => vec![Action::OpenLineAbove],
         KeyCode::Char('x') => vec![Action::Buffer(B::DeleteCharUnderCursor)],
         KeyCode::Char('p') => vec![Action::Buffer(B::Paste)],
         KeyCode::Char('u') => vec![Action::Buffer(B::Undo)],
