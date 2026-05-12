@@ -15,9 +15,7 @@ use serde_json::Value;
 use crate::app::AppEvent;
 use crate::editor::Cursor;
 use crate::languages::LspConfig;
-use crate::lsp::{
-    self, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit,
-};
+use crate::lsp::{self, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit};
 
 /// What an outstanding LSP request was for. Stored under
 /// `pending[(lang, id)]` and consumed when the matching
@@ -242,16 +240,17 @@ impl LspCoordinator {
                 serde_json::json!({ "includeDeclaration": true }),
             );
         }
-        self.send_request("textDocument/references", params, LspRequestKind::References)
+        self.send_request(
+            "textDocument/references",
+            params,
+            LspRequestKind::References,
+        )
     }
 
     pub fn request_rename(&mut self, new_name: String, cursor: Cursor) -> Result<()> {
         let mut params = self.text_document_position_params(cursor);
         if let Some(obj) = params.as_object_mut() {
-            obj.insert(
-                "newName".to_string(),
-                Value::String(new_name.clone()),
-            );
+            obj.insert("newName".to_string(), Value::String(new_name.clone()));
         }
         self.send_request(
             "textDocument/rename",

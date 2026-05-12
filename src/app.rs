@@ -10,42 +10,23 @@ use crate::action::{
 };
 use crate::config::CursorShapes;
 use crate::editor::{Buffer, Cursor};
-use crate::fuzzy::{Finder, FuzzyKind};
+use crate::fuzzy::FuzzyKind;
 use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
 use crate::languages::Language;
 use crate::lsp::{self, Diagnostic, Location, LspEvent, WorkspaceEdit};
 use crate::lsp_coordinator::{LspCoordinator, LspEventOutcome};
 use crate::mode::Mode;
+use crate::prompt::{PromptController, PromptOutcome};
 use crate::search::SearchState;
+
+pub use crate::prompt::Prompt;
 
 /// Unified event flowing into the main loop. Terminal input and LSP
 /// reader threads both feed into the same `mpsc::Sender`.
 pub enum AppEvent {
     Term(Event),
     Lsp(LspEvent),
-}
-
-pub enum Prompt {
-    None,
-    Command(String),
-    Search {
-        forward: bool,
-        query: String,
-    },
-    Fuzzy(Finder),
-    /// `<space>r` — text input for the new identifier. The cursor and
-    /// URI captured at open-time aren't stored here: the LSP rename
-    /// request is built against the live cursor at submit, which
-    /// matches what the user sees (the cursor is locked while the
-    /// prompt is up because Normal-mode input is suspended).
-    Rename(String),
-}
-
-impl Prompt {
-    pub fn is_open(&self) -> bool {
-        !matches!(self, Prompt::None)
-    }
 }
 
 /// Status-bar message paired with its severity. The UI renders `Error`
@@ -75,7 +56,7 @@ impl Status {
 pub struct App {
     pub buffer: Buffer,
     pub mode: Mode,
-    pub prompt: Prompt,
+    pub prompt: PromptController,
     pub search: SearchState,
     pub status: Status,
     /// Accumulated tokens since the last command fired. Cleared on
@@ -105,10 +86,6 @@ pub struct App {
     /// All LSP state — clients, current document, diagnostics, pending
     /// requests, sync version, root anchor. See [`LspCoordinator`].
     pub lsp: LspCoordinator,
-    /// Parallel data for an active `FuzzyKind::Locations` picker —
-    /// `locations[idx]` matches the picker's `items[idx]`. Empty when
-    /// the picker isn't open.
-    pub lsp_picker_locations: Vec<Location>,
     pub should_quit: bool,
 }
 
@@ -142,7 +119,7 @@ impl App {
         Self {
             buffer: Buffer::new(),
             mode: Mode::Normal,
-            prompt: Prompt::None,
+            prompt: PromptController::new(),
             search: SearchState::default(),
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
             tokens: Vec::new(),
@@ -154,7 +131,6 @@ impl App {
             extension_index,
             startup_cwd,
             lsp,
-            lsp_picker_locations: Vec::new(),
             should_quit: false,
         }
     }
@@ -270,7 +246,7 @@ impl App {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
-        self.prompt = Prompt::Rename(String::new());
+        self.prompt.open_rename();
     }
 
     fn submit_rename(&mut self, new_name: String) {
@@ -312,8 +288,7 @@ impl App {
             .iter()
             .map(|loc| format_location_label(loc, &self.startup_cwd))
             .collect();
-        self.lsp_picker_locations = locations;
-        self.prompt = Prompt::Fuzzy(Finder::locations(items));
+        self.prompt.open_locations(items, locations);
     }
 
     fn apply_rename_outcome(&mut self, new_name: String, edit: Option<WorkspaceEdit>) {
@@ -382,9 +357,7 @@ impl App {
             LspEventOutcome::Nothing => {}
             LspEventOutcome::InfoMessage(s) => self.status = Status::info(s),
             LspEventOutcome::ErrorMessage(s) => self.status = Status::error(s),
-            LspEventOutcome::Jump { label, locations } => {
-                self.apply_jump_outcome(label, locations)
-            }
+            LspEventOutcome::Jump { label, locations } => self.apply_jump_outcome(label, locations),
             LspEventOutcome::References(locations) => self.apply_references_outcome(locations),
             LspEventOutcome::Rename { new_name, edit } => self.apply_rename_outcome(new_name, edit),
         }
@@ -583,62 +556,15 @@ impl App {
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
-        let ctrl_c =
-            key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
-        if key.code == KeyCode::Esc || ctrl_c {
-            self.prompt = Prompt::None;
-            return Ok(());
-        }
-        if key.code == KeyCode::Enter {
-            return self.submit_prompt();
-        }
-
-        match &mut self.prompt {
-            Prompt::None => unreachable!("prompt routing checked is_open"),
-            Prompt::Command(buf) => match key.code {
-                KeyCode::Backspace => {
-                    buf.pop();
-                }
-                KeyCode::Char(c) => buf.push(c),
-                _ => {}
-            },
-            Prompt::Search { query, .. } => match key.code {
-                KeyCode::Backspace => {
-                    query.pop();
-                }
-                KeyCode::Char(c) => query.push(c),
-                _ => {}
-            },
-            Prompt::Fuzzy(finder) => match key.code {
-                KeyCode::Backspace => finder.pop(),
-                KeyCode::Up => finder.prev(),
-                KeyCode::Down => finder.next(),
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    finder.next()
-                }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    finder.prev()
-                }
-                KeyCode::Char(c) => finder.push(c),
-                _ => {}
-            },
-            Prompt::Rename(buf) => match key.code {
-                KeyCode::Backspace => {
-                    buf.pop();
-                }
-                KeyCode::Char(c) => buf.push(c),
-                _ => {}
-            },
-        }
-        Ok(())
+        let outcome = self.prompt.handle_key(key);
+        self.apply_prompt_outcome(outcome)
     }
 
-    fn submit_prompt(&mut self) -> Result<()> {
-        let prompt = std::mem::replace(&mut self.prompt, Prompt::None);
-        match prompt {
-            Prompt::None => Ok(()),
-            Prompt::Command(line) => self.execute_command(line.trim()),
-            Prompt::Search { forward, query } => {
+    fn apply_prompt_outcome(&mut self, outcome: PromptOutcome) -> Result<()> {
+        match outcome {
+            PromptOutcome::Nothing | PromptOutcome::Cancelled => Ok(()),
+            PromptOutcome::RunCommand(line) => self.execute_command(&line),
+            PromptOutcome::Search { forward, query } => {
                 self.search.set(query, forward);
                 if let Some(c) = self.search.find_next(&self.buffer, forward) {
                     self.buffer.cursor = c;
@@ -647,48 +573,30 @@ impl App {
                 }
                 Ok(())
             }
-            Prompt::Fuzzy(finder) => self.submit_fuzzy(finder),
-            Prompt::Rename(new_name) => {
+            PromptOutcome::OpenRelativeFile(rel) => {
+                // Items are root-relative paths (see `collect_files`). Re-
+                // anchor against `startup_cwd` so the resulting buffer
+                // path doesn't depend on whatever `current_dir()` is now.
+                let path = self.startup_cwd.join(rel);
+                self.open_path(&path)
+            }
+            PromptOutcome::GotoLine(row) => {
+                self.buffer.cursor.row = row;
+                self.buffer.cursor.col = 0;
+                self.buffer.clamp_col(false);
+                Ok(())
+            }
+            PromptOutcome::JumpToLocation(loc) => {
+                if let Err(e) = self.jump_to_location(&loc) {
+                    self.status = Status::error(format!("jump: {}", root_cause(&e)));
+                }
+                Ok(())
+            }
+            PromptOutcome::SubmitRename(new_name) => {
                 self.submit_rename(new_name);
                 Ok(())
             }
         }
-    }
-
-    fn submit_fuzzy(&mut self, finder: Finder) -> Result<()> {
-        let sel = match finder.selection() {
-            Some(s) => s.clone(),
-            None => {
-                // Drop any side-channel data even if the user submitted
-                // an empty picker.
-                self.lsp_picker_locations.clear();
-                return Ok(());
-            }
-        };
-        match finder.kind {
-            FuzzyKind::Files => {
-                // Items are root-relative paths (see `collect_files`). Re-
-                // anchor against `startup_cwd` so the resulting buffer
-                // path doesn't depend on whatever `current_dir()` is now.
-                let path = self.startup_cwd.join(&finder.items[sel.idx]);
-                self.open_path(&path)?;
-            }
-            FuzzyKind::Lines => {
-                self.buffer.cursor.row = sel.idx;
-                self.buffer.cursor.col = 0;
-                self.buffer.clamp_col(false);
-            }
-            FuzzyKind::Locations => {
-                let loc = self.lsp_picker_locations.get(sel.idx).cloned();
-                self.lsp_picker_locations.clear();
-                if let Some(loc) = loc
-                    && let Err(e) = self.jump_to_location(&loc)
-                {
-                    self.status = Status::error(format!("jump: {}", root_cause(&e)));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn execute_command(&mut self, cmd: &str) -> Result<()> {
@@ -1025,19 +933,16 @@ impl App {
     }
 
     fn open_prompt(&mut self, kind: PromptKind) {
-        self.prompt = match kind {
-            PromptKind::Command => Prompt::Command(String::new()),
-            PromptKind::Search { forward } => Prompt::Search {
-                forward,
-                query: String::new(),
-            },
-            PromptKind::Fuzzy(FuzzyKind::Files) => Prompt::Fuzzy(Finder::files(&self.startup_cwd)),
-            PromptKind::Fuzzy(FuzzyKind::Lines) => Prompt::Fuzzy(Finder::lines(&self.buffer.lines)),
+        match kind {
+            PromptKind::Command => self.prompt.open_command(),
+            PromptKind::Search { forward } => self.prompt.open_search(forward),
+            PromptKind::Fuzzy(FuzzyKind::Files) => self.prompt.open_files(&self.startup_cwd),
+            PromptKind::Fuzzy(FuzzyKind::Lines) => self.prompt.open_lines(&self.buffer.lines),
             // `Locations` pickers are built from server results, not opened
             // from a keymap — fall through to a no-op rather than a fresh
             // empty picker that would do nothing useful on submit.
-            PromptKind::Fuzzy(FuzzyKind::Locations) => return,
-        };
+            PromptKind::Fuzzy(FuzzyKind::Locations) => {}
+        }
     }
 }
 

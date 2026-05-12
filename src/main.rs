@@ -9,6 +9,7 @@ mod languages;
 mod lsp;
 mod lsp_coordinator;
 mod mode;
+mod prompt;
 mod search;
 mod theme;
 mod ui;

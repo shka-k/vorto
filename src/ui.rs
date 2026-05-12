@@ -29,10 +29,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     place_cursor(f, app, chunks[0]);
 
-    if let Prompt::Command(query) = &app.prompt {
+    if let Prompt::Command(query) = &app.prompt.state {
         draw_command_hints(f, query, chunks[2]);
     }
-    if let Prompt::Fuzzy(finder) = &app.prompt {
+    if let Prompt::Fuzzy(finder) = &app.prompt.state {
         draw_fuzzy(f, finder, f.area());
     }
     if !app.prompt.is_open() {
@@ -538,7 +538,7 @@ fn format_pending(tokens: &[Token]) -> String {
 }
 
 fn status_label(app: &App) -> (String, Color) {
-    match &app.prompt {
+    match &app.prompt.state {
         Prompt::None => (app.mode.to_string(), mode_color(app.mode)),
         Prompt::Command(_) => ("COMMAND".into(), Color::Yellow),
         Prompt::Search { forward: true, .. } => ("SEARCH/".into(), Color::LightBlue),
@@ -549,7 +549,7 @@ fn status_label(app: &App) -> (String, Color) {
 }
 
 fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
-    let (prefix, content) = match &app.prompt {
+    let (prefix, content) = match &app.prompt.state {
         Prompt::Command(buf) => (":", buf.as_str()),
         Prompt::Search {
             forward: true,
