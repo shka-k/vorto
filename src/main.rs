@@ -7,6 +7,7 @@ mod highlight;
 mod keymap;
 mod languages;
 mod lsp;
+mod lsp_coordinator;
 mod mode;
 mod search;
 mod theme;

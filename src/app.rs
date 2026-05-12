@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{
@@ -14,7 +14,8 @@ use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
 use crate::languages::Language;
-use crate::lsp::{self, Diagnostic, Location, LspClient, LspEvent, WorkspaceEdit};
+use crate::lsp::{self, Diagnostic, Location, LspEvent, WorkspaceEdit};
+use crate::lsp_coordinator::{LspCoordinator, LspEventOutcome};
 use crate::mode::Mode;
 use crate::search::SearchState;
 
@@ -97,56 +98,18 @@ pub struct App {
     pub languages: HashMap<String, Language>,
     /// `ext -> language name` lookup, built once from `languages`.
     pub extension_index: HashMap<String, String>,
-    /// Live LSP clients, keyed by language name. Spawned lazily on the
-    /// first `open_path` for a language with `[languages.<name>.lsp]`
-    /// configured. The same client is reused across files of that
-    /// language.
-    pub lsp_clients: HashMap<String, LspClient>,
-    /// Diagnostics keyed by URI. URIs are produced via `lsp::path_to_uri`
-    /// so the lookup matches whatever the server reports back.
-    pub diagnostics: HashMap<String, Vec<Diagnostic>>,
-    /// Sender shared with input + LSP reader threads. Cloned into each
-    /// new LSP client at spawn time.
-    pub event_tx: Sender<AppEvent>,
     /// Working directory captured once at process startup. All workspace
     /// root discovery anchors here — `:e` opened mid-session still uses
     /// the same anchor as the file passed on the command line.
     pub startup_cwd: PathBuf,
-    /// Last buffer `version` we synced via `didChange`. When the cursor
-    /// returns to the main loop after handling input, the loop compares
-    /// this to `buffer.version` to decide whether to fire a sync.
-    pub last_synced_version: u64,
-    /// URI of the document currently open in `buffer` (cached so we can
-    /// fire `didClose`/`didChange` without re-canonicalising every time).
-    pub current_uri: Option<String>,
-    /// Language name currently associated with `buffer`. Lets the main
-    /// loop find the right client without re-resolving by extension.
-    pub current_language: Option<String>,
-    /// Outstanding LSP request bookkeeping. Keyed by `(lang, id)` so a
-    /// response arriving on the shared event channel can be routed back
-    /// to the right handler regardless of which client sent it.
-    pub pending_lsp: HashMap<(String, u64), LspRequestKind>,
+    /// All LSP state — clients, current document, diagnostics, pending
+    /// requests, sync version, root anchor. See [`LspCoordinator`].
+    pub lsp: LspCoordinator,
     /// Parallel data for an active `FuzzyKind::Locations` picker —
     /// `locations[idx]` matches the picker's `items[idx]`. Empty when
     /// the picker isn't open.
     pub lsp_picker_locations: Vec<Location>,
     pub should_quit: bool,
-}
-
-/// What an outstanding LSP request was for. Stored under
-/// `pending_lsp[(lang, id)]` and consumed when the matching
-/// [`LspEvent::Response`] arrives.
-#[derive(Debug, Clone)]
-pub enum LspRequestKind {
-    /// Any `Location[]`-shaped jump request — `definition`,
-    /// `declaration`, `implementation`. We only need the user-visible
-    /// label for the "no results" status message.
-    Jump { label: &'static str },
-    /// `textDocument/references` — show the locations in a picker.
-    References,
-    /// `textDocument/rename` — apply the returned `WorkspaceEdit`.
-    /// `new_name` is kept around for the post-apply status line.
-    Rename { new_name: String },
 }
 
 /// Resolved visual-mode selection bounds, derived from the anchor and
@@ -175,6 +138,7 @@ impl App {
         event_tx: Sender<AppEvent>,
         startup_cwd: PathBuf,
     ) -> Self {
+        let lsp = LspCoordinator::new(event_tx, startup_cwd.clone());
         Self {
             buffer: Buffer::new(),
             mode: Mode::Normal,
@@ -188,14 +152,8 @@ impl App {
             loader,
             languages,
             extension_index,
-            lsp_clients: HashMap::new(),
-            diagnostics: HashMap::new(),
-            event_tx,
             startup_cwd,
-            last_synced_version: 0,
-            current_uri: None,
-            current_language: None,
-            pending_lsp: HashMap::new(),
+            lsp,
             lsp_picker_locations: Vec::new(),
             should_quit: false,
         }
@@ -232,15 +190,11 @@ impl App {
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
         // Tell the previous LSP client we're done with that document so
         // it can drop diagnostics and stop watching it.
-        if let (Some(uri), Some(lang)) = (self.current_uri.take(), self.current_language.take())
-            && let Some(client) = self.lsp_clients.get_mut(&lang)
-        {
-            let _ = client.did_close(&uri);
-        }
+        self.lsp.detach_current();
         self.buffer = Buffer::load(path)?;
         self.attach_highlighter();
         self.attach_lsp();
-        self.last_synced_version = self.buffer.version;
+        self.lsp.set_last_synced_version(self.buffer.version);
         self.status = Status::info(format!("opened {}", path.display()));
         Ok(())
     }
@@ -249,15 +203,16 @@ impl App {
     /// if one isn't already running, and send `didOpen`. Failures are
     /// surfaced via the status bar — the buffer keeps working without LSP.
     fn attach_lsp(&mut self) {
-        let path = match &self.buffer.path {
-            Some(p) => p.clone(),
-            None => return,
+        let Some(path) = self.buffer.path.clone() else {
+            return;
         };
-        let ext = path
+        let Some(ext) = path
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
-        let Some(ext) = ext else { return };
+            .map(|s| s.to_string())
+        else {
+            return;
+        };
         let Some(lang_name) = self.extension_index.get(&ext).cloned() else {
             return;
         };
@@ -266,42 +221,20 @@ impl App {
         };
         let Some(lsp_cfg) = spec.lsp else { return };
 
-        if !self.lsp_clients.contains_key(&lang_name) {
-            let root_dir =
-                lsp::discover_root(&self.startup_cwd, Some(&path), &lsp_cfg.root_markers);
-            let root_uri = lsp::path_to_uri(&root_dir);
-            let tx = self.event_tx.clone();
-            let emit: Box<dyn Fn(LspEvent) + Send> = Box::new(move |ev| {
-                let _ = tx.send(AppEvent::Lsp(ev));
-            });
-            match LspClient::spawn(&lang_name, &lsp_cfg, &root_uri, emit) {
-                Ok(client) => {
-                    self.lsp_clients.insert(lang_name.clone(), client);
-                }
-                Err(e) => {
-                    // Built-in defaults reference servers most users won't
-                    // have installed. If the binary isn't on PATH, stay
-                    // quiet — the buffer keeps working without LSP. Other
-                    // failures (handshake errors, etc.) are still surfaced.
-                    if !is_command_not_found(&e) {
-                        self.status =
-                            Status::error(format!("lsp ({}): {}", lang_name, root_cause(&e)));
-                    }
-                    return;
-                }
+        if let Err(e) = self.lsp.ensure_client(&lang_name, &lsp_cfg, &path) {
+            // Built-in defaults reference servers most users won't have
+            // installed. If the binary isn't on PATH, stay quiet — the
+            // buffer keeps working without LSP. Other failures
+            // (handshake errors, etc.) are still surfaced.
+            if !is_command_not_found(&e) {
+                self.status = Status::error(format!("lsp ({}): {}", lang_name, root_cause(&e)));
             }
-        }
-
-        let uri = lsp::path_to_uri(&path);
-        let text = self.buffer.lines.join("\n");
-        if let Some(client) = self.lsp_clients.get_mut(&lang_name)
-            && let Err(e) = client.did_open(&uri, &text)
-        {
-            self.status = Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
             return;
         }
-        self.current_uri = Some(uri);
-        self.current_language = Some(lang_name);
+        let text = self.buffer.lines.join("\n");
+        if let Err(e) = self.lsp.did_open(&lang_name, &path, &text) {
+            self.status = Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -313,35 +246,27 @@ impl App {
     /// `definition`, `declaration`, and `implementation` — all three
     /// answer with the same shape.
     fn lsp_jump(&mut self, method: &str, label: &'static str) {
-        if !self.has_lsp_for_current() {
+        if !self.lsp.has_lsp() {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
-        let params = self.text_document_position_params();
-        self.send_lsp_request(method, params, LspRequestKind::Jump { label });
+        if let Err(e) = self.lsp.request_jump(method, label, self.buffer.cursor) {
+            self.status = Status::error(format!("lsp {}: {}", method, root_cause(&e)));
+        }
     }
 
     fn lsp_find_references(&mut self) {
-        if !self.has_lsp_for_current() {
+        if !self.lsp.has_lsp() {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
-        let mut params = self.text_document_position_params();
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert(
-                "context".to_string(),
-                serde_json::json!({ "includeDeclaration": true }),
-            );
+        if let Err(e) = self.lsp.request_references(self.buffer.cursor) {
+            self.status = Status::error(format!("lsp references: {}", root_cause(&e)));
         }
-        self.send_lsp_request(
-            "textDocument/references",
-            params,
-            LspRequestKind::References,
-        );
     }
 
     fn open_rename_prompt(&mut self) {
-        if !self.has_lsp_for_current() {
+        if !self.lsp.has_lsp() {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
@@ -353,88 +278,16 @@ impl App {
             self.status = Status::error("rename: empty name");
             return;
         }
-        if !self.has_lsp_for_current() {
+        if !self.lsp.has_lsp() {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
-        let mut params = self.text_document_position_params();
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert(
-                "newName".to_string(),
-                serde_json::Value::String(new_name.clone()),
-            );
-        }
-        self.send_lsp_request(
-            "textDocument/rename",
-            params,
-            LspRequestKind::Rename { new_name },
-        );
-    }
-
-    fn has_lsp_for_current(&self) -> bool {
-        match (&self.current_uri, &self.current_language) {
-            (Some(_), Some(lang)) => self.lsp_clients.contains_key(lang),
-            _ => false,
+        if let Err(e) = self.lsp.request_rename(new_name, self.buffer.cursor) {
+            self.status = Status::error(format!("lsp rename: {}", root_cause(&e)));
         }
     }
 
-    /// Build the standard `{ textDocument: { uri }, position }` block
-    /// most language-feature requests start with.
-    fn text_document_position_params(&self) -> serde_json::Value {
-        let uri = self.current_uri.clone().unwrap_or_default();
-        serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": {
-                "line": self.buffer.cursor.row as u64,
-                "character": self.buffer.cursor.col as u64,
-            }
-        })
-    }
-
-    /// Send `method` to the current buffer's LSP client and remember
-    /// `kind` so the response handler knows what to do. No-op when
-    /// there's no client — callers should have checked first.
-    fn send_lsp_request(&mut self, method: &str, params: serde_json::Value, kind: LspRequestKind) {
-        let Some(lang) = self.current_language.clone() else {
-            return;
-        };
-        let Some(client) = self.lsp_clients.get_mut(&lang) else {
-            return;
-        };
-        match client.request(method, params) {
-            Ok(id) => {
-                self.pending_lsp.insert((lang, id), kind);
-            }
-            Err(e) => {
-                self.status = Status::error(format!("lsp {}: {}", method, root_cause(&e)));
-            }
-        }
-    }
-
-    fn handle_lsp_response(
-        &mut self,
-        lang: String,
-        id: u64,
-        result: Option<serde_json::Value>,
-        error: Option<String>,
-    ) {
-        let Some(kind) = self.pending_lsp.remove(&(lang, id)) else {
-            return;
-        };
-        if let Some(msg) = error {
-            self.status = Status::error(format!("lsp: {}", msg));
-            return;
-        }
-        let result = result.unwrap_or(serde_json::Value::Null);
-        match kind {
-            LspRequestKind::Jump { label } => self.apply_jump_result(label, &result),
-            LspRequestKind::References => self.apply_references_result(&result),
-            LspRequestKind::Rename { new_name } => self.apply_rename_result(&new_name, &result),
-        }
-    }
-
-    fn apply_jump_result(&mut self, label: &'static str, result: &serde_json::Value) {
-        let locations = lsp::parse_locations(result);
+    fn apply_jump_outcome(&mut self, label: &'static str, locations: Vec<Location>) {
         let Some(first) = locations.into_iter().next() else {
             self.status = Status::info(format!("no {}", label));
             return;
@@ -444,8 +297,7 @@ impl App {
         }
     }
 
-    fn apply_references_result(&mut self, result: &serde_json::Value) {
-        let locations = lsp::parse_locations(result);
+    fn apply_references_outcome(&mut self, locations: Vec<Location>) {
         if locations.is_empty() {
             self.status = Status::info("no references");
             return;
@@ -464,60 +316,30 @@ impl App {
         self.prompt = Prompt::Fuzzy(Finder::locations(items));
     }
 
-    fn apply_rename_result(&mut self, new_name: &str, result: &serde_json::Value) {
-        let Some(edit) = lsp::parse_workspace_edit(result) else {
+    fn apply_rename_outcome(&mut self, new_name: String, edit: Option<WorkspaceEdit>) {
+        let Some(edit) = edit else {
             self.status = Status::info("rename: nothing to change");
             return;
         };
-        match self.apply_workspace_edit(edit) {
-            Ok((files, occurrences)) => {
+        match self.lsp.apply_workspace_edit(edit) {
+            Ok(result) => {
+                if !result.current_buffer_edits.is_empty() {
+                    self.buffer.snapshot();
+                    let mut lines = std::mem::take(&mut self.buffer.lines);
+                    lsp::apply_text_edits(&mut lines, result.current_buffer_edits);
+                    self.buffer.lines = lines;
+                    self.buffer.bump_version();
+                    self.buffer.dirty = true;
+                }
                 self.status = Status::info(format!(
                     "renamed to {} ({} occurrences in {} files)",
-                    new_name, occurrences, files
+                    new_name, result.total_edits, result.files_touched
                 ));
             }
             Err(e) => {
                 self.status = Status::error(format!("rename: {}", root_cause(&e)));
             }
         }
-    }
-
-    /// Apply a [`WorkspaceEdit`] across the filesystem. For the
-    /// currently-open buffer the edits go through the in-memory
-    /// `Buffer` (with an undo snapshot taken first); for other files we
-    /// read, edit, and write directly. Returns `(files, total_edits)`.
-    fn apply_workspace_edit(&mut self, edit: WorkspaceEdit) -> Result<(usize, usize)> {
-        let mut total: usize = 0;
-        let files = edit.changes.len();
-        // Track whether the active buffer ended up in the edit set —
-        // skip the on-disk write path for that one to avoid clobbering
-        // unsaved state.
-        let current_uri = self.current_uri.clone();
-        for (uri, edits) in edit.changes {
-            total += edits.len();
-            if Some(&uri) == current_uri.as_ref() {
-                self.buffer.snapshot();
-                let mut lines = std::mem::take(&mut self.buffer.lines);
-                lsp::apply_text_edits(&mut lines, edits);
-                self.buffer.lines = lines;
-                self.buffer.bump_version();
-                self.buffer.dirty = true;
-                continue;
-            }
-            let Some(path) = lsp::uri_to_path(&uri) else {
-                continue;
-            };
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
-            if lines.is_empty() {
-                lines.push(String::new());
-            }
-            lsp::apply_text_edits(&mut lines, edits);
-            std::fs::write(&path, lines.join("\n"))
-                .with_context(|| format!("writing {}", path.display()))?;
-        }
-        Ok((files, total))
     }
 
     fn jump_to_location(&mut self, loc: &Location) -> Result<()> {
@@ -542,18 +364,12 @@ impl App {
     /// Send `didChange` if the buffer has been mutated since the last
     /// sync. Called from the main loop after every key handled.
     pub fn sync_buffer_if_dirty(&mut self) {
-        if self.buffer.version == self.last_synced_version {
+        if self.buffer.version == self.lsp.last_synced_version() {
             return;
         }
-        self.last_synced_version = self.buffer.version;
-        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
-            return;
-        };
-        let Some(client) = self.lsp_clients.get_mut(lang) else {
-            return;
-        };
+        self.lsp.set_last_synced_version(self.buffer.version);
         let text = self.buffer.lines.join("\n");
-        if let Err(e) = client.did_change(uri, &text) {
+        if let Err(e) = self.lsp.did_change(&text) {
             self.status = Status::error(format!("lsp didChange: {}", root_cause(&e)));
         }
     }
@@ -562,57 +378,27 @@ impl App {
     /// whatever we had stored for that URI; messages are surfaced as
     /// non-error status; reader errors do the same.
     pub fn handle_lsp_event(&mut self, ev: LspEvent) {
-        match ev {
-            LspEvent::Diagnostics { uri, items } => {
-                if items.is_empty() {
-                    self.diagnostics.remove(&uri);
-                } else {
-                    self.diagnostics.insert(uri, items);
-                }
+        match self.lsp.handle_event(ev) {
+            LspEventOutcome::Nothing => {}
+            LspEventOutcome::InfoMessage(s) => self.status = Status::info(s),
+            LspEventOutcome::ErrorMessage(s) => self.status = Status::error(s),
+            LspEventOutcome::Jump { label, locations } => {
+                self.apply_jump_outcome(label, locations)
             }
-            LspEvent::Message { level, text } => {
-                // Levels: 1 Error, 2 Warning, 3 Info, 4 Log.
-                if level == 1 {
-                    self.status = Status::error(text);
-                } else {
-                    self.status = Status::info(text);
-                }
-            }
-            LspEvent::Error(e) => {
-                self.status = Status::error(format!("lsp: {}", e));
-            }
-            LspEvent::Response {
-                lang,
-                id,
-                result,
-                error,
-            } => self.handle_lsp_response(lang, id, result, error),
+            LspEventOutcome::References(locations) => self.apply_references_outcome(locations),
+            LspEventOutcome::Rename { new_name, edit } => self.apply_rename_outcome(new_name, edit),
         }
     }
 
     /// Diagnostics for the current buffer's URI, if any. Convenience for
     /// the UI layer.
     pub fn current_diagnostics(&self) -> Option<&[Diagnostic]> {
-        self.current_uri
-            .as_ref()
-            .and_then(|u| self.diagnostics.get(u))
-            .map(|v| v.as_slice())
+        self.lsp.current_diagnostics()
     }
 
     /// First diagnostic that covers the cursor row, prioritising errors.
     pub fn diagnostic_on_cursor(&self) -> Option<&Diagnostic> {
-        let row = self.buffer.cursor.row as u32;
-        let mut best: Option<&Diagnostic> = None;
-        for d in self.current_diagnostics()? {
-            if d.range.start.line <= row && row <= d.range.end.line {
-                best = Some(match best {
-                    None => d,
-                    Some(prev) if (d.severity as u8) < (prev.severity as u8) => d,
-                    Some(prev) => prev,
-                });
-            }
-        }
-        best
+        self.lsp.diagnostic_on_cursor(self.buffer.cursor.row as u32)
     }
 
     /// Look up a language for the current buffer's file extension and,
@@ -1201,14 +987,8 @@ impl App {
     }
 
     fn notify_lsp_save(&mut self) {
-        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
-            return;
-        };
-        let Some(client) = self.lsp_clients.get_mut(lang) else {
-            return;
-        };
         let text = self.buffer.lines.join("\n");
-        if let Err(e) = client.did_save(uri, &text) {
+        if let Err(e) = self.lsp.did_save(&text) {
             self.status = Status::error(format!("lsp didSave: {}", root_cause(&e)));
         }
     }
