@@ -236,6 +236,29 @@ impl Highlighter {
         out
     }
 
+    /// Start position of the first leaf node whose start is strictly
+    /// after `(row, char_col)`. Drives tree-sitter-aware `w` — instead
+    /// of advancing by whitespace runs, the cursor lands on the next
+    /// syntactic token (identifier, keyword, punctuation, …). Returns
+    /// `None` when no tree has been built yet or the cursor is past
+    /// the last token.
+    pub fn next_token_start(&self, row: usize, char_col: usize) -> Option<(usize, usize)> {
+        let tree = self.tree.as_ref()?;
+        let byte_col = char_to_byte_col(&self.source, row, char_col);
+        let node = next_leaf_after(tree.root_node(), (row, byte_col))?;
+        let p = node.start_position();
+        Some((p.row, byte_to_char_col(&self.source, p.row, p.column)))
+    }
+
+    /// Symmetric counterpart of [`next_token_start`] — drives `b`.
+    pub fn prev_token_start(&self, row: usize, char_col: usize) -> Option<(usize, usize)> {
+        let tree = self.tree.as_ref()?;
+        let byte_col = char_to_byte_col(&self.source, row, char_col);
+        let node = prev_leaf_before(tree.root_node(), (row, byte_col))?;
+        let p = node.start_position();
+        Some((p.row, byte_to_char_col(&self.source, p.row, p.column)))
+    }
+
     /// Find the smallest text-object range matching `target` (a query
     /// capture name like `"function.outer"`) that contains the cursor.
     /// Returns `None` when no `textobjects.scm` is loaded, the tree
@@ -347,6 +370,59 @@ impl Highlighter {
             byte_to_char_col(&self.source, c.end.0, c.end.1),
         ))
     }
+}
+
+/// Walk `node`'s subtree in document order and return the first leaf
+/// whose start position is strictly greater than `target`. Subtrees
+/// that end at or before `target` are skipped wholesale — that's the
+/// pruning that keeps this O(depth × matching-leaves) rather than O(N).
+fn next_leaf_after(
+    node: tree_sitter::Node,
+    target: (usize, usize),
+) -> Option<tree_sitter::Node> {
+    let end = node.end_position();
+    if (end.row, end.column) <= target {
+        return None;
+    }
+    if node.child_count() == 0 {
+        let s = node.start_position();
+        if (s.row, s.column) > target {
+            return Some(node);
+        }
+        return None;
+    }
+    for i in 0..node.child_count() {
+        if let Some(c) = node.child(i as u32)
+            && let Some(found) = next_leaf_after(c, target)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Mirror of [`next_leaf_after`] — walks children in reverse document
+/// order and returns the last leaf whose start is strictly less than
+/// `target`.
+fn prev_leaf_before(
+    node: tree_sitter::Node,
+    target: (usize, usize),
+) -> Option<tree_sitter::Node> {
+    let s = node.start_position();
+    if (s.row, s.column) >= target {
+        return None;
+    }
+    if node.child_count() == 0 {
+        return Some(node);
+    }
+    for i in (0..node.child_count()).rev() {
+        if let Some(c) = node.child(i as u32)
+            && let Some(found) = prev_leaf_before(c, target)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Candidate text-object range during the inner search. Keeps both

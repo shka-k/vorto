@@ -185,42 +185,11 @@ impl Buffer {
     }
 
     pub fn move_word_forward(&mut self) {
-        let line = self.current_line().to_string();
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = self.cursor.col;
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
-        }
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        if i >= chars.len() && self.cursor.row + 1 < self.lines.len() {
-            self.cursor.row += 1;
-            self.cursor.col = 0;
-        } else {
-            self.cursor.col = i.min(chars.len().saturating_sub(1));
-        }
+        self.cursor = self.peek_word_forward(self.cursor);
     }
 
     pub fn move_word_backward(&mut self) {
-        let line = self.current_line().to_string();
-        let chars: Vec<char> = line.chars().collect();
-        if self.cursor.col == 0 {
-            if self.cursor.row > 0 {
-                self.cursor.row -= 1;
-                self.cursor.col = self.current_line_len().saturating_sub(1);
-            }
-            return;
-        }
-        let mut i = self.cursor.col;
-        i = i.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        self.cursor.col = i;
+        self.cursor = self.peek_word_back(self.cursor);
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -439,49 +408,29 @@ impl Buffer {
         }
     }
 
+    /// Next `w` target. Prefers tree-sitter leaf boundaries (so `foo(bar)`
+    /// stops on `foo`, `(`, `bar`, `)` rather than treating the whole
+    /// thing as one whitespace-delimited blob). Falls back to a
+    /// vim-style character-class walker — words = `[A-Za-z0-9_]+`,
+    /// punctuation = each contiguous run of other non-whitespace chars,
+    /// whitespace separates them — when no grammar is attached.
     fn peek_word_forward(&self, from: Cursor) -> Cursor {
-        let chars: Vec<char> = self.lines[from.row].chars().collect();
-        let mut i = from.col;
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
+        if let Some(h) = &self.highlighter
+            && let Some((r, c)) = h.next_token_start(from.row, from.col)
+        {
+            return Cursor { row: r, col: c };
         }
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        if i >= chars.len() && from.row + 1 < self.lines.len() {
-            Cursor {
-                row: from.row + 1,
-                col: 0,
-            }
-        } else {
-            Cursor {
-                row: from.row,
-                col: i.min(chars.len().saturating_sub(1)),
-            }
-        }
+        word_forward_char_class(&self.lines, from)
     }
 
+    /// Symmetric counterpart of [`peek_word_forward`] for `b`.
     fn peek_word_back(&self, from: Cursor) -> Cursor {
-        let chars: Vec<char> = self.lines[from.row].chars().collect();
-        if from.col == 0 {
-            if from.row > 0 {
-                let row = from.row - 1;
-                let col = self.lines[row].chars().count().saturating_sub(1);
-                return Cursor { row, col };
-            }
-            return from;
+        if let Some(h) = &self.highlighter
+            && let Some((r, c)) = h.prev_token_start(from.row, from.col)
+        {
+            return Cursor { row: r, col: c };
         }
-        let mut i = from.col.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-        Cursor {
-            row: from.row,
-            col: i,
-        }
+        word_back_char_class(&self.lines, from)
     }
 
     /// Remove text between two cursors (inclusive of `from`, exclusive of
@@ -774,4 +723,133 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(s.len())
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Character-class word motion (tree-sitter-less fallback)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Used by `peek_word_forward` / `peek_word_back` when no syntax tree
+// is attached. Three classes: `Word` (alphanumeric + `_`), `Punct`
+// (other non-whitespace), `Space`. Transitions between any two classes
+// form word boundaries — so `foo(bar)` walks as `foo`, `(`, `bar`, `)`,
+// the same way vim's lowercase `w` does. (`W` ignores Punct/Word
+// distinction; we're matching `w` semantics here.)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Word,
+    Punct,
+    Space,
+}
+
+fn classify(c: char) -> CharClass {
+    if c.is_whitespace() {
+        CharClass::Space
+    } else if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else {
+        CharClass::Punct
+    }
+}
+
+/// Move forward one `w`-step: skip the rest of the current class,
+/// then skip whitespace, landing on the first non-whitespace char of
+/// the next class. Wraps to the next line when the current line is
+/// exhausted.
+fn word_forward_char_class(lines: &[String], from: Cursor) -> Cursor {
+    let chars: Vec<char> = lines[from.row].chars().collect();
+    let mut i = from.col;
+
+    if i < chars.len() {
+        let start_class = classify(chars[i]);
+        if start_class != CharClass::Space {
+            while i < chars.len() && classify(chars[i]) == start_class {
+                i += 1;
+            }
+        }
+        while i < chars.len() && classify(chars[i]) == CharClass::Space {
+            i += 1;
+        }
+    }
+
+    if i >= chars.len() && from.row + 1 < lines.len() {
+        Cursor {
+            row: from.row + 1,
+            col: 0,
+        }
+    } else {
+        Cursor {
+            row: from.row,
+            col: i.min(chars.len().saturating_sub(1)),
+        }
+    }
+}
+
+/// Move backward one `b`-step: step left one char, skip any
+/// whitespace, then back up to the start of the contiguous run of the
+/// same class. Wraps to the previous line at column 0.
+#[cfg(test)]
+mod word_class_tests {
+    use super::*;
+
+    fn lines(s: &str) -> Vec<String> {
+        s.split('\n').map(|s| s.to_string()).collect()
+    }
+
+    fn fwd(buf: &[String], row: usize, col: usize) -> (usize, usize) {
+        let c = word_forward_char_class(buf, Cursor { row, col });
+        (c.row, c.col)
+    }
+    fn back(buf: &[String], row: usize, col: usize) -> (usize, usize) {
+        let c = word_back_char_class(buf, Cursor { row, col });
+        (c.row, c.col)
+    }
+
+    #[test]
+    fn word_walks_into_punctuation_not_through_it() {
+        // `foo(bar)` should stop on each of foo, (, bar, ).
+        let l = lines("foo(bar)");
+        assert_eq!(fwd(&l, 0, 0), (0, 3)); // foo → `(`
+        assert_eq!(fwd(&l, 0, 3), (0, 4)); // `(` → `bar`
+        assert_eq!(fwd(&l, 0, 4), (0, 7)); // bar → `)`
+    }
+
+    #[test]
+    fn word_skips_whitespace() {
+        let l = lines("a   b");
+        assert_eq!(fwd(&l, 0, 0), (0, 4));
+    }
+
+    #[test]
+    fn back_groups_punctuation_runs() {
+        // `=>` and `<-` are punctuation runs and should be one step.
+        let l = lines("a => b");
+        assert_eq!(back(&l, 0, 5), (0, 2)); // from `b` ← `=>`
+        assert_eq!(back(&l, 0, 2), (0, 0)); // from `=>` ← `a`
+    }
+}
+
+fn word_back_char_class(lines: &[String], from: Cursor) -> Cursor {
+    if from.col == 0 {
+        if from.row > 0 {
+            let row = from.row - 1;
+            let col = lines[row].chars().count().saturating_sub(1);
+            return Cursor { row, col };
+        }
+        return from;
+    }
+    let chars: Vec<char> = lines[from.row].chars().collect();
+    let mut i = from.col.saturating_sub(1);
+    while i > 0 && classify(chars[i]) == CharClass::Space {
+        i -= 1;
+    }
+    let target_class = classify(chars[i]);
+    while i > 0 && classify(chars[i - 1]) == target_class {
+        i -= 1;
+    }
+    Cursor {
+        row: from.row,
+        col: i,
+    }
 }
