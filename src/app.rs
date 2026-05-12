@@ -3,17 +3,13 @@ use std::path::Path;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Action, BufferAction, Ctx, PromptKind, WorkspaceAction};
+use crate::action::{Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token};
 use crate::editor::Buffer;
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::keymap;
 use crate::mode::Mode;
 use crate::search::SearchState;
 
-/// A modal overlay over the editor. While `Prompt` is anything other than
-/// `None`, `App::handle_key` routes keys to the prompt rather than the
-/// underlying mode — so the mode (Normal/Insert/Visual) stays focused on
-/// editor key-interpretation and prompts are just transient UI state.
 pub enum Prompt {
     None,
     Command(String),
@@ -28,7 +24,7 @@ impl Prompt {
 }
 
 /// Status-bar message paired with its severity. The UI renders `Error`
-/// variants in red so the user can tell feedback apart from problems.
+/// variants in red.
 pub enum Status {
     Info(String),
     Error(String),
@@ -57,9 +53,9 @@ pub struct App {
     pub prompt: Prompt,
     pub search: SearchState,
     pub status: Status,
-    /// Accumulated key events that haven't yet resolved to a complete
-    /// binding. The interpreter looks at the full slice on each new key.
-    pub keys: Vec<KeyEvent>,
+    /// Accumulated tokens since the last command fired. Cleared on
+    /// Complete dispatch or Invalid parse.
+    pub tokens: Vec<Token>,
     pub should_quit: bool,
 }
 
@@ -71,7 +67,7 @@ impl App {
             prompt: Prompt::None,
             search: SearchState::default(),
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
-            keys: Vec::new(),
+            tokens: Vec::new(),
             should_quit: false,
         }
     }
@@ -87,35 +83,78 @@ impl App {
             return self.handle_prompt_key(key);
         }
 
-        // Insert mode: bare char input goes straight to the buffer — no
-        // Action wrapping for what is essentially raw text data.
-        if matches!(self.mode, Mode::Insert)
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
+        // Global panic button.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return Ok(());
+        }
+
+        // Insert & Visual modes have small enough surfaces that they're
+        // handled directly. The token pipeline is Normal-mode only — that
+        // is where the rich operator/motion/text-object grammar lives.
+        match self.mode {
+            Mode::Insert => return self.handle_insert_key(key),
+            Mode::Visual => return self.handle_visual_key(key),
+            Mode::Normal => {}
+        }
+
+        // Normal mode: tokenize → classify → evaluate.
+        match keymap::tokenize(&self.tokens, self.mode, key) {
+            Some(t) => self.tokens.push(t),
+            None => {
+                self.tokens.clear();
+                return Ok(());
+            }
+        }
+        match keymap::classify(&self.tokens) {
+            keymap::Parse::Complete(expr) => {
+                self.tokens.clear();
+                self.evaluate(expr, Ctx::default())?;
+            }
+            keymap::Parse::Incomplete => {}
+            keymap::Parse::Invalid => self.tokens.clear(),
+        }
+        Ok(())
+    }
+
+    fn handle_insert_key(&mut self, key: KeyEvent) -> Result<()> {
+        if !key.modifiers.contains(KeyModifiers::CONTROL)
             && let KeyCode::Char(c) = key.code
         {
             self.buffer.insert_char(c);
             return Ok(());
         }
+        match key.code {
+            KeyCode::Esc => self.enter_mode(Mode::Normal),
+            KeyCode::Enter => self.buffer.insert_newline(),
+            KeyCode::Backspace => self.buffer.delete_char_before(),
+            KeyCode::Left => self.buffer.move_left(),
+            KeyCode::Right => self.buffer.move_right(true),
+            KeyCode::Up => self.buffer.move_up(),
+            KeyCode::Down => self.buffer.move_down(),
+            _ => {}
+        }
+        Ok(())
+    }
 
-        // Push the key into the stream, then ask the interpreter what to do
-        // with the accumulated sequence. Complete → fire and clear; Partial
-        // → keep waiting; NoMatch → silently drop.
-        self.keys.push(key);
-        match keymap::interpret(&self.keys, self.mode) {
-            keymap::Match::Complete { action, count } => {
-                self.keys.clear();
-                self.dispatch(action, Ctx { rest: "", count })?;
+    fn handle_visual_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.enter_mode(Mode::Normal),
+            KeyCode::Char('h') | KeyCode::Left => self.buffer.move_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.buffer.move_right(false),
+            KeyCode::Char('j') | KeyCode::Down => self.buffer.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.buffer.move_up(),
+            KeyCode::Char('y') => {
+                self.buffer.yank_line();
+                self.status = Status::info("yanked");
+                self.enter_mode(Mode::Normal);
             }
-            keymap::Match::Partial => {}
-            keymap::Match::NoMatch => {
-                self.keys.clear();
-            }
+            _ => {}
         }
         Ok(())
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Esc or Ctrl-C cancels the prompt and returns to the underlying mode.
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         if key.code == KeyCode::Esc || ctrl_c {
@@ -197,10 +236,9 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &str) -> Result<()> {
-        // Vim-style shortcut: `:42` jumps to line 42. Treated as syntactic
-        // sugar for `:goto 42` — we route through the same Action.
+        // `:42` shortcut for `:goto 42`.
         if cmd.parse::<usize>().is_ok() {
-            return self.dispatch(Action::Buffer(BufferAction::GotoLine), Ctx::with_rest(cmd));
+            return self.eval_direct(DirectKind::GotoLine, 1, Ctx::with_rest(cmd));
         }
 
         let (head, rest) = match cmd.split_once(' ') {
@@ -211,7 +249,7 @@ impl App {
             return Ok(());
         }
         match CommandBind::find(head) {
-            Some(b) => self.dispatch(b.action, Ctx::with_rest(rest)),
+            Some(b) => self.eval_direct(b.kind, 1, Ctx::with_rest(rest)),
             None => {
                 self.status = Status::error(format!("unknown command: {}", head));
                 Ok(())
@@ -219,126 +257,164 @@ impl App {
         }
     }
 
-    /// Run an Action with the given context. This is the single entry point
-    /// for all semantic operations — both keyboard- and command-driven
-    /// inputs funnel through here.
-    pub fn dispatch(&mut self, action: Action, ctx: Ctx) -> Result<()> {
-        match action {
-            Action::Buffer(a) => self.apply_buffer(a, ctx),
-            Action::Workspace(a) => self.apply_workspace(a, ctx)?,
-            Action::EnterMode(m) => self.enter_mode(m),
-            Action::OpenPrompt(kind) => self.open_prompt(kind),
-            Action::Quit => {
+    // ────────────────────────────────────────────────────────────────────
+    // Evaluate
+    // ────────────────────────────────────────────────────────────────────
+
+    fn evaluate(&mut self, expr: Expr, ctx: Ctx) -> Result<()> {
+        match expr {
+            Expr::Direct { kind, count } => self.eval_direct(kind, count, ctx),
+            Expr::Motion(m) => {
+                self.eval_motion(m);
+                Ok(())
+            }
+            Expr::Op {
+                op,
+                target,
+                outer_count,
+            } => self.eval_op(op, target, outer_count),
+        }
+    }
+
+    fn eval_direct(&mut self, kind: DirectKind, count: u32, ctx: Ctx) -> Result<()> {
+        use DirectKind as D;
+        match kind {
+            D::EnterMode(m) => self.enter_mode(m),
+            D::OpenPrompt(k) => self.open_prompt(k),
+            D::OpenLineBelow => {
+                self.buffer.insert_line_below();
+                self.enter_mode(Mode::Insert);
+            }
+            D::OpenLineAbove => {
+                self.buffer.insert_line_above();
+                self.enter_mode(Mode::Insert);
+            }
+            D::Paste => {
+                for _ in 0..count {
+                    self.buffer.paste_after();
+                }
+            }
+            D::Undo => {
+                self.status = Status::error("undo not implemented yet");
+            }
+            D::DeleteCharUnderCursor => {
+                for _ in 0..count {
+                    self.buffer.delete_char_under_cursor();
+                }
+            }
+            D::Quit => {
                 if self.buffer.dirty {
                     self.status = Status::error("unsaved changes (use :q!)");
                 } else {
                     self.should_quit = true;
                 }
             }
-            Action::QuitForce => self.should_quit = true,
-            Action::SaveAndQuit => {
-                self.apply_workspace(WorkspaceAction::Save, Ctx::default())?;
+            D::QuitForce => self.should_quit = true,
+            D::SaveAndQuit => {
+                self.do_save(ctx.rest)?;
                 self.should_quit = true;
             }
-            Action::OpenLineBelow => {
-                self.buffer.insert_line_below();
-                self.enter_mode(Mode::Insert);
+            D::Save => self.do_save(ctx.rest)?,
+            D::Open => {
+                if ctx.rest.is_empty() {
+                    self.status = Status::error("missing path");
+                } else {
+                    self.open_path(Path::new(ctx.rest))?;
+                }
             }
-            Action::OpenLineAbove => {
-                self.buffer.insert_line_above();
-                self.enter_mode(Mode::Insert);
-            }
+            D::GotoLine => self.goto_line(ctx.rest),
         }
         Ok(())
     }
 
-    fn apply_buffer(&mut self, action: BufferAction, ctx: Ctx) {
-        use BufferAction as B;
+    fn eval_motion(&mut self, m: MotionExpr) {
+        use MotionKind as M;
         let allow_after = matches!(self.mode, Mode::Insert);
-        let n = ctx.count;
-        match action {
-            B::MoveLeft => {
-                for _ in 0..n {
-                    self.buffer.move_left();
+        let n = m.count;
+        match m.motion {
+            M::Left => for _ in 0..n { self.buffer.move_left(); },
+            M::Right => for _ in 0..n { self.buffer.move_right(allow_after); },
+            M::Up => for _ in 0..n { self.buffer.move_up(); },
+            M::Down => for _ in 0..n { self.buffer.move_down(); },
+            M::LineStart => self.buffer.move_line_start(),
+            M::LineEnd => self.buffer.move_line_end(),
+            M::WordForward => for _ in 0..n { self.buffer.move_word_forward(); },
+            M::WordBack => for _ in 0..n { self.buffer.move_word_backward(); },
+            // `gg` with no count goes to line 1; `5gg` to line 5.
+            M::FileStart => {
+                if n > 1 {
+                    self.goto_line_n(n as usize);
+                } else {
+                    self.buffer.move_file_start();
                 }
             }
-            B::MoveRight => {
-                for _ in 0..n {
-                    self.buffer.move_right(allow_after);
-                }
-            }
-            B::MoveUp => {
-                for _ in 0..n {
-                    self.buffer.move_up();
-                }
-            }
-            B::MoveDown => {
-                for _ in 0..n {
-                    self.buffer.move_down();
-                }
-            }
-            B::MoveLineStart => self.buffer.move_line_start(),
-            B::MoveLineEnd => self.buffer.move_line_end(),
-            B::MoveFileStart => self.buffer.move_file_start(),
-            // Vim's `G` is count-aware: bare `G` jumps to file end; `<N>G`
-            // jumps to line N. Reuses the same Action variant.
-            B::MoveFileEnd => {
-                if ctx.count > 1 {
-                    self.goto_line_n(ctx.count as usize);
+            // `G` with no count goes to file end; `20G` to line 20.
+            M::FileEnd => {
+                if n > 1 {
+                    self.goto_line_n(n as usize);
                 } else {
                     self.buffer.move_file_end();
                 }
             }
-            B::MoveWordForward => {
-                for _ in 0..n {
-                    self.buffer.move_word_forward();
-                }
-            }
-            B::MoveWordBackward => {
-                for _ in 0..n {
-                    self.buffer.move_word_backward();
-                }
-            }
-            B::InsertNewline => self.buffer.insert_newline(),
-            B::DeleteCharUnderCursor => {
-                for _ in 0..n {
-                    self.buffer.delete_char_under_cursor();
-                }
-            }
-            B::DeleteCharBefore => {
-                for _ in 0..n {
-                    self.buffer.delete_char_before();
-                }
-            }
-            B::DeleteLine => {
-                for _ in 0..n {
-                    self.buffer.delete_line();
-                }
-            }
-            B::Yank => {
-                self.buffer.yank_line();
-                self.status = Status::info("yanked");
-            }
-            B::Paste => {
-                for _ in 0..n {
-                    self.buffer.paste_after();
-                }
-            }
-            B::Undo => {
-                self.status = Status::error("undo not implemented yet");
-            }
-            B::SearchNext => {
-                for _ in 0..n {
-                    self.jump_search(self.search.last_forward);
-                }
-            }
-            B::SearchPrev => {
-                for _ in 0..n {
-                    self.jump_search(!self.search.last_forward);
-                }
-            }
-            B::GotoLine => self.goto_line(ctx.rest),
+            M::SearchNext => for _ in 0..n { self.jump_search(self.search.last_forward); },
+            M::SearchPrev => for _ in 0..n { self.jump_search(!self.search.last_forward); },
         }
+    }
+
+    fn eval_op(&mut self, op: Operator, target: Target, outer_count: u32) -> Result<()> {
+        match target {
+            Target::LineWise => {
+                for _ in 0..outer_count {
+                    match op {
+                        Operator::Delete => self.buffer.delete_line(),
+                        Operator::Yank => {
+                            self.buffer.yank_line();
+                            self.status = Status::info("yanked");
+                        }
+                        Operator::Change => {
+                            self.status = Status::error("change not implemented yet");
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Target::Motion(_) => {
+                self.status = Status::error("operator + motion not implemented yet (Stage 2)");
+                Ok(())
+            }
+            Target::TextObject { .. } => {
+                self.status = Status::error("text objects not implemented yet (Stage 3)");
+                Ok(())
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ────────────────────────────────────────────────────────────────────
+
+    fn jump_search(&mut self, forward: bool) {
+        if let Some(c) = self.search.find_next(&self.buffer, forward) {
+            self.buffer.cursor = c;
+        } else {
+            self.status = Status::error("pattern not found");
+        }
+    }
+
+    fn do_save(&mut self, rest: &str) -> Result<()> {
+        if rest.is_empty() {
+            if self.buffer.path.is_some() {
+                self.buffer.save()?;
+                self.status = Status::info("written");
+            } else {
+                self.status = Status::error("no file name (use :w <path>)");
+            }
+        } else {
+            let p = Path::new(rest);
+            self.buffer.save_as(p)?;
+            self.status = Status::info(format!("written to {}", p.display()));
+        }
+        Ok(())
     }
 
     fn goto_line(&mut self, arg: &str) {
@@ -350,48 +426,11 @@ impl App {
         }
     }
 
-    /// Move the cursor to the start of the 1-based line `n`, clamped to
-    /// the last line of the buffer. Shared by `:goto`, `:<N>`, and `<N>G`.
     fn goto_line_n(&mut self, n: usize) {
         let last = self.buffer.lines.len().saturating_sub(1);
         self.buffer.cursor.row = n.saturating_sub(1).min(last);
         self.buffer.cursor.col = 0;
         self.buffer.clamp_col(false);
-    }
-
-    fn jump_search(&mut self, forward: bool) {
-        if let Some(c) = self.search.find_next(&self.buffer, forward) {
-            self.buffer.cursor = c;
-        } else {
-            self.status = Status::error("pattern not found");
-        }
-    }
-
-    fn apply_workspace(&mut self, action: WorkspaceAction, ctx: Ctx) -> Result<()> {
-        match action {
-            WorkspaceAction::Save => {
-                if ctx.rest.is_empty() {
-                    if self.buffer.path.is_some() {
-                        self.buffer.save()?;
-                        self.status = Status::info("written");
-                    } else {
-                        self.status = Status::error("no file name (use :w <path>)");
-                    }
-                } else {
-                    let p = Path::new(ctx.rest);
-                    self.buffer.save_as(p)?;
-                    self.status = Status::info(format!("written to {}", p.display()));
-                }
-            }
-            WorkspaceAction::Open => {
-                if ctx.rest.is_empty() {
-                    self.status = Status::error("missing path");
-                } else {
-                    self.open_path(Path::new(ctx.rest))?;
-                }
-            }
-        }
-        Ok(())
     }
 
     fn enter_mode(&mut self, mode: Mode) {
@@ -414,13 +453,14 @@ impl App {
     }
 }
 
-/// A `:` command binding. Pure data: name + description (for hint UI) + the
-/// `Action` it dispatches. Path arguments and the like flow through `Ctx`
-/// at dispatch time, not through this table.
+// ════════════════════════════════════════════════════════════════════════
+// `:` command table
+// ════════════════════════════════════════════════════════════════════════
+
 pub struct CommandBind {
     pub name: &'static str,
     pub description: &'static str,
-    pub action: Action,
+    pub kind: DirectKind,
 }
 
 impl CommandBind {
@@ -430,39 +470,11 @@ impl CommandBind {
 }
 
 pub const COMMAND_BINDS: &[CommandBind] = &[
-    CommandBind {
-        name: "q",
-        description: "quit",
-        action: Action::Quit,
-    },
-    CommandBind {
-        name: "q!",
-        description: "force quit",
-        action: Action::QuitForce,
-    },
-    CommandBind {
-        name: "w",
-        description: "save (or :w <path>)",
-        action: Action::Workspace(WorkspaceAction::Save),
-    },
-    CommandBind {
-        name: "wq",
-        description: "save & quit",
-        action: Action::SaveAndQuit,
-    },
-    CommandBind {
-        name: "x",
-        description: "save & quit",
-        action: Action::SaveAndQuit,
-    },
-    CommandBind {
-        name: "e",
-        description: "open <path>",
-        action: Action::Workspace(WorkspaceAction::Open),
-    },
-    CommandBind {
-        name: "goto",
-        description: "go to line <n>",
-        action: Action::Buffer(BufferAction::GotoLine),
-    },
+    CommandBind { name: "q",    description: "quit",                kind: DirectKind::Quit },
+    CommandBind { name: "q!",   description: "force quit",          kind: DirectKind::QuitForce },
+    CommandBind { name: "w",    description: "save (or :w <path>)", kind: DirectKind::Save },
+    CommandBind { name: "wq",   description: "save & quit",         kind: DirectKind::SaveAndQuit },
+    CommandBind { name: "x",    description: "save & quit",         kind: DirectKind::SaveAndQuit },
+    CommandBind { name: "e",    description: "open <path>",         kind: DirectKind::Open },
+    CommandBind { name: "goto", description: "go to line <n>",      kind: DirectKind::GotoLine },
 ];

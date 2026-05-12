@@ -1,9 +1,10 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
+use crate::action::{Operator, Token};
 use crate::app::{App, COMMAND_BINDS, Prompt};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::mode::Mode;
@@ -29,6 +30,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Prompt::Fuzzy(finder) = &app.prompt {
         draw_fuzzy(f, finder, f.area());
+    }
+    if !app.prompt.is_open() {
+        draw_pending_hints(f, app, chunks[1]);
     }
 }
 
@@ -133,6 +137,14 @@ fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Split the status bar so the right end can carry pending-key feedback
+    // and the cursor position right-aligned, while the left grows the
+    // mode badge + status message.
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(STATUS_RIGHT_WIDTH)])
+        .split(area);
+
     let (label, color) = status_label(app);
     let mode_span = Span::styled(
         format!(" {} ", label),
@@ -141,24 +153,175 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     );
-    let pos = format!(
-        " {}:{} ",
-        app.buffer.cursor.row + 1,
-        app.buffer.cursor.col + 1
-    );
     let status_style = if app.status.is_error() {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
-    let line = Line::from(vec![
+    let left = Line::from(vec![
         mode_span,
         Span::raw(" "),
         Span::styled(app.status.text().to_string(), status_style),
-        Span::raw(" "),
-        Span::styled(pos, Style::default().fg(Color::Gray)),
     ]);
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(left), halves[0]);
+
+    let pos = format!(
+        "{}:{} ",
+        app.buffer.cursor.row + 1,
+        app.buffer.cursor.col + 1
+    );
+    let pending = format_pending(&app.tokens);
+    let mut right_spans = Vec::new();
+    if !pending.is_empty() {
+        right_spans.push(Span::styled(
+            pending,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::raw(" "));
+    }
+    right_spans.push(Span::styled(pos, Style::default().fg(Color::Gray)));
+    f.render_widget(
+        Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
+        halves[1],
+    );
+}
+
+const STATUS_RIGHT_WIDTH: u16 = 24;
+
+const PENDING_HINT_WIDTH: u16 = 32;
+const PENDING_HINT_ROWS_MAX: u16 = 12;
+
+/// Which-key-style panel that lists valid continuations when the token
+/// stream is mid-sequence. Derives hints by inspecting the trailing
+/// token to figure out which parse context we're in.
+fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
+    let (title, entries) = match pending_hints(&app.tokens) {
+        Some(p) => p,
+        None => return,
+    };
+    if entries.is_empty() {
+        return;
+    }
+
+    let rows = (entries.len() as u16).min(PENDING_HINT_ROWS_MAX);
+    let width = PENDING_HINT_WIDTH;
+    let height = rows + 2;
+
+    let screen = f.area();
+    let x = screen.width.saturating_sub(width);
+    let y = status_area.y.saturating_sub(height);
+    let area = Rect {
+        x,
+        y,
+        width: width.min(screen.width.saturating_sub(x)),
+        height: height.min(status_area.y),
+    };
+    if area.height < 3 {
+        return;
+    }
+
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let body_rows = inner.height as usize;
+    let lines: Vec<Line> = entries
+        .iter()
+        .take(body_rows)
+        .map(|(k, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:>4} ", k),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(desc.to_string(), Style::default().fg(Color::Gray)),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Compute the hint panel title and entries for the current token state.
+/// Returns `None` when nothing useful can be hinted (initial state, or
+/// in the middle of a count without further context).
+fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(&'static str, &'static str)>)> {
+    // Find the trailing non-Count token — counts don't change what the
+    // hint context is.
+    let last = tokens.iter().rev().find(|t| !matches!(t, Token::Count(_)));
+    let last = last?;
+    let entries: Vec<(&'static str, &'static str)> = match last {
+        Token::LeaderPrefix => vec![("f", "fuzzy files"), ("l", "fuzzy lines")],
+        Token::GotoPrefix => vec![("g", "goto file start")],
+        Token::Op(op) => {
+            let (self_key, self_label) = match op {
+                Operator::Delete => ("d", "delete line (dd)"),
+                Operator::Yank => ("y", "yank line (yy)"),
+                Operator::Change => ("c", "change line (cc)"),
+            };
+            vec![
+                (self_key, self_label),
+                ("i", "inner …"),
+                ("a", "around …"),
+                ("w", "word"),
+                ("b", "back"),
+                ("$", "line end"),
+                ("0", "line start"),
+                ("h", "left"),
+                ("l", "right"),
+                ("j", "down"),
+                ("k", "up"),
+            ]
+        }
+        Token::Scope(_) => vec![
+            ("w", "word"),
+            ("\"", "double-quotes"),
+            ("'", "single-quotes"),
+            ("(", "parens"),
+            ("{", "braces"),
+            ("[", "brackets"),
+        ],
+        _ => return None,
+    };
+    let title = match last {
+        Token::LeaderPrefix => "leader",
+        Token::GotoPrefix => "goto",
+        Token::Op(_) => "operator",
+        Token::Scope(_) => "object",
+        _ => "",
+    };
+    Some((title, entries))
+}
+
+/// Render the un-resolved token stream as a short vim-style hint
+/// (e.g. `[Count(2), Count(0), Op(Delete)]` → `"20d"`).
+fn format_pending(tokens: &[Token]) -> String {
+    let mut s = String::new();
+    for t in tokens {
+        match t {
+            Token::Count(d) => s.push_str(&d.to_string()),
+            Token::Op(Operator::Delete) => s.push('d'),
+            Token::Op(Operator::Yank) => s.push('y'),
+            Token::Op(Operator::Change) => s.push('c'),
+            Token::SelfDouble(Operator::Delete) => s.push('d'),
+            Token::SelfDouble(Operator::Yank) => s.push('y'),
+            Token::SelfDouble(Operator::Change) => s.push('c'),
+            Token::Scope(crate::action::Scope::Inner) => s.push('i'),
+            Token::Scope(crate::action::Scope::Around) => s.push('a'),
+            Token::LeaderPrefix => s.push_str("<space>"),
+            Token::GotoPrefix => s.push('g'),
+            // These shouldn't be in pending state (they would've fired
+            // immediately or completed the parse).
+            Token::Motion(_) | Token::Direct(_) | Token::Object(_) => s.push('?'),
+        }
+    }
+    s
 }
 
 fn status_label(app: &App) -> (String, Color) {
