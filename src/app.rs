@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::action::{
     Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target, Token,
 };
+use crate::config::CursorShapes;
 use crate::editor::Buffer;
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::keymap::{self, Keymap};
@@ -61,6 +62,9 @@ pub struct App {
     /// User-customisable binding tables (defaults to the vim mapping
     /// and gets overridden by `~/.config/vorto/config.toml` at startup).
     pub keymap: Keymap,
+    /// Per-mode cursor shapes (Block/Bar/Underbar) — applied by the main
+    /// loop via `SetCursorStyle` after every draw.
+    pub cursor_shapes: CursorShapes,
     pub should_quit: bool,
 }
 
@@ -74,6 +78,7 @@ impl App {
             status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
             tokens: Vec::new(),
             keymap,
+            cursor_shapes: CursorShapes::default(),
             should_quit: false,
         }
     }

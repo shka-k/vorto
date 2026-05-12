@@ -35,12 +35,96 @@ use crate::mode::Mode;
 pub struct Config {
     #[serde(default)]
     pub bind: Vec<Binding>,
+    #[serde(default)]
+    pub cursor: CursorConfig,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Binding {
     pub keys: String,
     pub action: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CursorConfig {
+    pub normal: Option<String>,
+    pub insert: Option<String>,
+    pub visual: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Block,
+    Bar,
+    Underbar,
+}
+
+impl CursorShape {
+    /// DECSCUSR escape sequence — `CSI Ps SP q`, where Ps picks the
+    /// shape. Written directly to stdout from the main loop so the
+    /// terminal switches shape as the user changes mode.
+    pub fn ansi(self) -> &'static [u8] {
+        match self {
+            CursorShape::Block => b"\x1b[2 q",
+            CursorShape::Bar => b"\x1b[6 q",
+            CursorShape::Underbar => b"\x1b[4 q",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CursorShapes {
+    pub normal: CursorShape,
+    pub insert: CursorShape,
+    pub visual: CursorShape,
+}
+
+impl Default for CursorShapes {
+    fn default() -> Self {
+        Self {
+            normal: CursorShape::Block,
+            insert: CursorShape::Bar,
+            visual: CursorShape::Underbar,
+        }
+    }
+}
+
+impl CursorShapes {
+    pub fn for_mode(&self, mode: Mode) -> CursorShape {
+        match mode {
+            Mode::Normal => self.normal,
+            Mode::Insert => self.insert,
+            Mode::Visual => self.visual,
+        }
+    }
+}
+
+fn parse_cursor_shape(s: &str) -> Result<CursorShape> {
+    match s.to_lowercase().as_str() {
+        "block" => Ok(CursorShape::Block),
+        "bar" | "line" => Ok(CursorShape::Bar),
+        "underbar" | "underscore" | "underline" => Ok(CursorShape::Underbar),
+        other => bail!(
+            "unknown cursor shape `{}` (expected block|bar|underbar)",
+            other
+        ),
+    }
+}
+
+/// Resolve the `[cursor]` table into concrete `CursorShapes`, falling
+/// back to the per-mode defaults for any field the user didn't set.
+pub fn resolve_cursor_shapes(c: &CursorConfig) -> Result<CursorShapes> {
+    let mut shapes = CursorShapes::default();
+    if let Some(s) = &c.normal {
+        shapes.normal = parse_cursor_shape(s).with_context(|| "cursor.normal")?;
+    }
+    if let Some(s) = &c.insert {
+        shapes.insert = parse_cursor_shape(s).with_context(|| "cursor.insert")?;
+    }
+    if let Some(s) = &c.visual {
+        shapes.visual = parse_cursor_shape(s).with_context(|| "cursor.visual")?;
+    }
+    Ok(shapes)
 }
 
 /// Resolve the config-file path. Honors `$XDG_CONFIG_HOME` if set,
@@ -293,6 +377,40 @@ bind = [
         assert_eq!(cfg.bind.len(), 2);
         assert_eq!(cfg.bind[0].keys, "<C-s>");
         assert_eq!(cfg.bind[1].action, "save");
+    }
+
+    #[test]
+    fn cursor_defaults_when_unset() {
+        let cfg: Config = toml::from_str("").unwrap();
+        let shapes = resolve_cursor_shapes(&cfg.cursor).unwrap();
+        assert!(matches!(shapes.normal, CursorShape::Block));
+        assert!(matches!(shapes.insert, CursorShape::Bar));
+        assert!(matches!(shapes.visual, CursorShape::Underbar));
+    }
+
+    #[test]
+    fn cursor_overrides() {
+        let toml = r#"
+[cursor]
+normal = "bar"
+insert = "underbar"
+visual = "block"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let shapes = resolve_cursor_shapes(&cfg.cursor).unwrap();
+        assert!(matches!(shapes.normal, CursorShape::Bar));
+        assert!(matches!(shapes.insert, CursorShape::Underbar));
+        assert!(matches!(shapes.visual, CursorShape::Block));
+    }
+
+    #[test]
+    fn cursor_unknown_shape() {
+        let toml = r#"
+[cursor]
+normal = "diamond"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert!(resolve_cursor_shapes(&cfg.cursor).is_err());
     }
 
     #[test]
