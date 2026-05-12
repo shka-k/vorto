@@ -1,6 +1,5 @@
 mod eval;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -8,13 +7,12 @@ use anyhow::{Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{Ctx, Operator, PromptKind, Token};
-use crate::config::CursorShapes;
+use crate::config::{CursorShapes, LanguageRegistry};
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
 use crate::highlight::Loader;
 use crate::keymap::Keymap;
-use crate::languages::Language;
 use crate::lsp::{
     self, Diagnostic, Location, LspCoordinator, LspEvent, LspEventOutcome, WorkspaceEdit,
 };
@@ -69,11 +67,10 @@ pub struct App {
     /// Tree-sitter grammar loader. Lives for the whole program so the
     /// loaded `Language` pointers stay valid.
     pub loader: Loader,
-    /// Resolved language registry (built-in defaults overlaid with
-    /// `[languages.<name>]` from the user's config).
-    pub languages: HashMap<String, Language>,
-    /// `ext -> language name` lookup, built once from `languages`.
-    pub extension_index: HashMap<String, String>,
+    /// Resolved language catalog (built-in defaults overlaid with
+    /// `[languages.<name>]` from the user's config). Provides both
+    /// name-based and extension-based lookups.
+    pub languages: LanguageRegistry,
     /// Working directory captured once at process startup. All workspace
     /// root discovery anchors here — `:e` opened mid-session still uses
     /// the same anchor as the file passed on the command line.
@@ -105,8 +102,7 @@ impl App {
     pub fn new(
         keymap: Keymap,
         loader: Loader,
-        languages: HashMap<String, Language>,
-        extension_index: HashMap<String, String>,
+        languages: LanguageRegistry,
         event_tx: Sender<AppEvent>,
         startup_cwd: PathBuf,
     ) -> Self {
@@ -123,7 +119,6 @@ impl App {
             visual_anchor: None,
             loader,
             languages,
-            extension_index,
             startup_cwd,
             lsp,
             should_quit: false,
@@ -184,13 +179,11 @@ impl App {
         else {
             return;
         };
-        let Some(lang_name) = self.extension_index.get(&ext).cloned() else {
-            return;
-        };
-        let Some(spec) = self.languages.get(&lang_name).cloned() else {
+        let Some(spec) = self.languages.by_extension(&ext).cloned() else {
             return;
         };
         let Some(lsp_cfg) = spec.lsp else { return };
+        let lang_name = spec.name;
 
         if let Err(e) = self.lsp.ensure_client(&lang_name, &lsp_cfg, &path) {
             // Built-in defaults reference servers most users won't have
@@ -383,12 +376,10 @@ impl App {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
         let Some(ext) = ext else { return };
-        let Some(name) = self.extension_index.get(&ext).cloned() else {
+        let Some(spec) = self.languages.by_extension(&ext).cloned() else {
             return;
         };
-        let Some(spec) = self.languages.get(&name).cloned() else {
-            return;
-        };
+        let name = spec.name.clone();
         match self.loader.highlighter_for(&spec) {
             Ok(h) => self.buffer.highlighter = Some(h),
             Err(e) => {

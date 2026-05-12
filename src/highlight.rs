@@ -26,7 +26,7 @@ use tree_sitter::{
     Language, Parser, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree,
 };
 
-use crate::languages::Language as LangSpec;
+use crate::config::Language as LangSpec;
 
 // ────────────────────────────────────────────────────────────────────────
 // Loader

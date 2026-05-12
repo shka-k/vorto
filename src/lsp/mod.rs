@@ -25,7 +25,7 @@ use std::thread;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::languages::LspConfig;
+use crate::config::LspConfig;
 
 mod coordinator;
 pub use coordinator::{LspCoordinator, LspEventOutcome};

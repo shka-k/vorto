@@ -213,7 +213,7 @@ pub fn resolve(user: HashMap<String, LanguageConfig>) -> HashMap<String, Languag
 /// many-to-one (multiple extensions can resolve to the same language).
 /// Last-wins on collisions; collisions across languages should be rare
 /// enough that we don't bother surfacing them.
-pub fn build_extension_index(langs: &HashMap<String, Language>) -> HashMap<String, String> {
+fn build_extension_index(langs: &HashMap<String, Language>) -> HashMap<String, String> {
     let mut idx = HashMap::new();
     for (name, lang) in langs {
         for ext in &lang.extensions {
@@ -221,6 +221,36 @@ pub fn build_extension_index(langs: &HashMap<String, Language>) -> HashMap<Strin
         }
     }
     idx
+}
+
+/// Catalog of resolved languages with both name and extension lookups.
+/// Built once at startup from the user's TOML overlaid on the built-in
+/// defaults; consumed by `attach_lsp` / `attach_highlighter` to decide
+/// what tooling to spawn for a given file.
+#[derive(Debug, Clone, Default)]
+pub struct LanguageRegistry {
+    by_name: HashMap<String, Language>,
+    extension_to_name: HashMap<String, String>,
+}
+
+impl LanguageRegistry {
+    /// Build the catalog from the user's `[languages.<name>]` table,
+    /// overlaying onto the built-in defaults.
+    pub fn build(user: HashMap<String, LanguageConfig>) -> Self {
+        let by_name = resolve(user);
+        let extension_to_name = build_extension_index(&by_name);
+        Self {
+            by_name,
+            extension_to_name,
+        }
+    }
+
+    /// Resolve a file extension (without the leading `.`) to its
+    /// language entry, if any.
+    pub fn by_extension(&self, ext: &str) -> Option<&Language> {
+        let name = self.extension_to_name.get(ext)?;
+        self.by_name.get(name)
+    }
 }
 
 #[cfg(test)]

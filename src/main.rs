@@ -7,7 +7,6 @@ mod event;
 mod fuzzy;
 mod highlight;
 mod keymap;
-mod languages;
 mod lsp;
 mod mode;
 mod prompt;
@@ -49,8 +48,7 @@ fn main() -> Result<()> {
     let cfg = config::load_or_default(cfg_path.as_deref())?;
     config::apply(&cfg, &mut keymap)?;
 
-    let languages = languages::resolve(cfg.languages.clone());
-    let extension_index = languages::build_extension_index(&languages);
+    let languages = config::LanguageRegistry::build(cfg.languages.clone());
     let loader = highlight::Loader::new(config::grammar_dir(&cfg), config::query_dir(&cfg));
 
     // Unified event channel. Terminal input runs on a dedicated thread
@@ -70,14 +68,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let mut app = App::new(
-        keymap,
-        loader,
-        languages,
-        extension_index,
-        event_tx,
-        startup_cwd,
-    );
+    let mut app = App::new(keymap, loader, languages, event_tx, startup_cwd);
     app.cursor_shapes = config::resolve_cursor_shapes(&cfg.cursor)?;
     if let Some(p) = path {
         app.open_path(std::path::Path::new(&p))?;

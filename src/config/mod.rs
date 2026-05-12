@@ -18,6 +18,7 @@
 
 mod cursor;
 mod keys;
+mod languages;
 
 use std::path::PathBuf;
 
@@ -26,9 +27,10 @@ use crossterm::event::KeyCode;
 use serde::Deserialize;
 
 use crate::keymap::{Keymap, LEADER};
-use crate::languages::LanguageConfig;
 
 pub use cursor::{CursorConfig, CursorShape, CursorShapes, resolve_cursor_shapes};
+pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig};
+
 use keys::{action_to_token, parse_sequence};
 
 // ────────────────────────────────────────────────────────────────────────
