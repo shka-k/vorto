@@ -23,19 +23,6 @@ pub enum CursorShape {
     Underbar,
 }
 
-impl CursorShape {
-    /// DECSCUSR escape sequence — `CSI Ps SP q`, where Ps picks the
-    /// shape. Written directly to stdout from the main loop so the
-    /// terminal switches shape as the user changes mode.
-    pub fn ansi(self) -> &'static [u8] {
-        match self {
-            CursorShape::Block => b"\x1b[2 q",
-            CursorShape::Bar => b"\x1b[6 q",
-            CursorShape::Underbar => b"\x1b[4 q",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct CursorShapes {
     pub normal: CursorShape,

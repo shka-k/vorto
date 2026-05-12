@@ -38,22 +38,6 @@ impl Binding {
     pub(crate) fn matches(&self, code: KeyCode) -> bool {
         self.key == code || self.aliases.contains(&code)
     }
-
-    /// Human-readable form of `key` for hint rendering. Single chars
-    /// stringify to themselves; the few special keys we use as
-    /// primaries have explicit names.
-    pub fn display_key(&self) -> String {
-        match self.key {
-            KeyCode::Char(c) => c.to_string(),
-            KeyCode::Left => "←".into(),
-            KeyCode::Right => "→".into(),
-            KeyCode::Up => "↑".into(),
-            KeyCode::Down => "↓".into(),
-            KeyCode::Home => "Home".into(),
-            KeyCode::End => "End".into(),
-            other => format!("{:?}", other),
-        }
-    }
 }
 
 /// Keys valid in the OpPending context (right after `d`/`y`/`c`,

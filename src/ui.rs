@@ -493,7 +493,7 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
             entries.extend(
                 OP_PENDING_BINDINGS
                     .iter()
-                    .map(|b| (b.display_key(), b.label)),
+                    .map(|b| (display_key(b.key), b.label)),
             );
             (name, entries)
         }
@@ -504,7 +504,7 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
             };
             let entries = OBJECT_BINDINGS
                 .iter()
-                .map(|b| (b.display_key(), b.label))
+                .map(|b| (display_key(b.key), b.label))
                 .collect();
             (name, entries)
         }
@@ -711,4 +711,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(v[1])[1]
+}
+
+/// Human-readable form of a `KeyCode` for which-key hint rendering.
+/// Single chars stringify to themselves; the few special keys that
+/// appear as binding primaries have explicit names.
+fn display_key(code: crossterm::event::KeyCode) -> String {
+    use crossterm::event::KeyCode;
+    match code {
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Left => "←".into(),
+        KeyCode::Right => "→".into(),
+        KeyCode::Up => "↑".into(),
+        KeyCode::Down => "↓".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        other => format!("{:?}", other),
+    }
 }
