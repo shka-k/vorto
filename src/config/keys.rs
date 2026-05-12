@@ -3,9 +3,9 @@
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use super::keymap::KeySig;
 use crate::action::{DirectKind, MotionKind, Operator, PromptKind, Token};
 use crate::fuzzy::FuzzyKind;
-use crate::keymap::KeySig;
 use crate::mode::Mode;
 
 /// Parse a vim-style key string into a sequence of `KeySig`s.

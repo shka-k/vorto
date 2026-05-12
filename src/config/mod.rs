@@ -22,7 +22,9 @@
 //! or **add** new ones. Only single keys (Initial context) and
 //! `<space>X` two-key sequences (Leader context) are supported in v1.
 
+mod command;
 mod cursor;
+mod keymap;
 mod keys;
 mod languages;
 
@@ -32,12 +34,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use crossterm::event::KeyCode;
 use serde::Deserialize;
 
-use crate::keymap::{Keymap, LEADER};
-
+pub use command::{COMMAND_BINDS, CommandBind};
 pub use cursor::{CursorShape, CursorShapes};
+pub use keymap::{KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig};
 
 use cursor::{CursorConfig, resolve_cursor_shapes};
+use keymap::LEADER;
 use keys::{action_to_token, parse_sequence};
 
 /// Resolved configuration — the runtime state of "what settings is the
@@ -97,7 +100,7 @@ impl Config {
 #[derive(Debug, Default, Deserialize)]
 struct Toml {
     #[serde(default)]
-    bind: Vec<Binding>,
+    bind: Vec<BindEntry>,
     #[serde(default)]
     cursor: CursorConfig,
     /// `[languages.<name>]` blocks. Resolved against built-in defaults
@@ -126,8 +129,9 @@ impl Toml {
     }
 }
 
+/// Single `[[bind]]` row from the TOML schema.
 #[derive(Debug, Deserialize)]
-struct Binding {
+struct BindEntry {
     keys: String,
     action: String,
 }
@@ -190,7 +194,6 @@ fn install_binding(keymap: &mut Keymap, keys: &str, action: &str) -> Result<()> 
 mod tests {
     use super::*;
     use crate::action::{DirectKind, Token};
-    use crate::keymap::KeySig;
     use crossterm::event::KeyModifiers;
 
     #[test]

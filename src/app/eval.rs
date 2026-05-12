@@ -16,9 +16,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, Status, root_cause};
 use crate::action::{Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, Target, Token};
-use crate::command::CommandBind;
+use crate::config::{CommandBind, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 use crate::editor::Cursor;
-use crate::keymap::{KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 use crate::mode::Mode;
 
 // ────────────────────────────────────────────────────────────────────────

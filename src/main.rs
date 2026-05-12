@@ -1,12 +1,10 @@
 mod action;
 mod app;
-mod command;
 mod config;
 mod editor;
 mod event;
 mod fuzzy;
 mod highlight;
-mod keymap;
 mod lsp;
 mod mode;
 mod prompt;

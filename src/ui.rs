@@ -6,10 +6,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph
 
 use crate::action::{Operator, Token};
 use crate::app::{App, Prompt, Selection};
-use crate::command::{COMMAND_BINDS, CommandBind};
+use crate::config::{COMMAND_BINDS, CommandBind};
+use crate::config::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Capture;
-use crate::keymap::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
 use crate::lsp::{Diagnostic, Severity};
 use crate::mode::Mode;
 use crate::theme;
