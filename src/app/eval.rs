@@ -9,8 +9,9 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::{App, CommandBind, Status, root_cause};
+use super::{App, Status, root_cause};
 use crate::action::{Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, Target};
+use crate::command::CommandBind;
 use crate::editor::Cursor;
 use crate::mode::Mode;
 

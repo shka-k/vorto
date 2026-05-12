@@ -1,13 +1,14 @@
 mod action;
 mod app;
+mod command;
 mod config;
 mod editor;
+mod event;
 mod fuzzy;
 mod highlight;
 mod keymap;
 mod languages;
 mod lsp;
-mod lsp_coordinator;
 mod mode;
 mod prompt;
 mod search;
@@ -19,7 +20,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self as crossterm_event, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -54,13 +55,13 @@ fn main() -> Result<()> {
 
     // Unified event channel. Terminal input runs on a dedicated thread
     // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.
-    let (event_tx, event_rx) = mpsc::channel::<app::AppEvent>();
+    let (event_tx, event_rx) = mpsc::channel::<event::AppEvent>();
     let input_tx = event_tx.clone();
     thread::spawn(move || {
         loop {
-            match event::read() {
+            match crossterm_event::read() {
                 Ok(ev) => {
-                    if input_tx.send(app::AppEvent::Term(ev)).is_err() {
+                    if input_tx.send(event::AppEvent::Term(ev)).is_err() {
                         return;
                     }
                 }
@@ -97,7 +98,7 @@ fn main() -> Result<()> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    event_rx: &mpsc::Receiver<app::AppEvent>,
+    event_rx: &mpsc::Receiver<event::AppEvent>,
 ) -> Result<()> {
     let mut last_shape: Option<CursorShape> = None;
     while !app.should_quit {
@@ -128,11 +129,11 @@ fn run(
     Ok(())
 }
 
-fn dispatch(app: &mut App, ev: app::AppEvent) -> Result<()> {
+fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
     match ev {
-        app::AppEvent::Term(Event::Key(key)) => app.handle_key(key)?,
-        app::AppEvent::Term(_) => {}
-        app::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
+        event::AppEvent::Term(Event::Key(key)) => app.handle_key(key)?,
+        event::AppEvent::Term(_) => {}
+        event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
     }
     Ok(())
 }

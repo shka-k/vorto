@@ -27,6 +27,9 @@ use serde_json::{Value, json};
 
 use crate::languages::LspConfig;
 
+mod coordinator;
+pub use coordinator::{LspCoordinator, LspEventOutcome};
+
 // ────────────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────────────

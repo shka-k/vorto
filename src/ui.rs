@@ -5,7 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 use crate::action::{Operator, Token};
-use crate::app::{App, COMMAND_BINDS, Prompt, Selection};
+use crate::app::{App, Prompt, Selection};
+use crate::command::{COMMAND_BINDS, CommandBind};
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::highlight::Capture;
 use crate::keymap::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
@@ -56,7 +57,7 @@ fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
         return;
     }
 
-    let hints: Vec<&crate::app::CommandBind> = COMMAND_BINDS
+    let hints: Vec<&CommandBind> = COMMAND_BINDS
         .iter()
         .filter(|b| b.name.starts_with(query))
         .take(HINT_MAX)

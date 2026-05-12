@@ -12,10 +12,10 @@ use std::sync::mpsc::Sender;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::app::AppEvent;
+use super::{self as lsp, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit};
 use crate::editor::Cursor;
+use crate::event::AppEvent;
 use crate::languages::LspConfig;
-use crate::lsp::{self, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit};
 
 /// What an outstanding LSP request was for. Stored under
 /// `pending[(lang, id)]` and consumed when the matching

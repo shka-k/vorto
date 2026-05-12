@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 use anyhow::{Result, anyhow};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Ctx, DirectKind, Operator, PromptKind, Token};
+use crate::action::{Ctx, Operator, PromptKind, Token};
 use crate::config::CursorShapes;
 use crate::editor::{Buffer, Cursor};
+use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
 use crate::highlight::Loader;
 use crate::keymap::{self, Keymap};
@@ -22,13 +23,6 @@ use crate::prompt::{PromptController, PromptOutcome};
 use crate::search::SearchState;
 
 pub use crate::prompt::Prompt;
-
-/// Unified event flowing into the main loop. Terminal input and LSP
-/// reader threads both feed into the same `mpsc::Sender`.
-pub enum AppEvent {
-    Term(Event),
-    Lsp(LspEvent),
-}
 
 /// Status-bar message paired with its severity. The UI renders `Error`
 /// variants in red.
@@ -655,22 +649,6 @@ fn format_location_label(loc: &Location, root: &Path) -> String {
     )
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// `:` command table
-// ════════════════════════════════════════════════════════════════════════
-
-pub struct CommandBind {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub kind: DirectKind,
-}
-
-impl CommandBind {
-    pub fn find(name: &str) -> Option<&'static CommandBind> {
-        COMMAND_BINDS.iter().find(|b| b.name == name)
-    }
-}
-
 /// Walk an anyhow error chain to its innermost cause — keeps the
 /// status-bar message focused on the actual filesystem / parser error
 /// rather than the wrapping context.
@@ -690,41 +668,3 @@ fn is_command_not_found(e: &anyhow::Error) -> bool {
             .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
     })
 }
-
-pub const COMMAND_BINDS: &[CommandBind] = &[
-    CommandBind {
-        name: "q",
-        description: "quit",
-        kind: DirectKind::Quit,
-    },
-    CommandBind {
-        name: "q!",
-        description: "force quit",
-        kind: DirectKind::QuitForce,
-    },
-    CommandBind {
-        name: "w",
-        description: "save (or :w <path>)",
-        kind: DirectKind::Save,
-    },
-    CommandBind {
-        name: "wq",
-        description: "save & quit",
-        kind: DirectKind::SaveAndQuit,
-    },
-    CommandBind {
-        name: "x",
-        description: "save & quit",
-        kind: DirectKind::SaveAndQuit,
-    },
-    CommandBind {
-        name: "e",
-        description: "open <path>",
-        kind: DirectKind::Open,
-    },
-    CommandBind {
-        name: "goto",
-        description: "go to line <n>",
-        kind: DirectKind::GotoLine,
-    },
-];
