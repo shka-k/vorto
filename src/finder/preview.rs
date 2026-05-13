@@ -25,7 +25,7 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 
 use crate::config::LanguageRegistry;
-use crate::highlight::{Highlighter, Loader};
+use crate::syntax::{Highlighter, Loader};
 
 /// One fully-built fuzzy-finder preview: pre-split lines plus a tree-
 /// sitter highlighter with a parsed tree already attached. Built off

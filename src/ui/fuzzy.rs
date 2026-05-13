@@ -9,9 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
 use crate::app::{App, Prompt};
-use crate::fuzzy::{Finder, FuzzyKind};
-use crate::highlight::Capture;
-use crate::theme;
+use crate::finder::{Finder, FuzzyKind};
+use crate::syntax::{self, Capture};
 
 /// Color of the highlight band drawn behind the target preview line.
 const PREVIEW_HIT_BG: Color = Color::Rgb(45, 45, 60);
@@ -305,7 +304,7 @@ fn render_preview_row(
         if lo >= hi {
             continue;
         }
-        let style = theme::style_for(&cap.name);
+        let style = syntax::style_for(&cap.name);
         for slot in base.iter_mut().take(hi).skip(lo) {
             *slot = style;
         }

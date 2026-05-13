@@ -7,10 +7,14 @@
 //! - [`motion`] — word/paragraph motions and `motion_target`.
 //! - [`text_object`] — `iw`/`ip`/`i(` etc. resolution.
 //! - [`ops`] — range/line/block delete + yank + paste.
+//! - [`search`] — `/`/`?` find-next state and lookup over the buffer.
 
 mod motion;
 mod ops;
+mod search;
 mod text_object;
+
+pub use search::SearchState;
 
 use std::cell::Cell;
 use std::fs;
@@ -18,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::highlight::Highlighter;
+use crate::syntax::Highlighter;
 
 #[derive(Default)]
 pub struct Buffer {

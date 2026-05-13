@@ -12,9 +12,9 @@ use anyhow::Result;
 
 use crate::editor::Buffer;
 use crate::event::AppEvent;
-use crate::highlight::Highlighter;
+use crate::finder::PreviewEntry;
 use crate::lsp::{self, LspClient};
-use crate::preview::PreviewEntry;
+use crate::syntax::Highlighter;
 
 use super::{App, BufferRef, SleepingBuffer, Status, is_command_not_found, root_cause};
 

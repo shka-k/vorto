@@ -321,7 +321,7 @@ pub const Z_BINDINGS: &[Binding] = {
 /// hint renderer.
 pub const LEADER_DEFAULTS: &[Binding] = {
     use crate::action::{DirectKind as D, PromptKind};
-    use crate::fuzzy::FuzzyKind;
+    use crate::finder::FuzzyKind;
     use Token::Direct as Dir;
     &[
         Binding {

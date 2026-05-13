@@ -30,12 +30,12 @@ use crate::action::{LastFind, Token};
 use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
-use crate::highlight::Loader;
+use crate::editor::SearchState;
+use crate::finder::{self, PreviewLru};
 use crate::lsp::LspCoordinator;
 use crate::mode::Mode;
-use crate::preview::{self, PreviewLru};
 use crate::prompt::PromptController;
-use crate::search::SearchState;
+use crate::syntax::Loader;
 
 pub use crate::prompt::Prompt;
 
@@ -132,7 +132,7 @@ impl App {
         // closure that wraps results in `AppEvent::PreviewReady` so the
         // main loop just inserts them into the LRU on dispatch.
         let preview_emit_tx = event_tx.clone();
-        preview::spawn_preview_worker(
+        finder::spawn_preview_worker(
             Arc::clone(&loader),
             config.languages.clone(),
             preview_rx,

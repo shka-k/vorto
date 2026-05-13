@@ -1,4 +1,4 @@
-use crate::fuzzy::FuzzyKind;
+use crate::finder::FuzzyKind;
 use crate::mode::Mode;
 
 // ════════════════════════════════════════════════════════════════════════

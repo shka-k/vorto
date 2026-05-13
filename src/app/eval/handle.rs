@@ -153,7 +153,7 @@ impl App {
             D::BufferDeleteForce => cmds.push(Cmd::BufferDelete { force: true }),
             D::BufferList => {
                 cmds.push(Cmd::OpenPrompt(PromptKind::Fuzzy(
-                    crate::fuzzy::FuzzyKind::Buffers,
+                    crate::finder::FuzzyKind::Buffers,
                 )));
             }
             D::SaveAndQuit => cmds.push(Cmd::Save {

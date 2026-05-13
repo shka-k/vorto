@@ -9,9 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Selection};
-use crate::highlight::Capture;
 use crate::lsp::Severity;
-use crate::theme;
+use crate::syntax::{self, Capture};
 
 /// Color used to paint visually-selected text. Picked to read clearly on
 /// both dark and light terminals.
@@ -168,7 +167,7 @@ fn render_line(
         if lo >= hi {
             continue;
         }
-        let style = theme::style_for(&cap.name);
+        let style = syntax::style_for(&cap.name);
         for slot in base.iter_mut().take(hi).skip(lo) {
             *slot = style;
         }

@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use crossterm::event::Event;
 
-use crate::highlight::Highlighter;
+use crate::finder::PreviewEntry;
 use crate::lsp::{LspClient, LspEvent};
-use crate::preview::PreviewEntry;
+use crate::syntax::Highlighter;
 
 pub enum AppEvent {
     Term(Event),

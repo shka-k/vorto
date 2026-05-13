@@ -7,7 +7,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::BufferRef;
-use crate::fuzzy::{Finder, FuzzyKind};
+use crate::finder::{Finder, FuzzyKind};
 use crate::lsp::Location;
 
 /// Active prompt state. Mirrors the four ways the user can interact

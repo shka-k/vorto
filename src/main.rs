@@ -4,14 +4,11 @@ mod config;
 mod editor;
 mod effect;
 mod event;
-mod fuzzy;
-mod highlight;
+mod finder;
 mod lsp;
 mod mode;
-mod preview;
 mod prompt;
-mod search;
-mod theme;
+mod syntax;
 mod ui;
 
 use std::io::{self, Stdout, Write};
@@ -44,7 +41,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let cfg = config::Config::load(config::default_path().as_deref())?;
-    let loader = highlight::Loader::new(cfg.grammar_dir.clone(), cfg.query_dir.clone());
+    let loader = syntax::Loader::new(cfg.grammar_dir.clone(), cfg.query_dir.clone());
 
     // Unified event channel. Terminal input runs on a dedicated thread
     // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.

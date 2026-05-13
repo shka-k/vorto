@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{Ctx, MotionKind, Operator, PromptKind};
 use crate::editor::Cursor;
-use crate::fuzzy::FuzzyKind;
+use crate::finder::FuzzyKind;
 use crate::mode::Mode;
 use crate::prompt::PromptOutcome;
 
