@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use crate::action::{Operator, Token};
 use crate::app::App;
 use crate::config::{COMMAND_BINDS, CommandBind};
-use crate::config::{OBJECT_BINDINGS, OP_PENDING_BINDINGS};
+use crate::config::{GOTO_BINDINGS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS};
 
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
@@ -177,13 +177,30 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
         ),
         Token::GotoPrefix => (
             "goto",
-            vec![
-                ("g".to_string(), "goto file start"),
-                ("d".to_string(), "definition (lsp)"),
-                ("D".to_string(), "declaration (lsp)"),
-                ("i".to_string(), "implementation (lsp)"),
-                ("r".to_string(), "references (lsp)"),
-            ],
+            GOTO_BINDINGS
+                .iter()
+                .map(|b| (display_key(b.key), b.label))
+                .collect(),
+        ),
+        Token::ZPrefix => (
+            "viewport",
+            Z_BINDINGS
+                .iter()
+                .map(|b| (display_key(b.key), b.label))
+                .collect(),
+        ),
+        Token::FindCharPrefix { forward, till } => {
+            let label = match (forward, till) {
+                (true, false) => "type char to find forward",
+                (false, false) => "type char to find backward",
+                (true, true) => "type char to step before",
+                (false, true) => "type char to step after",
+            };
+            ("find char", vec![("…".to_string(), label)])
+        }
+        Token::ReplaceCharPrefix => (
+            "replace",
+            vec![("…".to_string(), "type the replacement char")],
         ),
         Token::Op(op) => {
             // Each operator's repeat-self shortcut (dd/yy/cc) is the only

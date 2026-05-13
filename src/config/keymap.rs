@@ -74,6 +74,66 @@ pub const OP_PENDING_BINDINGS: &[Binding] = {
             label: "back",
         },
         Binding {
+            key: KeyCode::Char('e'),
+            aliases: &[],
+            token: M(WordEnd),
+            label: "word end",
+        },
+        Binding {
+            key: KeyCode::Char('W'),
+            aliases: &[],
+            token: M(BigWordForward),
+            label: "WORD",
+        },
+        Binding {
+            key: KeyCode::Char('B'),
+            aliases: &[],
+            token: M(BigWordBack),
+            label: "WORD back",
+        },
+        Binding {
+            key: KeyCode::Char('E'),
+            aliases: &[],
+            token: M(BigWordEnd),
+            label: "WORD end",
+        },
+        Binding {
+            key: KeyCode::Char('f'),
+            aliases: &[],
+            token: Token::FindCharPrefix { forward: true, till: false },
+            label: "find char →",
+        },
+        Binding {
+            key: KeyCode::Char('F'),
+            aliases: &[],
+            token: Token::FindCharPrefix { forward: false, till: false },
+            label: "find char ←",
+        },
+        Binding {
+            key: KeyCode::Char('t'),
+            aliases: &[],
+            token: Token::FindCharPrefix { forward: true, till: true },
+            label: "till char →",
+        },
+        Binding {
+            key: KeyCode::Char('T'),
+            aliases: &[],
+            token: Token::FindCharPrefix { forward: false, till: true },
+            label: "till char ←",
+        },
+        Binding {
+            key: KeyCode::Char(';'),
+            aliases: &[],
+            token: M(RepeatFind { reverse: false }),
+            label: "repeat find",
+        },
+        Binding {
+            key: KeyCode::Char(','),
+            aliases: &[],
+            token: M(RepeatFind { reverse: true }),
+            label: "repeat find ↺",
+        },
+        Binding {
             key: KeyCode::Char('}'),
             aliases: &[],
             token: M(ParagraphForward),
@@ -96,6 +156,18 @@ pub const OP_PENDING_BINDINGS: &[Binding] = {
             aliases: &[KeyCode::Home],
             token: M(LineStart),
             label: "line start",
+        },
+        Binding {
+            key: KeyCode::Char('^'),
+            aliases: &[],
+            token: M(LineFirstNonBlank),
+            label: "first non-blank",
+        },
+        Binding {
+            key: KeyCode::Char('%'),
+            aliases: &[],
+            token: M(BracketMatch),
+            label: "match bracket",
         },
         Binding {
             key: KeyCode::Char('h'),
@@ -126,6 +198,120 @@ pub const OP_PENDING_BINDINGS: &[Binding] = {
             aliases: &[],
             token: M(FileEnd),
             label: "file end",
+        },
+    ]
+};
+
+/// Keys valid in the GotoPending context (right after `g`). Lives
+/// here as the single source of truth for both the parser
+/// (`goto_pending_token` in `app/eval.rs`) and the which-key hint
+/// renderer (`pending_hints` in `ui/hints.rs`).
+pub const GOTO_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use MotionKind::*;
+    use Token::Direct as Dir;
+    use Token::Motion as M;
+    &[
+        // `gg` re-emits the prefix so `[GotoPrefix, GotoPrefix]` closes
+        // to a motion in `build_expr`.
+        Binding {
+            key: KeyCode::Char('g'),
+            aliases: &[],
+            token: Token::GotoPrefix,
+            label: "file start (gg)",
+        },
+        Binding {
+            key: KeyCode::Char('_'),
+            aliases: &[],
+            token: M(LineLastNonBlank),
+            label: "line last non-blank",
+        },
+        Binding {
+            key: KeyCode::Char('e'),
+            aliases: &[],
+            token: M(WordEndBack),
+            label: "word end back",
+        },
+        Binding {
+            key: KeyCode::Char('E'),
+            aliases: &[],
+            token: M(BigWordEndBack),
+            label: "WORD end back",
+        },
+        Binding {
+            key: KeyCode::Char('s'),
+            aliases: &[],
+            token: M(LineFirstNonBlank),
+            label: "line start (= ^)",
+        },
+        Binding {
+            key: KeyCode::Char('l'),
+            aliases: &[],
+            token: M(LineEnd),
+            label: "line end (= $)",
+        },
+        Binding {
+            key: KeyCode::Char('c'),
+            aliases: &[],
+            token: M(ViewportMiddle),
+            label: "viewport mid (= M)",
+        },
+        Binding {
+            key: KeyCode::Char('b'),
+            aliases: &[],
+            token: M(ViewportBottom),
+            label: "viewport bot (= L)",
+        },
+        Binding {
+            key: KeyCode::Char('d'),
+            aliases: &[],
+            token: Dir(D::GotoDefinition),
+            label: "definition (lsp)",
+        },
+        Binding {
+            key: KeyCode::Char('D'),
+            aliases: &[],
+            token: Dir(D::GotoDeclaration),
+            label: "declaration (lsp)",
+        },
+        Binding {
+            key: KeyCode::Char('i'),
+            aliases: &[],
+            token: Dir(D::GotoImplementation),
+            label: "implementation (lsp)",
+        },
+        Binding {
+            key: KeyCode::Char('r'),
+            aliases: &[],
+            token: Dir(D::FindReferences),
+            label: "references (lsp)",
+        },
+    ]
+};
+
+/// Keys valid in the ZPending context (right after `z`). Same
+/// pattern as [`GOTO_BINDINGS`].
+pub const Z_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use Token::Direct as Dir;
+    &[
+        Binding {
+            key: KeyCode::Char('z'),
+            aliases: &[],
+            token: Dir(D::ViewportCenter),
+            label: "center cursor",
+        },
+        Binding {
+            key: KeyCode::Char('t'),
+            aliases: &[],
+            token: Dir(D::ViewportTopAtCursor),
+            label: "scroll cursor to top",
+        },
+        Binding {
+            key: KeyCode::Char('b'),
+            aliases: &[],
+            token: Dir(D::ViewportBottomAtCursor),
+            label: "scroll cursor to bottom",
         },
     ]
 };
@@ -287,20 +473,52 @@ impl Keymap {
             (KeyCode::Char('$'), Motion(M::LineEnd)),
             (KeyCode::End, Motion(M::LineEnd)),
             (KeyCode::Home, Motion(M::LineStart)),
+            (KeyCode::Char('^'), Motion(M::LineFirstNonBlank)),
             (KeyCode::Char('w'), Motion(M::WordForward)),
             (KeyCode::Char('b'), Motion(M::WordBack)),
+            (KeyCode::Char('e'), Motion(M::WordEnd)),
+            (KeyCode::Char('W'), Motion(M::BigWordForward)),
+            (KeyCode::Char('B'), Motion(M::BigWordBack)),
+            (KeyCode::Char('E'), Motion(M::BigWordEnd)),
             (KeyCode::Char('{'), Motion(M::ParagraphBack)),
             (KeyCode::Char('}'), Motion(M::ParagraphForward)),
             (KeyCode::Char('G'), Motion(M::FileEnd)),
+            (KeyCode::Char('H'), Motion(M::ViewportTop)),
+            (KeyCode::Char('M'), Motion(M::ViewportMiddle)),
+            (KeyCode::Char('L'), Motion(M::ViewportBottom)),
+            (KeyCode::Char('%'), Motion(M::BracketMatch)),
+            (KeyCode::Char('*'), Motion(M::SearchWordForward)),
+            (KeyCode::Char('#'), Motion(M::SearchWordBack)),
             (KeyCode::Char('n'), Motion(M::SearchNext)),
             (KeyCode::Char('N'), Motion(M::SearchPrev)),
+            // ── char-find prefixes (next keystroke is the literal target) ─
+            (
+                KeyCode::Char('f'),
+                FindCharPrefix { forward: true, till: false },
+            ),
+            (
+                KeyCode::Char('F'),
+                FindCharPrefix { forward: false, till: false },
+            ),
+            (
+                KeyCode::Char('t'),
+                FindCharPrefix { forward: true, till: true },
+            ),
+            (
+                KeyCode::Char('T'),
+                FindCharPrefix { forward: false, till: true },
+            ),
+            (KeyCode::Char(';'), Motion(M::RepeatFind { reverse: false })),
+            (KeyCode::Char(','), Motion(M::RepeatFind { reverse: true })),
             // ── operators ────────────────────────────────────────────
             (KeyCode::Char('d'), Op(Operator::Delete)),
             (KeyCode::Char('y'), Op(Operator::Yank)),
             (KeyCode::Char('c'), Op(Operator::Change)),
             // ── standalone commands ──────────────────────────────────
             (KeyCode::Char('i'), Direct(D::EnterMode(Mode::Insert))),
-            (KeyCode::Char('a'), Motion(M::Right)), // vim's append: stub
+            (KeyCode::Char('I'), Direct(D::InsertAtLineStart)),
+            (KeyCode::Char('a'), Direct(D::AppendAfterCursor)),
+            (KeyCode::Char('A'), Direct(D::AppendAtLineEnd)),
             (KeyCode::Char('v'), Direct(D::EnterMode(Mode::Visual))),
             (KeyCode::Char('V'), Direct(D::EnterMode(Mode::VisualLine))),
             (KeyCode::Char('o'), Direct(D::OpenLineBelow)),
@@ -308,6 +526,15 @@ impl Keymap {
             (KeyCode::Char('x'), Direct(D::DeleteCharUnderCursor)),
             (KeyCode::Char('p'), Direct(D::Paste)),
             (KeyCode::Char('u'), Direct(D::Undo)),
+            (KeyCode::Char('C'), Direct(D::ChangeToEol)),
+            (KeyCode::Char('D'), Direct(D::DeleteToEol)),
+            (KeyCode::Char('Y'), Direct(D::YankLine)),
+            (KeyCode::Char('J'), Direct(D::JoinLines)),
+            (KeyCode::Char('~'), Direct(D::ToggleCase)),
+            (KeyCode::Char('s'), Direct(D::SubstituteChar)),
+            (KeyCode::Char('S'), Direct(D::SubstituteLine)),
+            (KeyCode::Char('r'), ReplaceCharPrefix),
+            (KeyCode::Char('z'), ZPrefix),
             (
                 KeyCode::Char(':'),
                 Direct(D::OpenPrompt(PromptKind::Command)),
@@ -333,6 +560,16 @@ impl Keymap {
             KeySig::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
             Direct(D::EnterMode(Mode::VisualBlock)),
         );
+        // Page motions.
+        let ctrl = KeyModifiers::CONTROL;
+        for (ch, m) in [
+            ('d', M::HalfPageDown),
+            ('u', M::HalfPageUp),
+            ('f', M::PageDown),
+            ('b', M::PageUp),
+        ] {
+            self.bind_initial(KeySig::new(KeyCode::Char(ch), ctrl), Motion(m));
+        }
 
         let leader = [
             (

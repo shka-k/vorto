@@ -14,9 +14,11 @@ use std::path::Path;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, Status, root_cause};
+use super::{App, LastFind, Status, root_cause};
 use crate::action::{Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, Target, Token};
-use crate::config::{CommandBind, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS};
+use crate::config::{
+    CommandBind, GOTO_BINDINGS, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
+};
 use crate::editor::Cursor;
 use crate::mode::Mode;
 
@@ -30,6 +32,14 @@ pub(super) enum Parse {
     Complete(Expr),
     Incomplete,
     Invalid,
+}
+
+/// Where the cursor's row should land after a `zz`/`zt`/`zb` scroll.
+#[derive(Debug, Clone, Copy)]
+enum ScrollAnchor {
+    Top,
+    Center,
+    Bottom,
 }
 
 /// Tokenization context — what the parser is "expecting" next, derived
@@ -48,6 +58,14 @@ enum ParseCtx {
     ObjectExpected,
     /// Right after `g`. Expecting the second `g` for goto-file-start.
     GotoPending,
+    /// Right after `f`/`F`/`t`/`T` (or `r`). Expecting the literal
+    /// target/replacement character — the next key (whatever it is)
+    /// becomes the argument. The emitted token depends on which
+    /// prefix is on the stack (see [`char_arg_token`]).
+    CharArgPending,
+    /// Right after `z`. Expecting one of `z`/`t`/`b` for the viewport
+    /// scroll-to family.
+    ZPending,
 }
 
 /// Decide which tokenization context the next key falls into by looking
@@ -69,6 +87,8 @@ fn context_of(prev: &[Token]) -> ParseCtx {
         Some(Op(_)) => ParseCtx::OpPending,
         Some(Scope(_)) => ParseCtx::ObjectExpected,
         Some(GotoPrefix) => ParseCtx::GotoPending,
+        Some(FindCharPrefix { .. } | ReplaceCharPrefix) => ParseCtx::CharArgPending,
+        Some(ZPrefix) => ParseCtx::ZPending,
         // After Motion/Direct/Object/SelfDouble the command is already
         // Complete; we shouldn't be tokenizing in those contexts.
         _ => ParseCtx::Initial,
@@ -115,21 +135,52 @@ pub(super) fn tokenize(km: &Keymap, prev: &[Token], mode: Mode, key: KeyEvent) -
         ParseCtx::OpPending => op_pending_token(code, prev),
         ParseCtx::ObjectExpected => object_token(code),
         ParseCtx::GotoPending => goto_pending_token(code),
+        ParseCtx::CharArgPending => char_arg_token(code, prev),
+        ParseCtx::ZPending => z_pending_token(code),
     }
 }
 
-fn goto_pending_token(code: KeyCode) -> Option<Token> {
-    match code {
-        // gg → second g closes the sequence
-        KeyCode::Char('g') => Some(Token::GotoPrefix),
-        // LSP navigation: gd definition, gD declaration, gi
-        // implementation, gr references.
-        KeyCode::Char('d') => Some(Token::Direct(DirectKind::GotoDefinition)),
-        KeyCode::Char('D') => Some(Token::Direct(DirectKind::GotoDeclaration)),
-        KeyCode::Char('i') => Some(Token::Direct(DirectKind::GotoImplementation)),
-        KeyCode::Char('r') => Some(Token::Direct(DirectKind::FindReferences)),
+/// In CharArgPending, any printable character becomes the literal
+/// argument. The output token depends on the most recent pending
+/// prefix — `f`/`F`/`t`/`T` produce a `FindChar` motion, `r`
+/// produces a `ReplaceChar` direct.
+fn char_arg_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
+    let prefix = prev.iter().rev().find(|t| {
+        matches!(
+            t,
+            Token::FindCharPrefix { .. } | Token::ReplaceCharPrefix
+        )
+    })?;
+    let KeyCode::Char(ch) = code else {
+        // Escape/arrow/etc abort the pending arg — return None so the
+        // caller clears the token stack.
+        return None;
+    };
+    match prefix {
+        Token::FindCharPrefix { forward, till } => {
+            Some(Token::Motion(MotionKind::FindChar {
+                ch,
+                forward: *forward,
+                till: *till,
+            }))
+        }
+        Token::ReplaceCharPrefix => Some(Token::Direct(DirectKind::ReplaceChar { ch })),
         _ => None,
     }
+}
+
+fn z_pending_token(code: KeyCode) -> Option<Token> {
+    Z_BINDINGS
+        .iter()
+        .find(|b| b.matches(code))
+        .map(|b| b.token)
+}
+
+fn goto_pending_token(code: KeyCode) -> Option<Token> {
+    GOTO_BINDINGS
+        .iter()
+        .find(|b| b.matches(code))
+        .map(|b| b.token)
 }
 
 fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
@@ -226,6 +277,13 @@ fn build_expr(tokens: &[Token]) -> Option<Expr> {
             count: outer_count,
         })),
 
+        // `f<c>` / `t<c>` / etc — the prefix is purely a parser
+        // shaping token and disappears at the AST level.
+        [FindCharPrefix { .. }, Motion(m)] => Some(Expr::Motion(MotionExpr {
+            motion: *m,
+            count: outer_count,
+        })),
+
         // Leader-style: <space>f, <space>l
         [LeaderPrefix, Direct(d)] => Some(Expr::Direct {
             kind: *d,
@@ -240,6 +298,26 @@ fn build_expr(tokens: &[Token]) -> Option<Expr> {
 
         // gd / gr — goto-prefix followed by an LSP action
         [GotoPrefix, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
+
+        // g_ / ge / gE / gs / gl / gc / gb — goto-prefix followed by
+        // a motion. Drops the prefix at the AST level.
+        [GotoPrefix, Motion(m)] => Some(Expr::Motion(MotionExpr {
+            motion: *m,
+            count: outer_count,
+        })),
+
+        // zz / zt / zb — z-prefix followed by a viewport direct.
+        [ZPrefix, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
+
+        // `r<c>` — the prefix is purely a parser shaping token; the
+        // emitted `ReplaceChar` direct carries the typed character.
+        [ReplaceCharPrefix, Direct(d)] => Some(Expr::Direct {
             kind: *d,
             count: outer_count,
         }),
@@ -273,6 +351,29 @@ fn build_op_expr(op: Operator, after_op: &[Token], outer_count: u32) -> Option<E
             outer_count,
         }),
 
+        // `df<c>` / `2dt<c>` — operator followed by a char-find motion.
+        // The FindCharPrefix is a parser shaping token and is dropped
+        // from the AST.
+        [FindCharPrefix { .. }, Motion(m)] => Some(Expr::Op {
+            op,
+            target: Target::Motion(MotionExpr {
+                motion: *m,
+                count: motion_count,
+            }),
+            outer_count,
+        }),
+
+        // `dg_` / `dge` / etc — operator followed by a `g`-prefixed
+        // motion. Same parser-shaping treatment as the find-char case.
+        [GotoPrefix, Motion(m)] => Some(Expr::Op {
+            op,
+            target: Target::Motion(MotionExpr {
+                motion: *m,
+                count: motion_count,
+            }),
+            outer_count,
+        }),
+
         // dib / di" — text objects (motion_count must be 1; multi-count
         // on a text object isn't supported yet)
         [Scope(s), Object(o)] if motion_count == 1 => Some(Expr::Op {
@@ -296,17 +397,26 @@ fn is_valid_prefix(tokens: &[Token]) -> bool {
     // Strip leading counts — they're transparent to validity.
     let (_, rest) = take_count(tokens);
     match rest {
-        [] => true,                // just counts so far
-        [LeaderPrefix] => true,    // <space> waiting for follower
-        [GotoPrefix] => true,      // g waiting for the second g
-        [Op(_)] => true,           // d / y / c waiting
-        [Op(_), Scope(_)] => true, // di waiting for an object
+        [] => true,                                  // just counts so far
+        [LeaderPrefix] => true,                      // <space> waiting for follower
+        [GotoPrefix] => true,                        // g waiting for the second g
+        [ZPrefix] => true,                           // z waiting for z/t/b
+        [FindCharPrefix { .. }] => true,             // f/F/t/T waiting for the literal char
+        [ReplaceCharPrefix] => true,                 // r waiting for the replacement
+        [Op(_)] => true,                             // d / y / c waiting
+        [Op(_), Scope(_)] => true,                   // di waiting for an object
+        [Op(_), FindCharPrefix { .. }] => true,      // df / dt waiting for the char
+        [Op(_), GotoPrefix] => true,                 // dg waiting for the follower
         [Op(_), Count(_), ..] => {
-            // After Op + inner counts, only Scope (heading for text object)
-            // is a continuation we can still extend.
+            // After Op + inner counts the only continuations we can
+            // still extend are Scope (heading for a text object) and
+            // FindCharPrefix (heading for an `f<c>` style target).
             let after_op = &rest[1..];
             let (_, after_inner_count) = take_count(after_op);
-            matches!(after_inner_count, [] | [Scope(_)])
+            matches!(
+                after_inner_count,
+                [] | [Scope(_)] | [FindCharPrefix { .. }]
+            )
         }
         _ => false,
     }
@@ -373,6 +483,71 @@ impl App {
                 self.buffer.insert_line_above();
                 self.enter_mode(Mode::Insert);
             }
+            D::AppendAfterCursor => {
+                // Past-the-end is allowed in Insert, so step right with
+                // that permission rather than the Normal-mode clamp.
+                self.buffer.move_right(true);
+                self.enter_mode(Mode::Insert);
+            }
+            D::AppendAtLineEnd => {
+                self.buffer.cursor.col = self.buffer.current_line_len();
+                self.enter_mode(Mode::Insert);
+            }
+            D::InsertAtLineStart => {
+                let line = self.buffer.current_line();
+                let col = line
+                    .chars()
+                    .position(|c| !c.is_whitespace())
+                    .unwrap_or(0);
+                self.buffer.cursor.col = col;
+                self.enter_mode(Mode::Insert);
+            }
+            D::ChangeToEol => {
+                self.buffer.delete_to_eol();
+                self.enter_mode(Mode::Insert);
+            }
+            D::DeleteToEol => self.buffer.delete_to_eol(),
+            D::YankLine => {
+                for _ in 0..count {
+                    self.buffer.yank_line();
+                }
+                self.status = Status::info("yanked");
+            }
+            D::JoinLines => {
+                for _ in 0..count {
+                    self.buffer.join_next_line();
+                }
+            }
+            D::ToggleCase => {
+                for _ in 0..count {
+                    self.buffer.toggle_case_under_cursor();
+                }
+            }
+            D::SubstituteChar => {
+                for _ in 0..count {
+                    self.buffer.delete_char_under_cursor();
+                }
+                self.enter_mode(Mode::Insert);
+            }
+            D::SubstituteLine => {
+                self.buffer.clear_current_line();
+                self.enter_mode(Mode::Insert);
+            }
+            D::ReplaceChar { ch } => {
+                for _ in 0..count {
+                    self.buffer.replace_char(ch);
+                    // After each replacement, vim leaves the cursor on
+                    // the replaced char; a count > 1 walks forward one
+                    // step per replacement.
+                    self.buffer.move_right(false);
+                }
+                // Final cursor: vim leaves it on the LAST replaced
+                // char, not past it.
+                self.buffer.move_left();
+            }
+            D::ViewportCenter => self.scroll_to_cursor(ScrollAnchor::Center),
+            D::ViewportTopAtCursor => self.scroll_to_cursor(ScrollAnchor::Top),
+            D::ViewportBottomAtCursor => self.scroll_to_cursor(ScrollAnchor::Bottom),
             D::Paste => {
                 for _ in 0..count {
                     self.buffer.paste_after();
@@ -423,11 +598,59 @@ impl App {
         Ok(())
     }
 
+    /// Recenter the viewport against the cursor's current row. Driven
+    /// by `zz`/`zt`/`zb`. Reads the height that the last frame was
+    /// drawn at (published by the UI in `Buffer.viewport_height`).
+    fn scroll_to_cursor(&mut self, anchor: ScrollAnchor) {
+        let height = self.buffer.viewport_height.get();
+        if height == 0 {
+            return;
+        }
+        let cur = self.buffer.cursor.row;
+        let last = self.buffer.lines.len().saturating_sub(1);
+        let scroll = match anchor {
+            ScrollAnchor::Top => cur,
+            ScrollAnchor::Center => cur.saturating_sub(height / 2),
+            ScrollAnchor::Bottom => cur + 1 - height.min(cur + 1),
+        };
+        // Clamp so we never scroll past the bottom of the file.
+        let max_scroll = last.saturating_sub(height.saturating_sub(1));
+        self.buffer.scroll.set(scroll.min(max_scroll));
+    }
+
+    /// Resolve `RepeatFind` to a concrete `FindChar` and record any
+    /// real `FindChar` as the new `last_find`. Returns `None` when
+    /// `;`/`,` is pressed with no prior find — the caller posts the
+    /// "no previous find" error and aborts.
+    fn resolve_find_motion(&mut self, motion: MotionKind) -> Option<MotionKind> {
+        use MotionKind as M;
+        match motion {
+            M::RepeatFind { reverse } => {
+                let lf = self.last_find?;
+                let forward = if reverse { !lf.forward } else { lf.forward };
+                Some(M::FindChar {
+                    ch: lf.ch,
+                    forward,
+                    till: lf.till,
+                })
+            }
+            M::FindChar { ch, forward, till } => {
+                self.last_find = Some(LastFind { ch, forward, till });
+                Some(motion)
+            }
+            _ => Some(motion),
+        }
+    }
+
     fn eval_motion(&mut self, m: MotionExpr) {
         use MotionKind as M;
         let allow_after = matches!(self.mode, Mode::Insert);
         let n = m.count;
-        match m.motion {
+        let Some(resolved) = self.resolve_find_motion(m.motion) else {
+            self.status = Status::error("no previous find");
+            return;
+        };
+        match resolved {
             M::Left => {
                 for _ in 0..n {
                     self.buffer.move_left();
@@ -450,6 +673,11 @@ impl App {
             }
             M::LineStart => self.buffer.move_line_start(),
             M::LineEnd => self.buffer.move_line_end(),
+            // `*` / `#` extract the word under the cursor and seed the
+            // search state, then jump. Handled here (not in motion_target)
+            // because the buffer doesn't know about `App.search`.
+            M::SearchWordForward => self.search_word_under_cursor(true),
+            M::SearchWordBack => self.search_word_under_cursor(false),
             M::WordForward => {
                 for _ in 0..n {
                     self.buffer.move_word_forward();
@@ -460,6 +688,32 @@ impl App {
                     self.buffer.move_word_backward();
                 }
             }
+            // Pure motions: ask the buffer for the target and assign.
+            // (`motion_target` is stateless so we route everything that
+            // doesn't need App-side context through here.)
+            M::WordEnd
+            | M::BigWordForward
+            | M::BigWordBack
+            | M::BigWordEnd
+            | M::WordEndBack
+            | M::BigWordEndBack
+            | M::LineFirstNonBlank
+            | M::LineLastNonBlank
+            | M::BracketMatch
+            | M::FindChar { .. }
+            | M::ViewportTop
+            | M::ViewportMiddle
+            | M::ViewportBottom
+            | M::HalfPageDown
+            | M::HalfPageUp
+            | M::PageDown
+            | M::PageUp => {
+                let target = self.buffer.motion_target(self.buffer.cursor, resolved, n);
+                self.buffer.cursor = target;
+            }
+            // Resolved away by `resolve_find_motion` — should never
+            // reach the match arm.
+            M::RepeatFind { .. } => {}
             // `gg` with no count goes to line 1; `5gg` to line 5.
             M::FileStart => {
                 if n > 1 {
@@ -517,9 +771,23 @@ impl App {
                 Ok(())
             }
             Target::Motion(m) => {
+                let Some(resolved) = self.resolve_find_motion(m.motion) else {
+                    self.status = Status::error("no previous find");
+                    return Ok(());
+                };
+                let inclusive = is_inclusive_motion(resolved);
                 for _ in 0..outer_count {
                     let start = self.buffer.cursor;
-                    let end = self.buffer.motion_target(start, m.motion, m.count);
+                    let target = self.buffer.motion_target(start, resolved, m.count);
+                    // Vim's inclusive motions (`e`, `f<c>`, `t<c>`, …)
+                    // include the landing char in the operator range;
+                    // `apply_op_range` takes an exclusive end, so push
+                    // one past for these.
+                    let end = if inclusive {
+                        self.buffer.advance_one(target)
+                    } else {
+                        target
+                    };
                     self.apply_op_range(op, start, end);
                 }
                 Ok(())
@@ -553,6 +821,19 @@ impl App {
                 self.enter_mode(Mode::Insert);
             }
         }
+    }
+
+    /// `*` / `#` — extract the word under the cursor, seed it as the
+    /// active search pattern, and jump to the next/prev match.
+    /// Word here matches the char-class definition (`[A-Za-z0-9_]+`)
+    /// so it works the same with or without a syntax highlighter.
+    pub(super) fn search_word_under_cursor(&mut self, forward: bool) {
+        let Some(word) = word_under_cursor(&self.buffer) else {
+            self.status = Status::error("no word under cursor");
+            return;
+        };
+        self.search.set(word, forward);
+        self.jump_search(forward);
     }
 
     fn jump_search(&mut self, forward: bool) {
@@ -607,6 +888,48 @@ impl App {
     }
 }
 
+/// Vim's "inclusive vs exclusive" classification for motions used as
+/// operator targets. Inclusive motions include their landing character
+/// in the range; exclusive ones don't.
+fn is_inclusive_motion(motion: MotionKind) -> bool {
+    use MotionKind as M;
+    matches!(
+        motion,
+        M::WordEnd
+            | M::BigWordEnd
+            | M::WordEndBack
+            | M::BigWordEndBack
+            | M::FindChar { .. }
+            | M::LineEnd
+            | M::LineLastNonBlank
+            | M::FileEnd
+            | M::BracketMatch
+    )
+}
+
+/// Extract the word under the cursor (char-class `Word`) as a plain
+/// string. Returns `None` when the cursor is on whitespace or the
+/// line is empty.
+fn word_under_cursor(buf: &crate::editor::Buffer) -> Option<String> {
+    let line: Vec<char> = buf.lines[buf.cursor.row].chars().collect();
+    if buf.cursor.col >= line.len() {
+        return None;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    if !is_word(line[buf.cursor.col]) {
+        return None;
+    }
+    let mut lo = buf.cursor.col;
+    while lo > 0 && is_word(line[lo - 1]) {
+        lo -= 1;
+    }
+    let mut hi = buf.cursor.col;
+    while hi + 1 < line.len() && is_word(line[hi + 1]) {
+        hi += 1;
+    }
+    Some(line[lo..=hi].iter().collect())
+}
+
 fn expr_modifies_buffer(expr: &Expr) -> bool {
     use DirectKind as D;
     match expr {
@@ -617,6 +940,16 @@ fn expr_modifies_buffer(expr: &Expr) -> bool {
                 | D::Paste
                 | D::DeleteCharUnderCursor
                 | D::EnterMode(Mode::Insert)
+                | D::AppendAfterCursor
+                | D::AppendAtLineEnd
+                | D::InsertAtLineStart
+                | D::ChangeToEol
+                | D::DeleteToEol
+                | D::JoinLines
+                | D::ToggleCase
+                | D::SubstituteChar
+                | D::SubstituteLine
+                | D::ReplaceChar { .. }
         ),
         Expr::Motion(_) => false,
         Expr::Op { op, .. } => !matches!(op, Operator::Yank),

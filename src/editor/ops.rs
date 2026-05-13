@@ -164,6 +164,91 @@ impl Buffer {
     }
 }
 
+impl Buffer {
+    /// Toggle case across the half-open range `[from, to)`. The two
+    /// endpoints may sit on different rows. Used by visual-mode `~`.
+    pub fn toggle_case_range(&mut self, from: Cursor, to: Cursor) {
+        let (from, to) = order(from, to);
+        if from == to {
+            return;
+        }
+        for row in from.row..=to.row {
+            let chars: Vec<char> = self.lines[row].chars().collect();
+            let lo = if row == from.row { from.col } else { 0 };
+            let hi = if row == to.row {
+                to.col.min(chars.len())
+            } else {
+                chars.len()
+            };
+            if lo >= hi {
+                continue;
+            }
+            self.lines[row] = chars
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i >= lo && i < hi {
+                        flip_case_char(*c)
+                    } else {
+                        *c
+                    }
+                })
+                .collect();
+        }
+        self.touch();
+    }
+
+    /// Toggle case across every char on rows `[from_row..=to_row]`.
+    pub fn toggle_case_lines(&mut self, from_row: usize, to_row: usize) {
+        let (a, b) = (from_row.min(to_row), from_row.max(to_row));
+        let b = b.min(self.lines.len().saturating_sub(1));
+        for row in a..=b {
+            self.lines[row] = self.lines[row].chars().map(flip_case_char).collect();
+        }
+        self.touch();
+    }
+
+    /// Toggle case across a column rectangle.
+    pub fn toggle_case_block(&mut self, r0: usize, c0: usize, r1: usize, c1: usize) {
+        let (r0, r1) = (r0.min(r1), r0.max(r1));
+        let (c0, c1) = (c0.min(c1), c0.max(c1));
+        let r1 = r1.min(self.lines.len().saturating_sub(1));
+        for row in r0..=r1 {
+            let chars: Vec<char> = self.lines[row].chars().collect();
+            self.lines[row] = chars
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i >= c0 && i <= c1 {
+                        flip_case_char(*c)
+                    } else {
+                        *c
+                    }
+                })
+                .collect();
+        }
+        self.touch();
+    }
+}
+
+/// Flip a single character's case: upper→lower, lower→upper, others
+/// unchanged. For chars whose case expansion is multi-char (a tiny
+/// minority — eg. German `ß` → `SS`) we fall back to the original
+/// char to keep column counts stable.
+fn flip_case_char(c: char) -> char {
+    if c.is_uppercase() {
+        let mut it = c.to_lowercase();
+        let first = it.next().unwrap_or(c);
+        if it.next().is_some() { c } else { first }
+    } else if c.is_lowercase() {
+        let mut it = c.to_uppercase();
+        let first = it.next().unwrap_or(c);
+        if it.next().is_some() { c } else { first }
+    } else {
+        c
+    }
+}
+
 fn order(a: Cursor, b: Cursor) -> (Cursor, Cursor) {
     if (a.row, a.col) <= (b.row, b.col) {
         (a, b)

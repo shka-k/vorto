@@ -227,5 +227,8 @@ fn compute_scroll(app: &App, height: usize) -> usize {
         scroll = cur + 1 - height;
     }
     app.buffer.scroll.set(scroll);
+    // Publish the height so `H`/`M`/`L` and the `<C-d>`/`<C-u>` family
+    // (handled in the input thread) can read what's currently visible.
+    app.buffer.viewport_height.set(height);
     scroll
 }

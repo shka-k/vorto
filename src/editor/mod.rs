@@ -39,6 +39,11 @@ pub struct Buffer {
     /// UI layer updates it during `draw_buffer`, so it's wrapped in
     /// `Cell` to stay reachable through a shared `&Buffer`).
     pub scroll: Cell<usize>,
+    /// Height (in rows) of the buffer viewport at the last draw. The
+    /// UI writes this during `compute_scroll`; motion code reads it
+    /// for `H`/`M`/`L` and `<C-d>`/`<C-u>`/`<C-f>`/`<C-b>`. `0` until
+    /// the first frame is drawn — motions guard against that.
+    pub viewport_height: Cell<usize>,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
 }
@@ -85,6 +90,7 @@ impl Buffer {
             version: 0,
             highlighter: None,
             scroll: Cell::new(0),
+            viewport_height: Cell::new(0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })
@@ -222,6 +228,92 @@ impl Buffer {
 
     pub fn insert_line_above(&mut self) {
         self.lines.insert(self.cursor.row, String::new());
+        self.cursor.col = 0;
+        self.touch();
+    }
+
+    /// Replace the character under the cursor with `ch`. No-op on an
+    /// empty line — vim's `r` errors there; we silently skip.
+    pub fn replace_char(&mut self, ch: char) {
+        let line = &mut self.lines[self.cursor.row];
+        if self.cursor.col >= line.chars().count() {
+            return;
+        }
+        let byte_idx = char_to_byte(line, self.cursor.col);
+        let old_ch = line[byte_idx..].chars().next().unwrap();
+        line.replace_range(byte_idx..byte_idx + old_ch.len_utf8(), &ch.to_string());
+        self.touch();
+    }
+
+    /// Join the next line into the current one with a single space
+    /// separator (vim's `J`). Strips leading whitespace on the joined
+    /// line; if the current line ends in whitespace or is empty, no
+    /// space is inserted. Cursor lands on the join boundary.
+    pub fn join_next_line(&mut self) {
+        if self.cursor.row + 1 >= self.lines.len() {
+            return;
+        }
+        let next = self.lines.remove(self.cursor.row + 1);
+        let next_trimmed = next.trim_start();
+        let cur = &mut self.lines[self.cursor.row];
+        let needs_space = !cur.is_empty()
+            && !cur
+                .chars()
+                .last()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+            && !next_trimmed.is_empty();
+        let join_col = cur.chars().count();
+        if needs_space {
+            cur.push(' ');
+        }
+        cur.push_str(next_trimmed);
+        self.cursor.col = join_col;
+        self.touch();
+    }
+
+    /// Toggle the case of the character under the cursor, then advance
+    /// one column (vim's `~`). No-op on an empty line.
+    pub fn toggle_case_under_cursor(&mut self) {
+        let line = &mut self.lines[self.cursor.row];
+        if self.cursor.col >= line.chars().count() {
+            return;
+        }
+        let byte_idx = char_to_byte(line, self.cursor.col);
+        let ch = line[byte_idx..].chars().next().unwrap();
+        let replacement: String = if ch.is_uppercase() {
+            ch.to_lowercase().collect()
+        } else if ch.is_lowercase() {
+            ch.to_uppercase().collect()
+        } else {
+            return; // not a cased letter — leave it and don't advance
+        };
+        line.replace_range(byte_idx..byte_idx + ch.len_utf8(), &replacement);
+        self.touch();
+        // Advance, allowing past-end only inside Insert (we're in Normal
+        // here, so clamp to last col).
+        let max = self.current_line_len().saturating_sub(1);
+        if self.cursor.col < max {
+            self.cursor.col += 1;
+        }
+    }
+
+    /// Delete from `cursor` to the end of the current line (vim's `D`).
+    /// The deleted text goes into the yank register.
+    pub fn delete_to_eol(&mut self) {
+        let line = self.lines[self.cursor.row].clone();
+        let byte_idx = char_to_byte(&line, self.cursor.col);
+        self.yank = line[byte_idx..].to_string();
+        self.lines[self.cursor.row].truncate(byte_idx);
+        self.touch();
+        self.clamp_col(false);
+    }
+
+    /// Replace the entire current line with an empty string (vim's
+    /// `S`). The full line content goes into the yank register.
+    pub fn clear_current_line(&mut self) {
+        self.yank = self.lines[self.cursor.row].clone();
+        self.lines[self.cursor.row].clear();
         self.cursor.col = 0;
         self.touch();
     }

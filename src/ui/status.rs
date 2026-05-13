@@ -147,6 +147,16 @@ fn format_pending(tokens: &[Token]) -> String {
             Token::Scope(crate::action::Scope::Around) => s.push('a'),
             Token::LeaderPrefix => s.push_str("<space>"),
             Token::GotoPrefix => s.push('g'),
+            Token::FindCharPrefix { forward, till } => {
+                s.push(match (forward, till) {
+                    (true, false) => 'f',
+                    (false, false) => 'F',
+                    (true, true) => 't',
+                    (false, true) => 'T',
+                });
+            }
+            Token::ZPrefix => s.push('z'),
+            Token::ReplaceCharPrefix => s.push('r'),
             // These shouldn't be in pending state (they would've fired
             // immediately or completed the parse).
             Token::Motion(_) | Token::Direct(_) | Token::Object(_) => s.push('?'),

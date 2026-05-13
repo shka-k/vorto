@@ -105,7 +105,22 @@ pub struct App {
     /// stale result (user opened another file in the meantime) gets
     /// dropped instead of clobbering the current buffer.
     pub open_gen: u64,
+    /// Last `f`/`F`/`t`/`T` so `;` and `,` know what to repeat.
+    pub last_find: Option<LastFind>,
+    /// True when a `g` prefix is pending in Visual mode. Normal mode
+    /// uses its token stream for this; Visual mode bypasses the token
+    /// pipeline so it tracks the one prefix it cares about here.
+    pub visual_g_pending: bool,
     pub should_quit: bool,
+}
+
+/// Parameters of the last char-find motion. `;` repeats it as-is, `,`
+/// flips `forward`.
+#[derive(Debug, Clone, Copy)]
+pub struct LastFind {
+    pub ch: char,
+    pub forward: bool,
+    pub till: bool,
 }
 
 /// Resolved visual-mode selection bounds, derived from the anchor and
@@ -165,6 +180,8 @@ impl App {
             lsp,
             event_tx,
             open_gen: 0,
+            last_find: None,
+            visual_g_pending: false,
             should_quit: false,
         }
     }

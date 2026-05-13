@@ -36,7 +36,9 @@ use serde::Deserialize;
 
 pub use command::{COMMAND_BINDS, CommandBind};
 pub use cursor::{CursorShape, CursorShapes};
-pub use keymap::{KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS};
+pub use keymap::{
+    GOTO_BINDINGS, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
+};
 pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig};
 
 use cursor::{CursorConfig, resolve_cursor_shapes};

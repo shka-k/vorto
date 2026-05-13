@@ -33,6 +33,15 @@ pub enum Token {
     LeaderPrefix,
     /// `g` prefix — for two-key sequences like `gg` (goto file start).
     GotoPrefix,
+    /// `z` prefix — for `zz`/`zt`/`zb` viewport-scroll actions.
+    ZPrefix,
+    /// `f`/`F`/`t`/`T` waiting for the literal target character. The
+    /// next key press in `FindCharPending` context resolves to a
+    /// `Motion(FindChar { … })` carrying this prefix's direction/till
+    /// flags plus the typed character.
+    FindCharPrefix { forward: bool, till: bool },
+    /// `r` — waiting for the replacement char.
+    ReplaceCharPrefix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +59,59 @@ pub enum MotionKind {
     Down,
     LineStart,
     LineEnd,
+    /// `^` — first non-whitespace char on the line.
+    LineFirstNonBlank,
+    /// `g_` — last non-whitespace char on the line.
+    LineLastNonBlank,
     WordForward,
     WordBack,
+    /// `e` — end of the current/next word (char-class).
+    WordEnd,
+    /// `W` — WORD forward (whitespace-delimited, no punctuation split).
+    BigWordForward,
+    /// `B` — WORD back.
+    BigWordBack,
+    /// `E` — WORD end forward.
+    BigWordEnd,
+    /// `ge` — backward word end.
+    WordEndBack,
+    /// `gE` — backward WORD end.
+    BigWordEndBack,
+    /// `f{c}` / `F{c}` / `t{c}` / `T{c}` — find/till a literal char.
+    /// `forward=false` is the uppercase backward variant; `till=true`
+    /// places the cursor one char short of the target.
+    FindChar {
+        ch: char,
+        forward: bool,
+        till: bool,
+    },
+    /// `;` / `,` — repeat the last find-char motion, optionally with
+    /// direction reversed (`,`).
+    RepeatFind { reverse: bool },
     FileStart,
     FileEnd,
+    /// `%` — jump to the matching bracket of the pair under (or just
+    /// after) the cursor. Treats `()`, `[]`, `{}` as pairs.
+    BracketMatch,
+    /// `*` — search forward for the word under the cursor.
+    SearchWordForward,
+    /// `#` — search backward for the word under the cursor.
+    SearchWordBack,
+    /// `H` — top of the visible viewport (count = offset from top).
+    ViewportTop,
+    /// `M` — middle of the visible viewport.
+    ViewportMiddle,
+    /// `L` — bottom of the visible viewport (count = offset from bottom).
+    ViewportBottom,
+    /// `<C-d>` — half-page down. Count multiplies the half-height
+    /// step (so `2<C-d>` covers a full page when supported).
+    HalfPageDown,
+    /// `<C-u>` — half-page up.
+    HalfPageUp,
+    /// `<C-f>` — full page down.
+    PageDown,
+    /// `<C-b>` — full page up.
+    PageUp,
     SearchNext,
     SearchPrev,
     /// `{` — move to the previous blank line (or file start). Treats
@@ -95,6 +153,37 @@ pub enum DirectKind {
     OpenPrompt(PromptKind),
     OpenLineBelow,
     OpenLineAbove,
+    /// `a` — move past the cursor and enter Insert.
+    AppendAfterCursor,
+    /// `A` — jump to end-of-line and enter Insert.
+    AppendAtLineEnd,
+    /// `I` — jump to first non-blank of the line and enter Insert.
+    InsertAtLineStart,
+    /// `C` — change from cursor to end of line.
+    ChangeToEol,
+    /// `D` — delete from cursor to end of line.
+    DeleteToEol,
+    /// `Y` — yank the current line (vim's classic `yy` semantics).
+    YankLine,
+    /// `J` — join the next line into this one, replacing the line
+    /// break with a single space (or nothing when joining onto an
+    /// empty line).
+    JoinLines,
+    /// `~` — toggle case of the character under the cursor, then
+    /// advance one column.
+    ToggleCase,
+    /// `s` — delete the char under the cursor and enter Insert.
+    SubstituteChar,
+    /// `S` — clear the current line and enter Insert at col 0.
+    SubstituteLine,
+    /// `zz` — center the cursor's line in the viewport.
+    ViewportCenter,
+    /// `zt` — scroll so the cursor's line is the top of the viewport.
+    ViewportTopAtCursor,
+    /// `zb` — scroll so the cursor's line is the bottom of the viewport.
+    ViewportBottomAtCursor,
+    /// `r<c>` — replace the char under the cursor with `c`.
+    ReplaceChar { ch: char },
     Paste,
     Undo,
     Redo,
