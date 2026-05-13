@@ -21,9 +21,9 @@ use std::path::PathBuf;
 
 use super::{format_dirty_list, is_inclusive_motion, word_under_cursor};
 use crate::action::{
-    Ctx, DirectKind, Expr, MotionExpr, MotionKind, Operator, PromptKind, Target,
+    Ctx, DirectKind, Expr, LastFind, MotionExpr, MotionKind, Operator, PromptKind, Target,
 };
-use crate::app::{App, BufferRef, LastFind};
+use crate::app::{App, BufferRef};
 use crate::effect::{Cmd, ScrollAnchor};
 use crate::mode::Mode;
 
@@ -290,16 +290,12 @@ impl App {
             }
             M::SearchNext => {
                 for _ in 0..n {
-                    cmds.push(Cmd::JumpSearch {
-                        forward: self.search.last_forward,
-                    });
+                    cmds.push(Cmd::JumpSearch { reverse: false });
                 }
             }
             M::SearchPrev => {
                 for _ in 0..n {
-                    cmds.push(Cmd::JumpSearch {
-                        forward: !self.search.last_forward,
-                    });
+                    cmds.push(Cmd::JumpSearch { reverse: true });
                 }
             }
             M::ParagraphForward => {
@@ -454,7 +450,9 @@ fn push_word_search(app: &App, cmds: &mut Vec<Cmd>, forward: bool) {
                 pattern: word,
                 forward,
             });
-            cmds.push(Cmd::JumpSearch { forward });
+            // SetSearch above just set `last_forward` to `forward`, so
+            // jumping with `reverse: false` follows that direction.
+            cmds.push(Cmd::JumpSearch { reverse: false });
         }
         None => cmds.push(Cmd::StatusError("no word under cursor".into())),
     }

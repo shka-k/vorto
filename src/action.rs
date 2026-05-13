@@ -251,6 +251,18 @@ pub struct MotionExpr {
     pub count: u32,
 }
 
+/// Remembered parameters of a `MotionKind::FindChar` — what `;` and `,`
+/// replay. Structurally a flattened `FindChar`, but kept as its own type
+/// so the "last find" slot on `App` is clearly typed. Lives in the
+/// grammar layer so `effect::Cmd::SetLastFind` and any downstream
+/// consumers can reference it without inverting module dependencies.
+#[derive(Debug, Clone, Copy)]
+pub struct LastFind {
+    pub ch: char,
+    pub forward: bool,
+    pub till: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     /// d3w → motion `w` with count 3.

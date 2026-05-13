@@ -30,7 +30,10 @@ impl App {
             Cmd::OpenPrompt(k) => self.open_prompt(k),
             Cmd::OpenRenamePrompt => self.open_rename_prompt(),
             Cmd::SetSearch { pattern, forward } => self.search.set(pattern, forward),
-            Cmd::JumpSearch { forward } => self.run_jump_search(forward),
+            Cmd::JumpSearch { reverse } => {
+                let forward = self.search.last_forward ^ reverse;
+                self.run_jump_search(forward);
+            }
             Cmd::SetLastFind(lf) => self.last_find = Some(lf),
             Cmd::Scroll(anchor) => self.run_scroll(anchor),
             Cmd::Save { path, then_quit } => self.run_save(path.as_deref(), then_quit)?,

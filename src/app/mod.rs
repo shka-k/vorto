@@ -12,8 +12,12 @@ mod lsp_ops;
 mod open;
 mod runtime;
 mod sleeping;
+mod status;
+mod types;
 
 pub use sleeping::SleepingBuffer;
+pub use status::Status;
+pub use types::{BufferRef, Selection};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,7 +26,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Sender;
 
-use crate::action::Token;
+use crate::action::{LastFind, Token};
 use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
@@ -38,30 +42,6 @@ pub use crate::prompt::Prompt;
 /// Cap on the recently-opened-files MRU. 64 is plenty for normal use
 /// and bounds memory without needing a fancy eviction policy.
 const MRU_CAP: usize = 64;
-
-/// Status-bar message paired with its severity. The UI renders `Error`
-/// variants in red.
-pub enum Status {
-    Info(String),
-    Error(String),
-}
-
-impl Status {
-    pub fn info(s: impl Into<String>) -> Self {
-        Status::Info(s.into())
-    }
-    pub fn error(s: impl Into<String>) -> Self {
-        Status::Error(s.into())
-    }
-    pub fn text(&self) -> &str {
-        match self {
-            Status::Info(s) | Status::Error(s) => s,
-        }
-    }
-    pub fn is_error(&self) -> bool {
-        matches!(self, Status::Error(_))
-    }
-}
 
 pub struct App {
     pub buffer: Buffer,
@@ -137,41 +117,6 @@ pub struct App {
     pub should_quit: bool,
 }
 
-/// Parameters of the last char-find motion. `;` repeats it as-is, `,`
-/// flips `forward`.
-#[derive(Debug, Clone, Copy)]
-pub struct LastFind {
-    pub ch: char,
-    pub forward: bool,
-    pub till: bool,
-}
-
-/// One entry in the buffer-picker MRU. `Scratch` is the unnamed empty
-/// buffer vorto starts with (and that the user can return to); `File`
-/// is a previously-opened path.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum BufferRef {
-    Scratch,
-    File(PathBuf),
-}
-
-/// Resolved visual-mode selection bounds, derived from the anchor and
-/// the cursor according to the current visual sub-mode.
-#[derive(Debug, Clone, Copy)]
-pub enum Selection {
-    /// Character-wise, inclusive of both endpoints (vim semantics).
-    Char { from: Cursor, to: Cursor },
-    /// Whole rows `[from_row..=to_row]`.
-    Line { from_row: usize, to_row: usize },
-    /// Column rectangle `[r0..=r1] × [c0..=c1]`.
-    Block {
-        r0: usize,
-        c0: usize,
-        r1: usize,
-        c1: usize,
-    },
-}
-
 impl App {
     pub fn new(
         config: Config,
@@ -240,29 +185,7 @@ impl App {
     /// Current selection range, if the editor is in any visual mode and
     /// an anchor is set. Returns `None` otherwise.
     pub fn selection(&self) -> Option<Selection> {
-        let anchor = self.visual_anchor?;
-        let cursor = self.buffer.cursor;
-        Some(match self.mode {
-            Mode::Visual => {
-                let (from, to) = if (anchor.row, anchor.col) <= (cursor.row, cursor.col) {
-                    (anchor, cursor)
-                } else {
-                    (cursor, anchor)
-                };
-                Selection::Char { from, to }
-            }
-            Mode::VisualLine => Selection::Line {
-                from_row: anchor.row.min(cursor.row),
-                to_row: anchor.row.max(cursor.row),
-            },
-            Mode::VisualBlock => Selection::Block {
-                r0: anchor.row.min(cursor.row),
-                c0: anchor.col.min(cursor.col),
-                r1: anchor.row.max(cursor.row),
-                c1: anchor.col.max(cursor.col),
-            },
-            _ => return None,
-        })
+        types::selection(self.mode, self.visual_anchor, self.buffer.cursor)
     }
 }
 

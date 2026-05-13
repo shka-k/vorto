@@ -15,8 +15,7 @@
 
 use std::path::PathBuf;
 
-use crate::action::PromptKind;
-use crate::app::LastFind;
+use crate::action::{LastFind, PromptKind};
 use crate::mode::Mode;
 
 /// Viewport anchor for `zz` / `zt` / `zb`. Mirrors the enum that used to
@@ -46,8 +45,14 @@ pub enum Cmd {
         pattern: String,
         forward: bool,
     },
+    /// Jump to the next match of the current search. `reverse` flips
+    /// the stored direction (so `N` becomes `JumpSearch { reverse:
+    /// true }` against a forward search). Direction is resolved by the
+    /// runtime against `App::search.last_forward` — keeping that read
+    /// off the handler keeps `handle_expr` from touching non-buffer
+    /// `App` state.
     JumpSearch {
-        forward: bool,
+        reverse: bool,
     },
     SetLastFind(LastFind),
 
