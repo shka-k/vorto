@@ -13,15 +13,10 @@
 //! would balloon the enum without buying anything; the split is drawn at
 //! the buffer boundary instead.
 
-// Suppressed while the refactor is in flight — every variant lands a
-// consumer in the next two steps (handle.rs and runtime.rs).
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use crate::action::PromptKind;
 use crate::app::LastFind;
-use crate::lsp::Location;
 use crate::mode::Mode;
 
 /// Viewport anchor for `zz` / `zt` / `zb`. Mirrors the enum that used to
@@ -45,10 +40,6 @@ pub enum Cmd {
     // ── Prompt / picker ──────────────────────────────────────
     OpenPrompt(PromptKind),
     OpenRenamePrompt,
-    OpenLocationsPicker {
-        items: Vec<String>,
-        locations: Vec<Location>,
-    },
 
     // ── Search state ─────────────────────────────────────────
     SetSearch {
@@ -64,12 +55,14 @@ pub enum Cmd {
     Scroll(ScrollAnchor),
 
     // ── File / LSP ───────────────────────────────────────────
-    /// `:w` / `:w <path>` — persist the buffer to disk.
+    /// `:w` / `:w <path>` — persist the buffer to disk. When
+    /// `then_quit` is set, the runtime quits after a successful
+    /// write (`:wq` / `:x`); a failed save (e.g. no file name)
+    /// surfaces the error and the editor stays open.
     Save {
         path: Option<PathBuf>,
+        then_quit: bool,
     },
-    /// Tell the LSP server the buffer is now on disk (`didSave`).
-    NotifyLspSave,
     /// `:e <path>` — switch the active buffer to a file.
     OpenPath(PathBuf),
     /// `gd` / `gD` / `gi` — send a definition-shaped request.
@@ -79,8 +72,6 @@ pub enum Cmd {
     },
     /// `gr` — `textDocument/references`.
     LspFindReferences,
-    /// `<space>r` follow-up after the user typed the new name.
-    LspRename(String),
 
     // ── Multi-buffer / lifecycle ─────────────────────────────
     BufferCycle {
@@ -89,8 +80,10 @@ pub enum Cmd {
     BufferDelete {
         force: bool,
     },
-    /// `:q` (force=false) or `:q!` (force=true).
-    Quit {
-        force: bool,
-    },
+    /// Tear-down — emitted by `:q` (after the dirty-buffer check has
+    /// already cleared) and `:q!`. The runtime sets `should_quit`
+    /// either way; the variant exists in its own right so the input
+    /// pipeline can log "what was requested" rather than "what got
+    /// set".
+    Quit,
 }

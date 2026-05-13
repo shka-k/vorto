@@ -10,6 +10,7 @@ mod eval;
 mod input;
 mod lsp_ops;
 mod open;
+mod runtime;
 mod sleeping;
 
 pub use sleeping::SleepingBuffer;
