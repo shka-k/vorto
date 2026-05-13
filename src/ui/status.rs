@@ -1,5 +1,5 @@
-//! Status bar (mode badge, message, diagnostic, pending tokens, cursor
-//! position) and the `:` / `/` / rename command line directly under it.
+//! Status bar (mode badge, filename, cursor position) and the message /
+//! diagnostic / `:` / `/` / rename line directly under it.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -12,15 +12,19 @@ use crate::app::{App, Prompt};
 use crate::lsp::{Diagnostic, Severity};
 use crate::mode::Mode;
 
+const STATUS_LEFT_WIDTH: u16 = 14;
 const STATUS_RIGHT_WIDTH: u16 = 24;
 
 pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    // Split the status bar so the right end can carry pending-key feedback
-    // and the cursor position right-aligned, while the left grows the
-    // mode badge + status message.
-    let halves = Layout::default()
+    // Three columns: mode badge on the left, filename centered, pending
+    // tokens + cursor position right-aligned.
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(STATUS_RIGHT_WIDTH)])
+        .constraints([
+            Constraint::Length(STATUS_LEFT_WIDTH),
+            Constraint::Min(1),
+            Constraint::Length(STATUS_RIGHT_WIDTH),
+        ])
         .split(area);
 
     let (label, color) = status_label(app);
@@ -31,25 +35,17 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     );
-    let status_style = if app.status.is_error() {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    // Show the diagnostic under the cursor only when the regular status
-    // text is the default info — explicit errors and recent commands
-    // should still win the line.
-    let mut spans = vec![
-        mode_span,
-        Span::raw(" "),
-        Span::styled(app.status.text().to_string(), status_style),
-    ];
-    let show_diag = !app.status.is_error();
-    if show_diag && let Some(d) = app.diagnostic_on_cursor() {
-        spans.push(Span::raw("  "));
-        spans.push(diagnostic_span(d));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), halves[0]);
+    f.render_widget(Paragraph::new(Line::from(vec![mode_span])), cols[0]);
+
+    let name = file_label(app);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            name,
+            Style::default().add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center),
+        cols[1],
+    );
 
     let pos = format!(
         "{}:{} ",
@@ -70,8 +66,50 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     right_spans.push(Span::styled(pos, Style::default().fg(Color::Gray)));
     f.render_widget(
         Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
-        halves[1],
+        cols[2],
     );
+}
+
+/// Status message + diagnostic on the line below the status bar. Skipped
+/// when a prompt is active so `draw_command_line` owns the row instead.
+pub(super) fn draw_message(f: &mut Frame, app: &App, area: Rect) {
+    if app.prompt.is_open() {
+        return;
+    }
+    let status_style = if app.status.is_error() {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let msg = app.status.text();
+    let mut spans: Vec<Span> = Vec::new();
+    if !msg.is_empty() {
+        spans.push(Span::styled(msg.to_string(), status_style));
+    }
+    if !app.status.is_error() && let Some(d) = app.diagnostic_on_cursor() {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(diagnostic_span(d));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn file_label(app: &App) -> String {
+    match &app.buffer.path {
+        Some(p) => {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            if app.buffer.dirty {
+                format!("{} [+]", name)
+            } else {
+                name
+            }
+        }
+        None => "[scratch]".to_string(),
+    }
 }
 
 pub(super) fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {

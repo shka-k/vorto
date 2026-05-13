@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Selection};
 use crate::highlight::Capture;
@@ -22,7 +22,7 @@ const SEL_BG: Color = Color::Rgb(58, 78, 122);
 const GUTTER_SIGN_WIDTH: u16 = 1;
 
 pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
-    let height = area.height.saturating_sub(2) as usize;
+    let height = area.height as usize;
     let scroll = compute_scroll(app, height);
 
     let sel = app.selection();
@@ -51,29 +51,18 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = match &app.buffer.path {
-        Some(p) => format!(
-            " {} {}",
-            p.display(),
-            if app.buffer.dirty { "[+]" } else { "" }
-        ),
-        None => " [scratch] ".to_string(),
-    };
-
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let para = Paragraph::new(visible).block(block);
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(visible), area);
 }
 
 pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     if app.prompt.is_open() {
         return;
     }
-    let height = buf_area.height.saturating_sub(2) as usize;
+    let height = buf_area.height as usize;
     let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
-    let x = buf_area.x + 1 + GUTTER_SIGN_WIDTH + line_no_width + app.buffer.cursor.col as u16;
-    let y = buf_area.y + 1 + (app.buffer.cursor.row - scroll) as u16;
+    let x = buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + app.buffer.cursor.col as u16;
+    let y = buf_area.y + (app.buffer.cursor.row - scroll) as u16;
     f.set_cursor_position((x, y));
 }
 

@@ -38,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     buffer::draw_buffer(f, app, chunks[0]);
     status::draw_status(f, app, chunks[1]);
+    status::draw_message(f, app, chunks[2]);
     status::draw_command_line(f, app, chunks[2]);
 
     buffer::place_cursor(f, app, chunks[0]);
