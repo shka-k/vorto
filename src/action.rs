@@ -190,6 +190,16 @@ pub enum DirectKind {
     DeleteCharUnderCursor,
     Quit,
     QuitForce,
+    /// `:bn` / `:bnext` — switch to the next buffer in MRU order.
+    BufferNext,
+    /// `:bp` / `:bprev` — switch to the previous buffer in MRU order.
+    BufferPrev,
+    /// `:bd` / `:bdelete` — drop the current buffer (refuse if dirty).
+    BufferDelete,
+    /// `:bd!` — force-drop the current buffer (discards unsaved edits).
+    BufferDeleteForce,
+    /// `:ls` / `:buffers` — open the buffer picker.
+    BufferList,
     SaveAndQuit,
     Save,
     Open,

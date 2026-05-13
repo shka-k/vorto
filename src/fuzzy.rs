@@ -8,6 +8,12 @@ pub enum FuzzyKind {
     /// Cross-file location results (LSP references). The Finder carries
     /// a parallel `locations` Vec so the picker can jump on selection.
     Locations,
+    /// Recently-opened files (MRU). Display strings are paths
+    /// (typically relative to startup_cwd); the
+    /// [`PromptController`](crate::prompt::PromptController) keeps a
+    /// parallel `buffer_paths` Vec for the absolute path to actually
+    /// open on selection.
+    Buffers,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +52,22 @@ impl Finder {
         let items: Vec<String> = buffer_lines.to_vec();
         let mut f = Self {
             kind: FuzzyKind::Lines,
+            query: String::new(),
+            items,
+            matches: Vec::new(),
+            selected: 0,
+        };
+        f.refilter();
+        f
+    }
+
+    /// Build a [`FuzzyKind::Buffers`] picker. `items` are the display
+    /// strings (newest first); the caller stashes the absolute path
+    /// for each one separately and uses `selection().idx` to look it
+    /// up on submit.
+    pub fn buffers(items: Vec<String>) -> Self {
+        let mut f = Self {
+            kind: FuzzyKind::Buffers,
             query: String::new(),
             items,
             matches: Vec::new(),

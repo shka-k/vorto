@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::BufferRef;
 use crate::fuzzy::{Finder, FuzzyKind};
 use crate::lsp::Location;
 
@@ -55,6 +56,10 @@ pub enum PromptOutcome {
     GotoLine(usize),
     /// Fuzzy references picker submission.
     JumpToLocation(Location),
+    /// Fuzzy buffer picker submission. The caller maps the
+    /// [`BufferRef`] back to an actual buffer load (`Scratch` →
+    /// fresh empty buffer, `File(path)` → `open_path`).
+    OpenBuffer(BufferRef),
     /// Rename submitted with the new identifier.
     SubmitRename(String),
 }
@@ -64,6 +69,10 @@ pub struct PromptController {
     /// Side-channel for `Fuzzy(Locations)` pickers — `locations[idx]`
     /// matches the picker's `items[idx]`. Cleared on submit or cancel.
     locations: Vec<Location>,
+    /// Side-channel for `Fuzzy(Buffers)` pickers — `buffer_paths[idx]`
+    /// is the buffer to open when the user submits the matching item.
+    /// Cleared on submit or cancel.
+    buffer_paths: Vec<BufferRef>,
 }
 
 impl PromptController {
@@ -71,6 +80,7 @@ impl PromptController {
         Self {
             state: Prompt::None,
             locations: Vec::new(),
+            buffer_paths: Vec::new(),
         }
     }
 
@@ -107,6 +117,21 @@ impl PromptController {
     pub fn open_locations(&mut self, items: Vec<String>, locations: Vec<Location>) {
         self.locations = locations;
         self.state = Prompt::Fuzzy(Finder::locations(items));
+    }
+
+    /// Open a fuzzy buffer picker. `items` are the display strings;
+    /// `refs` are the matching [`BufferRef`]s in parallel order —
+    /// the controller stores them and produces an `OpenBuffer(…)`
+    /// outcome on submit.
+    pub fn open_buffers(&mut self, items: Vec<String>, refs: Vec<BufferRef>) {
+        self.buffer_paths = refs;
+        self.state = Prompt::Fuzzy(Finder::buffers(items));
+    }
+
+    /// Read-only view of the buffer-picker side-channel, mirroring
+    /// [`Self::locations`]. The UI uses this for preview rendering.
+    pub fn buffer_paths(&self) -> &[BufferRef] {
+        &self.buffer_paths
     }
 
     pub fn open_rename(&mut self) {
@@ -168,6 +193,7 @@ impl PromptController {
     fn close(&mut self) {
         self.state = Prompt::None;
         self.locations.clear();
+        self.buffer_paths.clear();
     }
 
     fn submit(&mut self) -> PromptOutcome {
@@ -194,6 +220,14 @@ impl PromptController {
                 self.locations.clear();
                 match loc {
                     Some(loc) => PromptOutcome::JumpToLocation(loc),
+                    None => PromptOutcome::Nothing,
+                }
+            }
+            FuzzyKind::Buffers => {
+                let r = self.buffer_paths.get(sel.idx).cloned();
+                self.buffer_paths.clear();
+                match r {
+                    Some(r) => PromptOutcome::OpenBuffer(r),
                     None => PromptOutcome::Nothing,
                 }
             }

@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{DirectKind, MotionKind, Operator, PromptKind, Token};
-use crate::fuzzy::FuzzyKind;
 use crate::mode::Mode;
 
 pub const LEADER: char = ' ';
@@ -316,6 +315,42 @@ pub const Z_BINDINGS: &[Binding] = {
     ]
 };
 
+/// Default `<space>` leader bindings. Lives here as the single source
+/// of truth for both `Keymap::install_vim_defaults` (which copies
+/// them into the runtime-mutable Leader HashMap) and the which-key
+/// hint renderer.
+pub const LEADER_DEFAULTS: &[Binding] = {
+    use crate::action::{DirectKind as D, PromptKind};
+    use crate::fuzzy::FuzzyKind;
+    use Token::Direct as Dir;
+    &[
+        Binding {
+            key: KeyCode::Char('f'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
+            label: "fuzzy files",
+        },
+        Binding {
+            key: KeyCode::Char('l'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
+            label: "fuzzy lines",
+        },
+        Binding {
+            key: KeyCode::Char('b'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Buffers))),
+            label: "buffer picker",
+        },
+        Binding {
+            key: KeyCode::Char('r'),
+            aliases: &[],
+            token: Dir(D::Rename),
+            label: "rename (lsp)",
+        },
+    ]
+};
+
 /// Keys valid in the ObjectExpected context (right after `i`/`a` as
 /// the scope marker).
 pub const OBJECT_BINDINGS: &[Binding] = {
@@ -571,22 +606,12 @@ impl Keymap {
             self.bind_initial(KeySig::new(KeyCode::Char(ch), ctrl), Motion(m));
         }
 
-        let leader = [
-            (
-                KeyCode::Char('f'),
-                Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
-            ),
-            (
-                KeyCode::Char('l'),
-                Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
-            ),
-            // <space>r — LSP rename. Opens a rename prompt populated by
-            // the user; the dispatch into `textDocument/rename` happens
-            // on submit.
-            (KeyCode::Char('r'), Direct(D::Rename)),
-        ];
-        for (code, token) in leader {
-            self.bind_leader(KeySig::new(code, none), token);
+        // Leader bindings — single source of truth in LEADER_DEFAULTS.
+        for b in LEADER_DEFAULTS {
+            self.bind_leader(KeySig::new(b.key, none), b.token);
+            for &alias in b.aliases {
+                self.bind_leader(KeySig::new(alias, none), b.token);
+            }
         }
     }
 }

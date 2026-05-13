@@ -12,7 +12,7 @@ use crate::fuzzy::FuzzyKind;
 use crate::mode::Mode;
 use crate::prompt::PromptOutcome;
 
-use super::{App, Selection, Status, eval, root_cause};
+use super::{App, BufferRef, Selection, Status, eval, root_cause};
 
 impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -349,6 +349,7 @@ impl App {
                 self.submit_rename(new_name);
                 Ok(())
             }
+            PromptOutcome::OpenBuffer(r) => self.switch_to_buffer(r),
         }
     }
 
@@ -373,10 +374,65 @@ impl App {
             PromptKind::Search { forward } => self.prompt.open_search(forward),
             PromptKind::Fuzzy(FuzzyKind::Files) => self.prompt.open_files(&self.startup_cwd),
             PromptKind::Fuzzy(FuzzyKind::Lines) => self.prompt.open_lines(&self.buffer.lines),
+            PromptKind::Fuzzy(FuzzyKind::Buffers) => self.open_buffer_picker(),
             // `Locations` pickers are built from server results, not opened
             // from a keymap — fall through to a no-op rather than a fresh
             // empty picker that would do nothing useful on submit.
             PromptKind::Fuzzy(FuzzyKind::Locations) => {}
         }
+    }
+
+    /// Build the MRU display list and open the buffer picker. Shows
+    /// every recently-touched buffer, current one included, plus the
+    /// scratch sentinel.
+    ///
+    /// Each entry carries two leading columns:
+    ///   - `%` if it's the active buffer, otherwise blank.
+    ///   - `+` if it's the active buffer and has unsaved edits.
+    ///
+    /// Always opens (even on empty MRU) so the user gets a visible
+    /// "(no matches)" instead of silent nothing.
+    fn open_buffer_picker(&mut self) {
+        let cwd = &self.startup_cwd;
+        let current_path = self
+            .buffer
+            .path
+            .as_ref()
+            .and_then(|p| p.canonicalize().ok());
+        let on_scratch = self.buffer.path.is_none();
+        let active_dirty = self.buffer.dirty;
+
+        let (items, refs): (Vec<_>, Vec<_>) = self
+            .opened_paths
+            .iter()
+            .rev() // newest first
+            .map(|r| {
+                let (label, is_current) = match r {
+                    BufferRef::Scratch => ("[scratch]".to_string(), on_scratch),
+                    BufferRef::File(p) => {
+                        let rel = p
+                            .strip_prefix(cwd)
+                            .unwrap_or(p)
+                            .to_string_lossy()
+                            .to_string();
+                        let is_current = current_path.as_ref() == Some(p);
+                        (rel, is_current)
+                    }
+                };
+                // Dirty is tracked on whichever copy is live: the
+                // active buffer for `is_current`, the sleeping map
+                // entry for everything else.
+                let entry_dirty = if is_current {
+                    active_dirty
+                } else {
+                    self.sleeping.get(r).is_some_and(|b| b.dirty)
+                };
+                let cur_col = if is_current { '%' } else { ' ' };
+                let mod_col = if entry_dirty { '+' } else { ' ' };
+                let display = format!("{}{} {}", cur_col, mod_col, label);
+                (display, r.clone())
+            })
+            .unzip();
+        self.prompt.open_buffers(items, refs);
     }
 }

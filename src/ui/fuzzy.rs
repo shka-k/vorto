@@ -27,6 +27,7 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
         FuzzyKind::Files => " fuzzy: files ",
         FuzzyKind::Lines => " fuzzy: lines ",
         FuzzyKind::Locations => " references ",
+        FuzzyKind::Buffers => " fuzzy: buffers ",
     };
     let total = finder.matches.len();
     let footer = format!(" {}/{} ", finder.selected + 1, total.max(1));
@@ -123,6 +124,21 @@ fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area: Rect) {
                 return;
             };
             preview_from_file(f, app, area, &path, loc.range.start.line as usize);
+        }
+        FuzzyKind::Buffers => {
+            // The picker keeps a parallel `BufferRef` slice on the
+            // prompt. Files reuse the file-preview path; Scratch has
+            // no on-disk content, so we just leave the preview pane
+            // blank for that entry.
+            let Some(r) = app.prompt.buffer_paths().get(sel.idx) else {
+                return;
+            };
+            match r {
+                crate::app::BufferRef::Scratch => {}
+                crate::app::BufferRef::File(path) => {
+                    preview_from_file(f, app, area, path, 0);
+                }
+            }
         }
     }
 }

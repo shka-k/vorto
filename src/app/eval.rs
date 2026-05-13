@@ -572,15 +572,44 @@ impl App {
                 if self.buffer.dirty {
                     self.status = Status::error("unsaved changes (use :q!)");
                 } else {
-                    self.should_quit = true;
+                    let sleeping_dirty: Vec<&super::BufferRef> = self
+                        .sleeping
+                        .iter()
+                        .filter(|(_, b)| b.dirty)
+                        .map(|(r, _)| r)
+                        .collect();
+                    if !sleeping_dirty.is_empty() {
+                        self.status = Status::error(format!(
+                            "unsaved changes in {} (use :q!)",
+                            format_dirty_list(&sleeping_dirty)
+                        ));
+                    } else {
+                        self.should_quit = true;
+                    }
                 }
             }
             D::QuitForce => self.should_quit = true,
-            D::SaveAndQuit => {
-                self.do_save(ctx.rest)?;
-                self.should_quit = true;
+            D::BufferNext => self.buffer_cycle(true)?,
+            D::BufferPrev => self.buffer_cycle(false)?,
+            D::BufferDelete => self.buffer_delete(false)?,
+            D::BufferDeleteForce => self.buffer_delete(true)?,
+            D::BufferList => {
+                self.open_prompt(crate::action::PromptKind::Fuzzy(
+                    crate::fuzzy::FuzzyKind::Buffers,
+                ));
             }
-            D::Save => self.do_save(ctx.rest)?,
+            D::SaveAndQuit => {
+                // Only quit when the save actually happened — `:wq` on
+                // a no-name buffer must surface the "no file name"
+                // error and stay open instead of silently dropping
+                // the buffer's contents.
+                if self.do_save(ctx.rest)? {
+                    self.should_quit = true;
+                }
+            }
+            D::Save => {
+                self.do_save(ctx.rest)?;
+            }
             D::Open => {
                 if ctx.rest.is_empty() {
                     self.status = Status::error("missing path");
@@ -844,24 +873,33 @@ impl App {
         }
     }
 
-    fn do_save(&mut self, rest: &str) -> Result<()> {
+    /// Persist the active buffer to disk. Returns `true` when a write
+    /// actually happened (so `:wq` / `:x` can tell save-failed-but-
+    /// status-set apart from real success and refuse to quit in that
+    /// case). I/O errors propagate; `Ok(false)` means "no write
+    /// performed, status already explains why".
+    fn do_save(&mut self, rest: &str) -> Result<bool> {
         if rest.is_empty() {
             if self.buffer.path.is_some() {
                 self.buffer.save()?;
                 self.status = Status::info("written");
             } else {
                 self.status = Status::error("no file name (use :w <path>)");
+                return Ok(false);
             }
         } else {
             let p = Path::new(rest);
             self.buffer.save_as(p)?;
             self.status = Status::info(format!("written to {}", p.display()));
         }
+        // Buffer is now clean — buffer.save() already cleared the
+        // flag; nothing else to do here. Sleeping copies keep their
+        // own dirty state and are checked independently.
         // Notify the LSP server that the buffer is now on disk — many
         // servers (rust-analyzer in particular) only run their full
         // checker on save, so without this nothing fresh would arrive.
         self.notify_lsp_save();
-        Ok(())
+        Ok(true)
     }
 
     fn notify_lsp_save(&mut self) {
@@ -886,6 +924,29 @@ impl App {
         self.buffer.cursor.col = 0;
         self.buffer.clamp_col(false);
     }
+}
+
+/// Human-readable list of dirty sleeping buffers for the `:q`
+/// refusal message. Trims long lists with "+N more" so the status
+/// bar stays readable.
+fn format_dirty_list(refs: &[&super::BufferRef]) -> String {
+    const SHOW: usize = 3;
+    let names: Vec<String> = refs
+        .iter()
+        .take(SHOW)
+        .map(|r| match r {
+            super::BufferRef::Scratch => "[scratch]".to_string(),
+            super::BufferRef::File(p) => p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string()),
+        })
+        .collect();
+    let mut s = names.join(", ");
+    if refs.len() > SHOW {
+        s.push_str(&format!(" +{} more", refs.len() - SHOW));
+    }
+    s
 }
 
 /// Vim's "inclusive vs exclusive" classification for motions used as

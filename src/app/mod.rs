@@ -12,6 +12,7 @@ mod lsp_ops;
 mod open;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,6 +30,10 @@ use crate::prompt::PromptController;
 use crate::search::SearchState;
 
 pub use crate::prompt::Prompt;
+
+/// Cap on the recently-opened-files MRU. 64 is plenty for normal use
+/// and bounds memory without needing a fancy eviction policy.
+const MRU_CAP: usize = 64;
 
 /// Status-bar message paired with its severity. The UI renders `Error`
 /// variants in red.
@@ -105,6 +110,17 @@ pub struct App {
     /// stale result (user opened another file in the meantime) gets
     /// dropped instead of clobbering the current buffer.
     pub open_gen: u64,
+    /// MRU of recently-touched buffers (newest at the end). Drives the
+    /// `<space>b` buffer picker. Capped at [`MRU_CAP`] entries. The
+    /// scratch buffer is represented by `BufferRef::Scratch` so it
+    /// stays selectable even after the user opens a file over it.
+    pub opened_paths: Vec<BufferRef>,
+    /// Sleeping (non-active) buffers, keyed by [`BufferRef`]. When the
+    /// user switches away from a buffer we move its state in here so
+    /// the unsaved edits, undo history, and cursor position are still
+    /// around the next time they pick it up. The highlighter isn't
+    /// preserved — it's rebuilt by the worker on restore.
+    pub sleeping: HashMap<BufferRef, Buffer>,
     /// Last `f`/`F`/`t`/`T` so `;` and `,` know what to repeat.
     pub last_find: Option<LastFind>,
     /// True when a `g` prefix is pending in Visual mode. Normal mode
@@ -121,6 +137,15 @@ pub struct LastFind {
     pub ch: char,
     pub forward: bool,
     pub till: bool,
+}
+
+/// One entry in the buffer-picker MRU. `Scratch` is the unnamed empty
+/// buffer vorto starts with (and that the user can return to); `File`
+/// is a previously-opened path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BufferRef {
+    Scratch,
+    File(PathBuf),
 }
 
 /// Resolved visual-mode selection bounds, derived from the anchor and
@@ -180,9 +205,28 @@ impl App {
             lsp,
             event_tx,
             open_gen: 0,
+            // Pre-seed with Scratch so the picker always offers a way
+            // back to the unnamed empty buffer, even after opening a
+            // real file over it.
+            opened_paths: vec![BufferRef::Scratch],
+            sleeping: HashMap::new(),
             last_find: None,
             visual_g_pending: false,
             should_quit: false,
+        }
+    }
+
+    /// Record `r` as the most recent buffer the user touched. Moves
+    /// existing entries to the front so the picker stays in MRU order,
+    /// caps the list at [`MRU_CAP`] entries, and evicts the matching
+    /// sleeping snapshot when one falls off the back of the MRU —
+    /// otherwise the in-memory snapshots would grow unbounded.
+    pub(super) fn record_opened(&mut self, r: BufferRef) {
+        self.opened_paths.retain(|x| x != &r);
+        self.opened_paths.push(r);
+        while self.opened_paths.len() > MRU_CAP {
+            let evicted = self.opened_paths.remove(0);
+            self.sleeping.remove(&evicted);
         }
     }
 

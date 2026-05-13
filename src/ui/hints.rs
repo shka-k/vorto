@@ -9,8 +9,10 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 use crate::action::{Operator, Token};
 use crate::app::App;
-use crate::config::{COMMAND_BINDS, CommandBind};
-use crate::config::{GOTO_BINDINGS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS};
+use crate::config::COMMAND_BINDS;
+use crate::config::{
+    GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
+};
 
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
@@ -31,9 +33,17 @@ pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
         return;
     }
 
-    let hints: Vec<&CommandBind> = COMMAND_BINDS
+    // Flatten each CommandBind into one row per typeable name —
+    // primary then aliases — so the panel shows every form the user
+    // can submit. Filter on the row name itself (not the bind), so
+    // typing `:bd` shows the `bd` row but not `bdelete` (which
+    // wouldn't have matched anyway since `bdelete` doesn't start
+    // with `bd`... wait, it does. Both still appear). The point is
+    // the row label matches what the user is typing.
+    let hints: Vec<(&'static str, &'static str)> = COMMAND_BINDS
         .iter()
-        .filter(|b| b.name.starts_with(query))
+        .flat_map(|b| b.all_names().map(move |n| (n, b.description)))
+        .filter(|(name, _)| name.starts_with(query))
         .take(HINT_MAX)
         .collect();
     if hints.is_empty() {
@@ -76,18 +86,27 @@ pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(inner);
 
+    // Width the longest name in the matched set, so all rows align
+    // in their column. Cap at 10 to keep things tidy if someone adds
+    // a comically long command name later.
+    let name_w = hints
+        .iter()
+        .map(|(n, _)| n.len())
+        .max()
+        .unwrap_or(5)
+        .min(10);
     let render_column = |start: usize| -> Vec<Line<'static>> {
         hints
             .iter()
             .skip(start)
             .take(rows)
-            .map(|c| {
+            .map(|(name, description)| {
                 Line::from(vec![
                     Span::styled(
-                        format!("{:5}", c.name),
+                        format!("{:<width$}", name, width = name_w),
                         bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!(" {}", c.description), bg.fg(Color::Gray)),
+                    Span::styled(format!(" {}", description), bg.fg(Color::Gray)),
                 ])
             })
             .collect()
@@ -170,10 +189,10 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
     let (name, entries) = match last {
         Token::LeaderPrefix => (
             "leader",
-            vec![
-                ("f".to_string(), "fuzzy files"),
-                ("l".to_string(), "fuzzy lines"),
-            ],
+            LEADER_DEFAULTS
+                .iter()
+                .map(|b| (display_key(b.key), b.label))
+                .collect(),
         ),
         Token::GotoPrefix => (
             "goto",
