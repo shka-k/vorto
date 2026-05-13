@@ -44,16 +44,23 @@ pub struct Buffer {
     /// for `H`/`M`/`L` and `<C-d>`/`<C-u>`/`<C-f>`/`<C-b>`. `0` until
     /// the first frame is drawn — motions guard against that.
     pub viewport_height: Cell<usize>,
-    undo_stack: Vec<Snapshot>,
-    redo_stack: Vec<Snapshot>,
+    // `pub` so the sleeping-buffer freezer can take the stacks
+    // by move (and reinstall them on thaw) without going through
+    // accessor boilerplate. Editor-internal mutations still go
+    // through the `snapshot` / `undo` / `redo` methods.
+    pub undo_stack: Vec<Snapshot>,
+    pub redo_stack: Vec<Snapshot>,
 }
 
-/// Frozen buffer state for the undo/redo history.
+/// Frozen buffer state for the undo/redo history. Exposed at the
+/// crate boundary so the sleeping-buffer compressor can destructure
+/// individual snapshots when it freezes a buffer; the editor module
+/// itself still owns all the read/write logic.
 #[derive(Debug, Clone)]
-struct Snapshot {
-    lines: Vec<String>,
-    cursor: Cursor,
-    dirty: bool,
+pub struct Snapshot {
+    pub lines: Vec<String>,
+    pub cursor: Cursor,
+    pub dirty: bool,
 }
 
 /// Cap on the undo history so a long editing session doesn't grow without

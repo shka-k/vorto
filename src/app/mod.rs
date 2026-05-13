@@ -10,6 +10,9 @@ mod eval;
 mod input;
 mod lsp_ops;
 mod open;
+mod sleeping;
+
+pub use sleeping::SleepingBuffer;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -119,8 +122,11 @@ pub struct App {
     /// user switches away from a buffer we move its state in here so
     /// the unsaved edits, undo history, and cursor position are still
     /// around the next time they pick it up. The highlighter isn't
-    /// preserved — it's rebuilt by the worker on restore.
-    pub sleeping: HashMap<BufferRef, Buffer>,
+    /// preserved — it's rebuilt by the worker on restore. Lines and
+    /// undo/redo content are deflate-compressed when the buffer's
+    /// total raw byte count is large enough to be worth it (see
+    /// `sleeping::SleepingBuffer::freeze`).
+    pub sleeping: HashMap<BufferRef, SleepingBuffer>,
     /// Last `f`/`F`/`t`/`T` so `;` and `,` know what to repeat.
     pub last_find: Option<LastFind>,
     /// True when a `g` prefix is pending in Visual mode. Normal mode

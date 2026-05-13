@@ -16,7 +16,7 @@ use crate::highlight::Highlighter;
 use crate::lsp::{self, LspClient};
 use crate::preview::PreviewEntry;
 
-use super::{App, BufferRef, Status, is_command_not_found, root_cause};
+use super::{App, BufferRef, SleepingBuffer, Status, is_command_not_found, root_cause};
 
 impl App {
     /// Dispatch a buffer-picker selection. Scratch and File both go
@@ -36,7 +36,7 @@ impl App {
                 // here — the wrong default would leave the buffer
                 // with an empty `lines` Vec and crash motions.
                 let next = match self.sleeping.remove(&BufferRef::Scratch) {
-                    Some(b) => b,
+                    Some(b) => b.thaw(),
                     None => Buffer::new(),
                 };
                 self.stash_and_install(next);
@@ -61,17 +61,17 @@ impl App {
         }
     }
 
-    /// Move the currently-active buffer into the sleeping map (keyed
-    /// by its [`BufferRef`]) and install `next` as the new active
-    /// buffer. The previous buffer's highlighter is dropped — it'll
-    /// be rebuilt on next restore. The version counter is intentionally
-    /// preserved on the stashed buffer so LSP `didChange` sequencing
-    /// re-anchors cleanly when the buffer wakes up again.
+    /// Move the currently-active buffer into the sleeping map
+    /// (keyed by its [`BufferRef`]) and install `next` as the new
+    /// active buffer. The outgoing buffer is freeze-compressed; its
+    /// highlighter is dropped (rebuilt on restore). The version
+    /// counter is preserved so LSP `didChange` sequencing re-anchors
+    /// cleanly when the buffer wakes up again.
     fn stash_and_install(&mut self, next: Buffer) {
         let key = self.active_ref();
         let mut prev = std::mem::replace(&mut self.buffer, next);
         prev.highlighter = None;
-        self.sleeping.insert(key, prev);
+        self.sleeping.insert(key, SleepingBuffer::freeze(prev));
     }
 
     /// Install `next` as the active buffer without stashing the
@@ -103,7 +103,7 @@ impl App {
         let key = BufferRef::File(canon);
         if let Some(restored) = self.sleeping.remove(&key) {
             self.lsp.detach_current();
-            self.stash_and_install(restored);
+            self.stash_and_install(restored.thaw());
             self.record_opened(key);
             self.open_gen = self.open_gen.wrapping_add(1);
             self.lsp.set_last_synced_version(self.buffer.version);
@@ -212,7 +212,7 @@ impl App {
         match target {
             Some(BufferRef::Scratch) => {
                 let restored = match self.sleeping.remove(&BufferRef::Scratch) {
-                    Some(b) => b,
+                    Some(b) => b.thaw(),
                     None => Buffer::new(),
                 };
                 self.install_buffer(restored);
@@ -226,7 +226,7 @@ impl App {
                 // Restore from sleeping when available; otherwise
                 // re-read disk. Both paths set up LSP/highlighter.
                 if let Some(b) = self.sleeping.remove(&BufferRef::File(path.clone())) {
-                    self.install_buffer(b);
+                    self.install_buffer(b.thaw());
                     self.open_gen = self.open_gen.wrapping_add(1);
                     self.lsp.set_last_synced_version(self.buffer.version);
                     self.record_opened(BufferRef::File(path.clone()));
