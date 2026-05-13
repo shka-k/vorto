@@ -7,6 +7,7 @@ mod fuzzy;
 mod highlight;
 mod lsp;
 mod mode;
+mod preview;
 mod prompt;
 mod search;
 mod theme;
@@ -117,6 +118,18 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
         event::AppEvent::Term(Event::Key(key)) => app.handle_key(key)?,
         event::AppEvent::Term(_) => {}
         event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
+        event::AppEvent::HighlighterReady { generation, result } => {
+            app.handle_highlighter_ready(generation, result);
+        }
+        event::AppEvent::LspReady {
+            generation,
+            lang,
+            path,
+            result,
+        } => {
+            app.handle_lsp_ready(generation, lang, path, result);
+        }
+        event::AppEvent::PreviewReady(entry) => app.handle_preview_ready(entry),
     }
     Ok(())
 }

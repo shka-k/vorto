@@ -2,7 +2,10 @@ mod eval;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc::Sender;
+use std::thread;
 
 use anyhow::{Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,9 +15,11 @@ use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
-use crate::highlight::{Loader, PreviewCache};
+use crate::highlight::{Highlighter, Loader};
+use crate::preview::{self, PreviewEntry, PreviewLru};
 use crate::lsp::{
-    self, Diagnostic, Location, LspCoordinator, LspEvent, LspEventOutcome, WorkspaceEdit,
+    self, Diagnostic, Location, LspClient, LspCoordinator, LspEvent, LspEventOutcome,
+    WorkspaceEdit,
 };
 use crate::mode::Mode;
 use crate::prompt::{PromptController, PromptOutcome};
@@ -62,14 +67,25 @@ pub struct App {
     /// registry, grammar/query dirs). Frozen at startup.
     pub config: Config,
     /// Tree-sitter grammar loader. Lives for the whole program so the
-    /// loaded `Language` pointers stay valid. Wrapped in `RefCell` so the
-    /// fuzzy-finder preview can lazily build a separate highlighter for
-    /// the file under the cursor during the (otherwise `&App`) draw pass.
-    pub loader: RefCell<Loader>,
-    /// Cached tree-sitter state for the fuzzy-finder source preview. Lives
-    /// on `App` so a single picker keeps reusing the same highlighter as
-    /// the user scrolls between matches in the same file/language.
-    pub preview_cache: RefCell<Option<PreviewCache>>,
+    /// loaded `Language` pointers stay valid. Wrapped in `Arc<Mutex>` so
+    /// the file-open worker thread can build a fresh highlighter off the
+    /// main thread, and the fuzzy-finder preview can still lazily build
+    /// a separate highlighter for the file under the cursor during the
+    /// (otherwise `&App`) draw pass.
+    pub loader: Arc<Mutex<Loader>>,
+    /// Bounded LRU of fuzzy-finder source previews. The worker thread
+    /// fills this asynchronously through `AppEvent::PreviewReady`; the
+    /// draw path looks here first and falls back to plain text on miss
+    /// (while enqueueing a worker request). Living on `App` so back-
+    /// to-back navigation to the same file is instant.
+    pub preview_lru: RefCell<PreviewLru>,
+    /// Request channel feeding the preview worker. Cloned on draw to
+    /// dispatch "build preview for path X" jobs.
+    pub preview_tx: std::sync::mpsc::Sender<PathBuf>,
+    /// Last path we asked the worker about. Prevents the draw loop from
+    /// flooding the channel with duplicate requests for the same
+    /// selection while the worker is still busy.
+    pub last_preview_request: RefCell<Option<PathBuf>>,
     /// Working directory captured once at process startup. All workspace
     /// root discovery anchors here — `:e` opened mid-session still uses
     /// the same anchor as the file passed on the command line.
@@ -77,6 +93,15 @@ pub struct App {
     /// All LSP state — clients, current document, diagnostics, pending
     /// requests, sync version, root anchor. See [`LspCoordinator`].
     pub lsp: LspCoordinator,
+    /// Shared event channel — kept on `App` so `open_path` can spawn
+    /// worker threads that report `HighlighterReady` / `LspReady` back
+    /// to the main loop without going through the LSP coordinator.
+    pub event_tx: Sender<AppEvent>,
+    /// Monotonic counter bumped on every `open_path`. Worker threads
+    /// stamp their result with the generation they were spawned for; a
+    /// stale result (user opened another file in the meantime) gets
+    /// dropped instead of clobbering the current buffer.
+    pub open_gen: u64,
     pub should_quit: bool,
 }
 
@@ -104,7 +129,22 @@ impl App {
         event_tx: Sender<AppEvent>,
         startup_cwd: PathBuf,
     ) -> Self {
-        let lsp = LspCoordinator::new(event_tx, startup_cwd.clone());
+        let lsp = LspCoordinator::new(event_tx.clone(), startup_cwd.clone());
+        let loader = Arc::new(Mutex::new(loader));
+        let (preview_tx, preview_rx) = std::sync::mpsc::channel::<PathBuf>();
+        // Spawn the fuzzy-finder preview worker. It owns the receiver,
+        // clones of `loader` and the language registry, and an `emit`
+        // closure that wraps results in `AppEvent::PreviewReady` so the
+        // main loop just inserts them into the LRU on dispatch.
+        let preview_emit_tx = event_tx.clone();
+        preview::spawn_preview_worker(
+            Arc::clone(&loader),
+            config.languages.clone(),
+            preview_rx,
+            Box::new(move |entry| {
+                let _ = preview_emit_tx.send(AppEvent::PreviewReady(entry));
+            }),
+        );
         Self {
             buffer: Buffer::new(),
             mode: Mode::Normal,
@@ -114,10 +154,14 @@ impl App {
             tokens: Vec::new(),
             visual_anchor: None,
             config,
-            loader: RefCell::new(loader),
-            preview_cache: RefCell::new(None),
+            loader,
+            preview_lru: RefCell::new(PreviewLru::new(16)),
+            preview_tx,
+            last_preview_request: RefCell::new(None),
             startup_cwd,
             lsp,
+            event_tx,
+            open_gen: 0,
             should_quit: false,
         }
     }
@@ -155,20 +199,74 @@ impl App {
         // it can drop diagnostics and stop watching it.
         self.lsp.detach_current();
         self.buffer = Buffer::load(path)?;
-        self.attach_highlighter();
-        self.attach_lsp();
+        // Bump the generation: any in-flight worker thread from a
+        // previous `open_path` is now stale. Its result will be dropped
+        // when it lands instead of clobbering this buffer.
+        self.open_gen = self.open_gen.wrapping_add(1);
+        // Pre-seed the LSP sync version so the first `didChange` after
+        // open is a no-op when nothing has changed since load.
         self.lsp.set_last_synced_version(self.buffer.version);
         self.status = Status::info(format!("opened {}", path.display()));
+        // If the fuzzy preview worker already built a highlighter for
+        // this path, steal it: we're about to render the buffer and the
+        // tree is ready right now. Saves a worker round-trip and the
+        // "plain text → highlighted" flash. Re-`refresh` against the
+        // buffer's source/version so the cached tree's incremental diff
+        // re-anchors on whatever `Buffer::load` just read (usually a
+        // no-op because the file hasn't changed since the preview ran).
+        if let Some(entry) = self.preview_lru.borrow_mut().take(path) {
+            self.buffer.highlighter = None;
+            let mut h = entry.highlighter;
+            let source = self.buffer.lines.join("\n");
+            h.refresh(&source, self.buffer.version);
+            self.buffer.highlighter = Some(h);
+        } else {
+            self.spawn_highlighter_worker(path);
+        }
+        self.spawn_lsp_worker(path);
         Ok(())
     }
 
-    /// Resolve the language for the current buffer, spawn an `LspClient`
-    /// if one isn't already running, and send `didOpen`. Failures are
-    /// surfaced via the status bar — the buffer keeps working without LSP.
-    fn attach_lsp(&mut self) {
-        let Some(path) = self.buffer.path.clone() else {
+    /// Build a tree-sitter `Highlighter` for `path` off the main thread
+    /// (grammar dlopen + query compile + initial full parse). The result
+    /// arrives via [`AppEvent::HighlighterReady`] and is installed on the
+    /// buffer in [`Self::handle_highlighter_ready`] when the generation
+    /// still matches.
+    fn spawn_highlighter_worker(&mut self, path: &Path) {
+        self.buffer.highlighter = None;
+        let Some(ext) = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
             return;
         };
+        let Some(spec) = self.config.languages.by_extension(&ext).cloned() else {
+            return;
+        };
+        let loader = Arc::clone(&self.loader);
+        let tx = self.event_tx.clone();
+        let generation = self.open_gen;
+        // Snapshot the source we'll parse against. The user might edit
+        // the buffer while the worker runs; we recover by re-`refresh`-
+        // ing on the main thread when the highlighter arrives.
+        let source = self.buffer.lines.join("\n");
+        let buffer_version = self.buffer.version;
+        thread::spawn(move || {
+            let result = (|| -> Result<Highlighter> {
+                let mut h = loader.lock().unwrap().highlighter_for(&spec)?;
+                h.refresh(&source, buffer_version);
+                Ok(h)
+            })();
+            let _ = tx.send(AppEvent::HighlighterReady { generation, result });
+        });
+    }
+
+    /// Spawn the LSP server + run its `initialize` handshake off the
+    /// main thread. When the same language already has a client, just
+    /// fire `didOpen` inline (cheap — no process spawn). Otherwise the
+    /// finished client arrives via [`AppEvent::LspReady`].
+    fn spawn_lsp_worker(&mut self, path: &Path) {
         let Some(ext) = path
             .extension()
             .and_then(|s| s.to_str())
@@ -182,20 +280,115 @@ impl App {
         let Some(lsp_cfg) = spec.lsp else { return };
         let lang_name = spec.name;
 
-        if let Err(e) = self.lsp.ensure_client(&lang_name, &lsp_cfg, &path) {
-            // Built-in defaults reference servers most users won't have
-            // installed. If the binary isn't on PATH, stay quiet — the
-            // buffer keeps working without LSP. Other failures
-            // (handshake errors, etc.) are still surfaced.
-            if !is_command_not_found(&e) {
-                self.status = Status::error(format!("lsp ({}): {}", lang_name, root_cause(&e)));
+        if self.lsp.has_client(&lang_name) {
+            let text = self.buffer.lines.join("\n");
+            if let Err(e) = self.lsp.did_open(&lang_name, path, &text) {
+                self.status =
+                    Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
             }
             return;
         }
-        let text = self.buffer.lines.join("\n");
-        if let Err(e) = self.lsp.did_open(&lang_name, &path, &text) {
-            self.status = Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
+
+        let tx = self.event_tx.clone();
+        let emit = self.lsp.make_emit();
+        let startup_cwd = self.lsp.startup_cwd().to_path_buf();
+        let generation = self.open_gen;
+        let path_buf = path.to_path_buf();
+
+        thread::spawn(move || {
+            let root_dir =
+                lsp::discover_root(&startup_cwd, Some(&path_buf), &lsp_cfg.root_markers);
+            let root_uri = lsp::path_to_uri(&root_dir);
+            let result = LspClient::spawn(&lang_name, &lsp_cfg, &root_uri, emit);
+            let _ = tx.send(AppEvent::LspReady {
+                generation,
+                lang: lang_name,
+                path: path_buf,
+                result,
+            });
+        });
+    }
+
+    /// Install a freshly-built highlighter on the active buffer. Dropped
+    /// when `generation` doesn't match — the user opened another file
+    /// while the worker was running.
+    pub fn handle_highlighter_ready(
+        &mut self,
+        generation: u64,
+        result: Result<Highlighter>,
+    ) {
+        if generation != self.open_gen {
+            return;
         }
+        match result {
+            Ok(mut h) => {
+                // The user may have edited the buffer while the worker
+                // was parsing the snapshot we handed it. Re-`refresh`
+                // here so the tree matches the live source.
+                if self.buffer.version != 0 {
+                    let source = self.buffer.lines.join("\n");
+                    h.refresh(&source, self.buffer.version);
+                }
+                self.buffer.highlighter = Some(h);
+            }
+            Err(e) => {
+                self.status = Status::error(format!("highlight: {}", root_cause(&e)));
+            }
+        }
+    }
+
+    /// Adopt a freshly-spawned LSP client and send the deferred
+    /// `didOpen`. Dropped when `generation` doesn't match — the freshly
+    /// spawned client gets dropped here, which closes its stdin and
+    /// shuts the server down.
+    pub fn handle_lsp_ready(
+        &mut self,
+        generation: u64,
+        lang: String,
+        path: PathBuf,
+        result: Result<LspClient>,
+    ) {
+        if generation != self.open_gen {
+            return;
+        }
+        let client = match result {
+            Ok(c) => c,
+            Err(e) => {
+                // Built-in defaults reference servers most users won't
+                // have installed. Stay quiet when the binary isn't on
+                // PATH; surface every other failure.
+                if !is_command_not_found(&e) {
+                    self.status =
+                        Status::error(format!("lsp ({}): {}", lang, root_cause(&e)));
+                }
+                return;
+            }
+        };
+        if !self.lsp.attach_client(&lang, client) {
+            // A client for this language was attached between spawn
+            // and now (parallel open of another file with the same
+            // language). The freshly-spawned one is dropped here.
+            return;
+        }
+        // Re-snapshot the buffer — the user may have edited while the
+        // server was initializing.
+        let text = self.buffer.lines.join("\n");
+        if let Err(e) = self.lsp.did_open(&lang, &path, &text) {
+            self.status =
+                Status::error(format!("lsp didOpen ({}): {}", lang, root_cause(&e)));
+        }
+        self.lsp.set_last_synced_version(self.buffer.version);
+    }
+
+    /// Insert a freshly-built fuzzy preview into the LRU. `last_preview_
+    /// request` is cleared when the arriving path matches it so the
+    /// draw path will re-enqueue if the user has already moved on.
+    pub fn handle_preview_ready(&mut self, entry: PreviewEntry) {
+        let mut pending = self.last_preview_request.borrow_mut();
+        if pending.as_deref() == Some(entry.path.as_path()) {
+            *pending = None;
+        }
+        self.preview_lru.borrow_mut().insert(entry);
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -357,32 +550,6 @@ impl App {
     /// First diagnostic that covers the cursor row, prioritising errors.
     pub fn diagnostic_on_cursor(&self) -> Option<&Diagnostic> {
         self.lsp.diagnostic_on_cursor(self.buffer.cursor.row as u32)
-    }
-
-    /// Look up a language for the current buffer's file extension and,
-    /// when one matches, attach a fresh [`Highlighter`]. Failures are
-    /// surfaced as a non-fatal status message; the buffer keeps working
-    /// without syntax highlighting.
-    fn attach_highlighter(&mut self) {
-        self.buffer.highlighter = None;
-        let ext = self
-            .buffer
-            .path
-            .as_ref()
-            .and_then(|p| p.extension())
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string());
-        let Some(ext) = ext else { return };
-        let Some(spec) = self.config.languages.by_extension(&ext).cloned() else {
-            return;
-        };
-        let name = spec.name.clone();
-        match self.loader.borrow_mut().highlighter_for(&spec) {
-            Ok(h) => self.buffer.highlighter = Some(h),
-            Err(e) => {
-                self.status = Status::error(format!("highlight ({}): {}", name, root_cause(&e)));
-            }
-        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {

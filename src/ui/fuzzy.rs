@@ -142,10 +142,10 @@ fn preview_from_buffer(f: &mut Frame, app: &App, area: Rect, target_row: usize) 
     render_preview_lines(f, area, lines, &captures, target_row, scroll, end);
 }
 
-/// Render a Files-/Locations-kind preview. Reads `path` (through the
-/// per-`App` `preview_cache` so the read is amortised across frames) and
-/// renders it with tree-sitter highlighting when a grammar is configured
-/// for the file's extension. Falls back to plain text otherwise.
+/// Render a Files-/Locations-kind preview. Looks up `path` in the
+/// per-`App` LRU populated by the preview worker; on miss, enqueues a
+/// worker request and renders plain text for this frame. On hit,
+/// renders with the cached tree-sitter highlights.
 fn preview_from_file(
     f: &mut Frame,
     app: &App,
@@ -153,79 +153,31 @@ fn preview_from_file(
     path: &std::path::Path,
     target_row: usize,
 ) {
-    if !refresh_preview_cache(app, path) {
+    let mut lru = app.preview_lru.borrow_mut();
+    let Some(entry) = lru.get(path) else {
+        drop(lru);
+        enqueue_preview(app, path);
         preview_plain_fallback(f, area, path, target_row);
-        return;
-    }
-    let cache_ref = app.preview_cache.borrow();
-    let Some(cache) = cache_ref.as_ref() else {
         return;
     };
     let height = area.height as usize;
-    let (scroll, end) = preview_scroll(cache.lines.len(), target_row, height);
-    let captures = cache
+    let (scroll, end) = preview_scroll(entry.lines.len(), target_row, height);
+    let captures = entry
         .highlighter
         .captures_in_rows(scroll, end.saturating_sub(1));
-    render_preview_lines(f, area, &cache.lines, &captures, target_row, scroll, end);
+    render_preview_lines(f, area, &entry.lines, &captures, target_row, scroll, end);
 }
 
-/// Bring `app.preview_cache` in sync with `path`. Returns `false` when
-/// the path has no language registered, the grammar can't be loaded, or
-/// the file can't be read — the caller falls back to plain text in any
-/// of those cases. Reuses the cached `Highlighter` when the language
-/// matches, reparses when the file changes.
-fn refresh_preview_cache(app: &App, path: &std::path::Path) -> bool {
-    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    let Some(spec) = app.config.languages.by_extension(ext).cloned() else {
-        return false;
-    };
-    let lang_name = spec.name.clone();
-
-    let need_rebuild = {
-        let cache = app.preview_cache.borrow();
-        match &*cache {
-            None => true,
-            Some(c) => c.lang_name != lang_name,
-        }
-    };
-
-    if need_rebuild {
-        let Ok(h) = app.loader.borrow_mut().highlighter_for(&spec) else {
-            return false;
-        };
-        let Ok(source) = std::fs::read_to_string(path) else {
-            return false;
-        };
-        let lines = source.lines().map(|s| s.to_string()).collect();
-        let mut cache = app.preview_cache.borrow_mut();
-        *cache = Some(crate::highlight::PreviewCache {
-            path: path.to_path_buf(),
-            lang_name,
-            source,
-            lines,
-            version: 1,
-            highlighter: h,
-        });
-        let c = cache.as_mut().unwrap();
-        c.highlighter.refresh(&c.source, c.version);
-        return true;
+/// Ask the preview worker to build a highlighted snapshot of `path`.
+/// Coalesced via `last_preview_request` so we don't spam the channel
+/// with duplicates while the worker is busy with the same path.
+fn enqueue_preview(app: &App, path: &std::path::Path) {
+    let mut last = app.last_preview_request.borrow_mut();
+    if last.as_deref() == Some(path) {
+        return;
     }
-
-    let mut cache = app.preview_cache.borrow_mut();
-    let c = cache.as_mut().unwrap();
-    if c.path != path {
-        let Ok(source) = std::fs::read_to_string(path) else {
-            return false;
-        };
-        c.source = source;
-        c.lines = c.source.lines().map(|s| s.to_string()).collect();
-        c.path = path.to_path_buf();
-        c.version = c.version.wrapping_add(1);
-        c.highlighter.refresh(&c.source, c.version);
-    }
-    true
+    *last = Some(path.to_path_buf());
+    let _ = app.preview_tx.send(path.to_path_buf());
 }
 
 fn preview_plain_fallback(

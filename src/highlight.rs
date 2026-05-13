@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use libloading::{Library, Symbol};
 use tree_sitter::{
-    Language, Parser, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree,
+    InputEdit, Language, Parser, Point, Query, QueryCursor, QueryPredicateArg, StreamingIterator,
+    Tree,
 };
 
 use crate::config::Language as LangSpec;
@@ -182,13 +183,27 @@ impl Highlighter {
         })
     }
 
-    /// Re-parse `source` if it's newer than the cached tree. Cheap when
-    /// the version hasn't changed.
+    /// Re-parse `source` if it's newer than the cached tree.
+    ///
+    /// When a previous tree is cached, computes the byte-range diff
+    /// against the old source, applies it via `Tree::edit`, and asks
+    /// tree-sitter to reuse the existing tree — incremental parsing is
+    /// the whole point of `tree-sitter`, and the previous code was
+    /// passing `None` here, so every keystroke re-parsed the entire
+    /// file. With incremental, edits past the affected node are O(1).
     pub fn refresh(&mut self, source: &str, version: u64) {
         if self.parsed_version == Some(version) {
             return;
         }
-        self.tree = self.parser.parse(source, None);
+        let old_tree = match self.tree.as_mut() {
+            Some(tree) if !self.source.is_empty() => {
+                let edit = compute_input_edit(&self.source, source);
+                tree.edit(&edit);
+                Some(&*tree)
+            }
+            _ => None,
+        };
+        self.tree = self.parser.parse(source, old_tree);
         self.source = source.to_string();
         self.parsed_version = Some(version);
     }
@@ -441,6 +456,68 @@ fn point(p: tree_sitter::Point) -> (usize, usize) {
     (p.row, p.column)
 }
 
+/// Byte-level diff of `old` vs `new` packaged as a tree-sitter
+/// [`InputEdit`]. Finds the longest shared prefix and suffix and treats
+/// everything in between as the changed region. For a one-keystroke
+/// insertion this collapses to a zero-or-one-byte edit at the cursor,
+/// which is exactly what makes incremental reparse fast.
+///
+/// Operates on bytes, not chars. `InputEdit.position.column` is itself
+/// a byte column in tree-sitter, so this is consistent — and the
+/// parser only consults positions to map back to nodes, then re-parses
+/// the affected region from the new source either way.
+fn compute_input_edit(old: &str, new: &str) -> InputEdit {
+    let old_bytes = old.as_bytes();
+    let new_bytes = new.as_bytes();
+    let common_prefix = old_bytes
+        .iter()
+        .zip(new_bytes.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let max_suffix = old_bytes
+        .len()
+        .min(new_bytes.len())
+        .saturating_sub(common_prefix);
+    let common_suffix = old_bytes
+        .iter()
+        .rev()
+        .zip(new_bytes.iter().rev())
+        .take(max_suffix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let start_byte = common_prefix;
+    let old_end_byte = old_bytes.len() - common_suffix;
+    let new_end_byte = new_bytes.len() - common_suffix;
+    InputEdit {
+        start_byte,
+        old_end_byte,
+        new_end_byte,
+        start_position: byte_to_point(old_bytes, start_byte),
+        old_end_position: byte_to_point(old_bytes, old_end_byte),
+        new_end_position: byte_to_point(new_bytes, new_end_byte),
+    }
+}
+
+/// Convert a byte offset within `bytes` to a `(row, byte-column)`
+/// [`Point`]. Linear scan from the start — for typical edits the offset
+/// is small (cursor area) so this stays cheap; for whole-file rewrites
+/// the parse itself dominates anyway.
+fn byte_to_point(bytes: &[u8], offset: usize) -> Point {
+    let offset = offset.min(bytes.len());
+    let mut row = 0usize;
+    let mut line_start = 0usize;
+    for (i, &b) in bytes[..offset].iter().enumerate() {
+        if b == b'\n' {
+            row += 1;
+            line_start = i + 1;
+        }
+    }
+    Point {
+        row,
+        column: offset - line_start,
+    }
+}
+
 /// Replace `best` with `range` when it contains the cursor and is
 /// strictly smaller than what's there. "Smaller" is by byte count, so
 /// nested objects (e.g. inner function inside an outer impl) resolve
@@ -484,31 +561,6 @@ fn char_to_byte_col(source: &str, row: usize, char_col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
-/// Per-file cache for the fuzzy-finder preview pane. Holds a
-/// [`Highlighter`] bound to one source file, plus the read-back text so
-/// we don't re-read from disk every frame while the selection stays on
-/// the same item. Owned by `App` and rebuilt on demand when the picker
-/// moves to a different file or language.
-pub struct PreviewCache {
-    /// File the cache was built for. When the next preview request
-    /// names a different path, the source is re-read and `version`
-    /// bumped so the tree reparses.
-    pub path: PathBuf,
-    /// Language name that drove `highlighter`. When this changes, the
-    /// whole cache is rebuilt — a different grammar means a different
-    /// [`Query`] and `Highlighter` can't be reused across them.
-    pub lang_name: String,
-    /// File contents the parser last saw, kept around so the UI can
-    /// render lines without a second `read_to_string`.
-    pub source: String,
-    /// Pre-split `source` lines, ready to feed the preview renderer.
-    pub lines: Vec<String>,
-    /// Monotonic counter handed to [`Highlighter::refresh`]. Bumped on
-    /// each (re)load so the tree is always reparsed for new content.
-    pub version: u64,
-    pub highlighter: Highlighter,
-}
-
 /// One styled range delivered by the query engine. Coordinates are
 /// inclusive on `start`, exclusive on `end`, in *characters* (not
 /// bytes) — already converted by [`Highlighter`].
@@ -548,5 +600,42 @@ mod tests {
         assert_eq!(byte_to_char_col(src, 0, 3), 1);
         // Byte col 5 = after "あ x" = char col 3.
         assert_eq!(byte_to_char_col(src, 0, 5), 3);
+    }
+
+    #[test]
+    fn input_edit_single_byte_insertion() {
+        let edit = compute_input_edit("abc", "abXc");
+        assert_eq!(edit.start_byte, 2);
+        assert_eq!(edit.old_end_byte, 2);
+        assert_eq!(edit.new_end_byte, 3);
+        assert_eq!(edit.start_position, Point { row: 0, column: 2 });
+        assert_eq!(edit.new_end_position, Point { row: 0, column: 3 });
+    }
+
+    #[test]
+    fn input_edit_no_change_is_noop_range() {
+        let edit = compute_input_edit("hello", "hello");
+        assert_eq!(edit.start_byte, 5);
+        assert_eq!(edit.old_end_byte, 5);
+        assert_eq!(edit.new_end_byte, 5);
+    }
+
+    #[test]
+    fn input_edit_multi_line_replacement() {
+        let edit = compute_input_edit("fn a() {\n  1\n}\n", "fn a() {\n  42\n}\n");
+        // Common prefix: "fn a() {\n  " (11 bytes)
+        // Common suffix: "\n}\n" (3 bytes)
+        assert_eq!(edit.start_byte, 11);
+        assert_eq!(edit.old_end_byte, 15 - 3); // "1" → byte 11..12
+        assert_eq!(edit.new_end_byte, 16 - 3); // "42" → byte 11..13
+        assert_eq!(edit.start_position, Point { row: 1, column: 2 });
+    }
+
+    #[test]
+    fn input_edit_full_replacement() {
+        let edit = compute_input_edit("abc", "xyz");
+        assert_eq!(edit.start_byte, 0);
+        assert_eq!(edit.old_end_byte, 3);
+        assert_eq!(edit.new_end_byte, 3);
     }
 }

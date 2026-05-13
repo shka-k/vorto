@@ -13,7 +13,6 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::{self as lsp, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit};
-use crate::config::LspConfig;
 use crate::editor::Cursor;
 use crate::event::AppEvent;
 
@@ -159,27 +158,38 @@ impl LspCoordinator {
         }
     }
 
-    /// Ensure a client for `lang_name` is running. Spawns one if not.
-    /// On failure, returns the spawn error — caller decides whether to
-    /// silence "command not found" errors.
-    pub fn ensure_client(
-        &mut self,
-        lang_name: &str,
-        lsp_cfg: &LspConfig,
-        path: &Path,
-    ) -> Result<()> {
+    /// Returns `true` when a client for `lang_name` is already attached.
+    /// Lets the file-open worker decide whether to spawn at all.
+    pub fn has_client(&self, lang_name: &str) -> bool {
+        self.clients.contains_key(lang_name)
+    }
+
+    /// Adopt a pre-spawned `LspClient`. Used by the file-open worker
+    /// thread: it spawns the server off the main thread and the main
+    /// loop installs the finished client here. No-op (returns false)
+    /// if the same language already has a client — the freshly spawned
+    /// one will be dropped, which sends EOF on its stdin and the server
+    /// shuts down on its own.
+    pub fn attach_client(&mut self, lang_name: &str, client: LspClient) -> bool {
         if self.clients.contains_key(lang_name) {
-            return Ok(());
+            return false;
         }
-        let root_dir = lsp::discover_root(&self.startup_cwd, Some(path), &lsp_cfg.root_markers);
-        let root_uri = lsp::path_to_uri(&root_dir);
-        let tx = self.event_tx.clone();
-        let emit: Box<dyn Fn(LspEvent) + Send> = Box::new(move |ev| {
-            let _ = tx.send(AppEvent::Lsp(ev));
-        });
-        let client = LspClient::spawn(lang_name, lsp_cfg, &root_uri, emit)?;
         self.clients.insert(lang_name.to_string(), client);
-        Ok(())
+        true
+    }
+
+    /// Build the `emit` closure passed to `LspClient::spawn`. Exposed
+    /// so a worker thread can spawn a client without needing the
+    /// coordinator's private channel.
+    pub fn make_emit(&self) -> Box<dyn Fn(LspEvent) + Send + 'static> {
+        let tx = self.event_tx.clone();
+        Box::new(move |ev| {
+            let _ = tx.send(AppEvent::Lsp(ev));
+        })
+    }
+
+    pub fn startup_cwd(&self) -> &Path {
+        &self.startup_cwd
     }
 
     /// Send `didOpen` for `path` against the client for `lang_name`.
