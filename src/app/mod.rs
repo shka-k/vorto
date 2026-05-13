@@ -1,5 +1,6 @@
 mod eval;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -11,7 +12,7 @@ use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::fuzzy::FuzzyKind;
-use crate::highlight::Loader;
+use crate::highlight::{Loader, PreviewCache};
 use crate::lsp::{
     self, Diagnostic, Location, LspCoordinator, LspEvent, LspEventOutcome, WorkspaceEdit,
 };
@@ -61,8 +62,14 @@ pub struct App {
     /// registry, grammar/query dirs). Frozen at startup.
     pub config: Config,
     /// Tree-sitter grammar loader. Lives for the whole program so the
-    /// loaded `Language` pointers stay valid.
-    pub loader: Loader,
+    /// loaded `Language` pointers stay valid. Wrapped in `RefCell` so the
+    /// fuzzy-finder preview can lazily build a separate highlighter for
+    /// the file under the cursor during the (otherwise `&App`) draw pass.
+    pub loader: RefCell<Loader>,
+    /// Cached tree-sitter state for the fuzzy-finder source preview. Lives
+    /// on `App` so a single picker keeps reusing the same highlighter as
+    /// the user scrolls between matches in the same file/language.
+    pub preview_cache: RefCell<Option<PreviewCache>>,
     /// Working directory captured once at process startup. All workspace
     /// root discovery anchors here — `:e` opened mid-session still uses
     /// the same anchor as the file passed on the command line.
@@ -107,7 +114,8 @@ impl App {
             tokens: Vec::new(),
             visual_anchor: None,
             config,
-            loader,
+            loader: RefCell::new(loader),
+            preview_cache: RefCell::new(None),
             startup_cwd,
             lsp,
             should_quit: false,
@@ -369,7 +377,7 @@ impl App {
             return;
         };
         let name = spec.name.clone();
-        match self.loader.highlighter_for(&spec) {
+        match self.loader.borrow_mut().highlighter_for(&spec) {
             Ok(h) => self.buffer.highlighter = Some(h),
             Err(e) => {
                 self.status = Status::error(format!("highlight ({}): {}", name, root_cause(&e)));

@@ -484,6 +484,31 @@ fn char_to_byte_col(source: &str, row: usize, char_col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
+/// Per-file cache for the fuzzy-finder preview pane. Holds a
+/// [`Highlighter`] bound to one source file, plus the read-back text so
+/// we don't re-read from disk every frame while the selection stays on
+/// the same item. Owned by `App` and rebuilt on demand when the picker
+/// moves to a different file or language.
+pub struct PreviewCache {
+    /// File the cache was built for. When the next preview request
+    /// names a different path, the source is re-read and `version`
+    /// bumped so the tree reparses.
+    pub path: PathBuf,
+    /// Language name that drove `highlighter`. When this changes, the
+    /// whole cache is rebuilt — a different grammar means a different
+    /// [`Query`] and `Highlighter` can't be reused across them.
+    pub lang_name: String,
+    /// File contents the parser last saw, kept around so the UI can
+    /// render lines without a second `read_to_string`.
+    pub source: String,
+    /// Pre-split `source` lines, ready to feed the preview renderer.
+    pub lines: Vec<String>,
+    /// Monotonic counter handed to [`Highlighter::refresh`]. Bumped on
+    /// each (re)load so the tree is always reparsed for new content.
+    pub version: u64,
+    pub highlighter: Highlighter,
+}
+
 /// One styled range delivered by the query engine. Coordinates are
 /// inclusive on `start`, exclusive on `end`, in *characters* (not
 /// bytes) — already converted by [`Highlighter`].

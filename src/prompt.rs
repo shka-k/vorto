@@ -78,6 +78,13 @@ impl PromptController {
         self.state.is_open()
     }
 
+    /// Side-channel `Location`s that mirror the active `Locations` picker.
+    /// Returns `&[]` for any other prompt state. The UI uses this to read
+    /// `locations[idx]` for preview rendering.
+    pub fn locations(&self) -> &[Location] {
+        &self.locations
+    }
+
     pub fn open_command(&mut self) {
         self.state = Prompt::Command(String::new());
     }
