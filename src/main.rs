@@ -2,6 +2,7 @@ mod action;
 mod app;
 mod config;
 mod editor;
+mod effect;
 mod event;
 mod fuzzy;
 mod highlight;
