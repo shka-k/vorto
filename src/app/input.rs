@@ -525,9 +525,11 @@ impl App {
     /// every recently-touched buffer, current one included, plus the
     /// scratch sentinel.
     ///
-    /// Each entry carries two leading columns:
+    /// Each entry carries three leading columns:
     ///   - `%` if it's the active buffer, otherwise blank.
-    ///   - `+` if it's the active buffer and has unsaved edits.
+    ///   - `~` if the file differs from HEAD (live diff for the
+    ///     active buffer, `git status --porcelain` set for the rest).
+    ///   - `+` if the buffer has unsaved edits.
     ///
     /// Always opens (even on empty MRU) so the user gets a visible
     /// "(no matches)" instead of silent nothing.
@@ -540,6 +542,11 @@ impl App {
             .and_then(|p| p.canonicalize().ok());
         let on_scratch = self.buffer.path.is_none();
         let active_dirty = self.buffer.dirty;
+        let active_vcs_changed = self.buffer.has_vcs_changes();
+        // One `git status` invocation feeds the VCS marker for every
+        // non-active File entry in the list — cheaper than diffing
+        // each sleeping buffer individually.
+        let vcs_set = crate::vcs::changed_files(cwd);
 
         let (items, refs): (Vec<_>, Vec<_>) = self
             .opened_paths
@@ -566,9 +573,27 @@ impl App {
                 } else {
                     self.sleeping.get(r).is_some_and(|b| b.dirty)
                 };
+                // VCS marker. Scratch never has a VCS state. For the
+                // active File we trust the live in-memory diff (catches
+                // unsaved edits that `git status` can't see); for every
+                // other File we fall back to the porcelain set, then
+                // OR in the unsaved-dirty bit so an inactive edited
+                // buffer still shows as changed even if its on-disk
+                // copy matches HEAD.
+                let entry_vcs = match r {
+                    BufferRef::Scratch => false,
+                    BufferRef::File(p) => {
+                        if is_current {
+                            active_vcs_changed
+                        } else {
+                            vcs_set.contains(p) || entry_dirty
+                        }
+                    }
+                };
                 let cur_col = if is_current { '%' } else { ' ' };
+                let vcs_col = if entry_vcs { '~' } else { ' ' };
                 let mod_col = if entry_dirty { '+' } else { ' ' };
-                let display = format!("{}{} {}", cur_col, mod_col, label);
+                let display = format!("{}{}{} {}", cur_col, vcs_col, mod_col, label);
                 (display, r.clone())
             })
             .unzip();

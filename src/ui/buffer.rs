@@ -11,6 +11,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{App, JumpState, Selection};
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
+use crate::vcs::LineStatus;
 
 use std::collections::HashMap;
 
@@ -38,6 +39,11 @@ const JUMP_LABEL_BG: Color = Color::Rgb(40, 0, 40);
 /// [`place_cursor`] so the cursor lands on the right column.
 const GUTTER_SIGN_WIDTH: u16 = 1;
 
+/// Width of the VCS-bar column rendered between the line number and the
+/// buffer text. One cell wide regardless of status — the bar character
+/// itself is single-width.
+const GUTTER_VCS_WIDTH: u16 = 1;
+
 pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let height = area.height as usize;
     let scroll = compute_scroll(app, height);
@@ -51,6 +57,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .map(|h| h.captures_in_rows(scroll, last_visible))
         .unwrap_or_default();
     let row_severity = build_row_severity(app, scroll, last_visible);
+    let vcs_statuses = app.buffer.vcs_statuses();
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
@@ -64,8 +71,13 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .take(height)
         .map(|(i, line)| {
             let mut spans = vec![sign_span(row_severity.get(&i).copied())];
+            // Gutter layout: <sign><4-digit num><space><vcs-bar><buffer>.
+            // The breathing-room space sits between the number and the
+            // bar; cursor column math in `place_cursor` matches.
             let num = format!("{:>4} ", i + 1);
             spans.push(Span::styled(num, Style::default().fg(Color::DarkGray)));
+            let vcs_status = vcs_statuses.get(i).copied().flatten();
+            spans.push(vcs_bar_span(vcs_status));
             let extra_cols: Vec<usize> = extras
                 .iter()
                 .filter_map(|c| if c.row == i { Some(c.col) } else { None })
@@ -98,7 +110,11 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let height = buf_area.height as usize;
     let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
-    let x = buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + app.buffer.cursor.col as u16;
+    let x = buf_area.x
+        + GUTTER_SIGN_WIDTH
+        + line_no_width
+        + GUTTER_VCS_WIDTH
+        + app.buffer.cursor.col as u16;
     let y = buf_area.y + (app.buffer.cursor.row - scroll) as u16;
     f.set_cursor_position((x, y));
 }
@@ -130,6 +146,18 @@ fn build_row_severity(
         }
     }
     map
+}
+
+/// Gutter cell rendered between the line number and the buffer text.
+/// A thin vertical bar colored per VCS status, or a plain space when
+/// the row has no status (and the trailing-space slot is preserved).
+fn vcs_bar_span(status: Option<LineStatus>) -> Span<'static> {
+    match status {
+        Some(LineStatus::Added) => Span::styled("▎", Style::default().fg(Color::Green)),
+        Some(LineStatus::Modified) => Span::styled("▎", Style::default().fg(Color::Yellow)),
+        Some(LineStatus::DeletedAbove) => Span::styled("▁", Style::default().fg(Color::Red)),
+        None => Span::raw(" "),
+    }
 }
 
 fn sign_span(sev: Option<Severity>) -> Span<'static> {

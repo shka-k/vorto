@@ -163,66 +163,6 @@ fn override_count(expr: Expr, count: u32) -> Expr {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::action::{Operator, Target};
-
-    #[test]
-    fn override_count_leaves_expr_alone_when_no_prefix() {
-        let e = Expr::Direct {
-            kind: DirectKind::DeleteCharUnderCursor,
-            count: 3,
-        };
-        // `.` with no count prefix → recorded count survives.
-        let got = override_count(e.clone(), 1);
-        assert_eq!(got, e);
-        let got_zero = override_count(e.clone(), 0);
-        assert_eq!(got_zero, e);
-    }
-
-    #[test]
-    fn override_count_replaces_each_expr_shape() {
-        let direct = Expr::Direct {
-            kind: DirectKind::Paste,
-            count: 1,
-        };
-        let got = override_count(direct, 5);
-        assert!(matches!(
-            got,
-            Expr::Direct {
-                kind: DirectKind::Paste,
-                count: 5
-            }
-        ));
-
-        let op = Expr::Op {
-            op: Operator::Delete,
-            target: Target::Motion(MotionExpr {
-                motion: MotionKind::WordForward,
-                count: 1,
-            }),
-            outer_count: 1,
-        };
-        let got = override_count(op, 4);
-        match got {
-            Expr::Op { outer_count, .. } => assert_eq!(outer_count, 4),
-            _ => panic!("expected Op"),
-        }
-
-        let m = Expr::Motion(MotionExpr {
-            motion: MotionKind::Down,
-            count: 1,
-        });
-        let got = override_count(m, 7);
-        match got {
-            Expr::Motion(mx) => assert_eq!(mx.count, 7),
-            _ => panic!("expected Motion"),
-        }
-    }
-}
-
-
 // ────────────────────────────────────────────────────────────────────────
 // Helpers shared by `handle` and `runtime`.
 // ────────────────────────────────────────────────────────────────────────
@@ -506,4 +446,63 @@ pub(super) fn word_under_cursor(buf: &crate::editor::Buffer) -> Option<String> {
         hi += 1;
     }
     Some(line[lo..=hi].iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::{Operator, Target};
+
+    #[test]
+    fn override_count_leaves_expr_alone_when_no_prefix() {
+        let e = Expr::Direct {
+            kind: DirectKind::DeleteCharUnderCursor,
+            count: 3,
+        };
+        // `.` with no count prefix → recorded count survives.
+        let got = override_count(e.clone(), 1);
+        assert_eq!(got, e);
+        let got_zero = override_count(e.clone(), 0);
+        assert_eq!(got_zero, e);
+    }
+
+    #[test]
+    fn override_count_replaces_each_expr_shape() {
+        let direct = Expr::Direct {
+            kind: DirectKind::Paste,
+            count: 1,
+        };
+        let got = override_count(direct, 5);
+        assert!(matches!(
+            got,
+            Expr::Direct {
+                kind: DirectKind::Paste,
+                count: 5
+            }
+        ));
+
+        let op = Expr::Op {
+            op: Operator::Delete,
+            target: Target::Motion(MotionExpr {
+                motion: MotionKind::WordForward,
+                count: 1,
+            }),
+            outer_count: 1,
+        };
+        let got = override_count(op, 4);
+        match got {
+            Expr::Op { outer_count, .. } => assert_eq!(outer_count, 4),
+            _ => panic!("expected Op"),
+        }
+
+        let m = Expr::Motion(MotionExpr {
+            motion: MotionKind::Down,
+            count: 1,
+        });
+        let got = override_count(m, 7);
+        match got {
+            Expr::Motion(mx) => assert_eq!(mx.count, 7),
+            _ => panic!("expected Motion"),
+        }
+    }
 }

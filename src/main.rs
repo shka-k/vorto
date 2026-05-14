@@ -11,6 +11,7 @@ mod mode;
 mod prompt;
 mod syntax;
 mod ui;
+mod vcs;
 
 use std::io::{self, Stdout, Write};
 use std::sync::mpsc;

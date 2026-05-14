@@ -16,13 +16,14 @@ mod text_object;
 
 pub use search::SearchState;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::syntax::Highlighter;
+use crate::vcs::{self, LineStatus};
 
 #[derive(Default)]
 pub struct Buffer {
@@ -59,6 +60,16 @@ pub struct Buffer {
     // through the `snapshot` / `undo` / `redo` methods.
     pub undo_stack: Vec<Snapshot>,
     pub redo_stack: Vec<Snapshot>,
+    /// HEAD blob lines captured at file-open time. `None` when the
+    /// buffer isn't backed by a file inside a git repo. `Some(empty)`
+    /// when the file is in a repo but not yet tracked at HEAD — every
+    /// current line will diff as `Added`.
+    pub vcs_base: Option<Vec<String>>,
+    /// Cached `(version, per-line status)` produced by diffing
+    /// `vcs_base` against `lines`. Recomputed lazily when `version`
+    /// moves; wrapped in `RefCell` so the UI can refresh it through
+    /// the shared `&Buffer` it gets at draw time.
+    pub vcs_diff: RefCell<Option<(u64, Vec<Option<LineStatus>>)>>,
 }
 
 /// Frozen buffer state for the undo/redo history. Exposed at the
@@ -101,6 +112,7 @@ impl Buffer {
         if lines.is_empty() {
             lines.push(String::new());
         }
+        let vcs_base = vcs::head_blob_lines(path);
         Ok(Self {
             lines,
             cursor: Cursor::default(),
@@ -114,6 +126,8 @@ impl Buffer {
             viewport_height: Cell::new(0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            vcs_base,
+            vcs_diff: RefCell::new(None),
         })
     }
 
@@ -142,6 +156,48 @@ impl Buffer {
     /// invalidate cached highlights without otherwise altering state.
     pub fn bump_version(&mut self) {
         self.version = self.version.wrapping_add(1);
+    }
+
+    /// Re-fetch the HEAD base for this buffer's path. No-op when the
+    /// buffer isn't backed by a file. Used by the sleep/wake path so a
+    /// `<space>b` round-trip picks up any HEAD movement that happened
+    /// while the buffer was inactive.
+    pub fn refresh_vcs_base(&mut self) {
+        let Some(p) = self.path.as_deref() else {
+            return;
+        };
+        self.vcs_base = vcs::head_blob_lines(p);
+        self.vcs_diff.borrow_mut().take();
+    }
+
+    /// Per-line VCS statuses, recomputed if the cached version is
+    /// stale. Returns an empty slice when this buffer has no base
+    /// (not in a git repo, or no path).
+    pub fn vcs_statuses(&self) -> Vec<Option<LineStatus>> {
+        let Some(base) = self.vcs_base.as_ref() else {
+            return Vec::new();
+        };
+        {
+            let cache = self.vcs_diff.borrow();
+            if let Some((v, statuses)) = cache.as_ref()
+                && *v == self.version
+            {
+                return statuses.clone();
+            }
+        }
+        let statuses = vcs::diff_line_status(base, &self.lines);
+        *self.vcs_diff.borrow_mut() = Some((self.version, statuses.clone()));
+        statuses
+    }
+
+    /// True when this buffer differs from HEAD (any line marker is
+    /// present). Cheap when the cache is hot; otherwise triggers a
+    /// recompute. Returns false for buffers without a base.
+    pub fn has_vcs_changes(&self) -> bool {
+        if self.vcs_base.is_none() {
+            return false;
+        }
+        self.vcs_statuses().iter().any(|s| s.is_some())
     }
 
     pub fn refresh_highlights(&mut self) {
@@ -433,8 +489,7 @@ impl Buffer {
         if rest.is_empty() {
             return;
         }
-        if rest.starts_with(token) {
-            let after_token = &rest[token.len()..];
+        if let Some(after_token) = rest.strip_prefix(token) {
             let trim_len = if after_token.starts_with(' ') {
                 token.len() + 1
             } else {
