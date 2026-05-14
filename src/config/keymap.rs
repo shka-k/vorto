@@ -658,18 +658,19 @@ impl Keymap {
             self.bind_initial(KeySig::new(KeyCode::Char(ch), ctrl), Motion(m));
         }
 
-        // Multi-cursor: Ctrl-A adds a cursor at the next word match,
-        // Ctrl-K kills the most recently added one. Both letters
-        // avoid zellij's default mode-trigger Ctrl set (g/p/t/r/s/o/
-        // h/b/q/n) so they stay reachable inside a zellij session.
-        // Clearing all extras is on the leader (<space>,) — see
-        // LEADER_DEFAULTS.
+        // Multi-cursor: `+` adds a cursor at the next word match, `-`
+        // removes the most recently added one. Bare keys (no Ctrl) so
+        // they're trivially reachable inside any terminal multiplexer.
+        // Vim's `+` / `-` (first non-blank of next/prev line) are
+        // redundant with `j^` / `k^`, so re-purposing them here costs
+        // nothing. Clearing all extras is on the leader (`<space>,`)
+        // — see LEADER_DEFAULTS.
         self.bind_initial(
-            KeySig::new(KeyCode::Char('a'), ctrl),
+            KeySig::new(KeyCode::Char('+'), none),
             Direct(D::MultiCursorAddNext),
         );
         self.bind_initial(
-            KeySig::new(KeyCode::Char('k'), ctrl),
+            KeySig::new(KeyCode::Char('-'), none),
             Direct(D::MultiCursorPop),
         );
 
