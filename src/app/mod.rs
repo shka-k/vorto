@@ -8,6 +8,7 @@
 
 mod eval;
 mod input;
+mod jump;
 mod lsp_ops;
 mod open;
 mod runtime;
@@ -15,6 +16,7 @@ mod sleeping;
 mod status;
 mod types;
 
+pub use jump::JumpState;
 pub use sleeping::SleepingBuffer;
 pub use status::Status;
 pub use types::{BufferRef, Selection};
@@ -130,6 +132,11 @@ pub struct App {
     /// uses its token stream for this; Visual mode bypasses the token
     /// pipeline so it tracks the one prefix it cares about here.
     pub visual_g_pending: bool,
+    /// Active `gw` jump-label overlay, if any. `Some` between the user
+    /// pressing `gw` and either picking a label or cancelling. While
+    /// it's `Some`, the input dispatcher routes every key to
+    /// [`App::handle_jump_key`] and the UI renders the label overlay.
+    pub jump_state: Option<JumpState>,
     pub should_quit: bool,
 }
 
@@ -182,6 +189,7 @@ impl App {
             last_change: None,
             recording: None,
             visual_g_pending: false,
+            jump_state: None,
             should_quit: false,
         }
     }

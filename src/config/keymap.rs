@@ -295,6 +295,12 @@ pub const GOTO_BINDINGS: &[Binding] = {
             label: "references (lsp)",
         },
         Binding {
+            key: KeyCode::Char('w'),
+            aliases: &[],
+            token: Dir(D::JumpLabel),
+            label: "jump label (2-char)",
+        },
+        Binding {
             key: KeyCode::Char('n'),
             aliases: &[],
             token: Dir(D::SearchSelectNext { reverse: false }),

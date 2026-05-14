@@ -8,9 +8,11 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, Selection};
+use crate::app::{App, JumpState, Selection};
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
+
+use std::collections::HashMap;
 
 /// Color used to paint visually-selected text. Picked to read clearly on
 /// both dark and light terminals.
@@ -26,6 +28,11 @@ const SEARCH_HIT_BG: Color = Color::DarkGray;
 /// `SEL_BG` and `SEARCH_HIT_BG` so a stacked cursor remains visible
 /// even when it sits inside a selection or a search match.
 const EXTRA_CURSOR_BG: Color = Color::Rgb(160, 110, 60);
+
+/// Foreground used for `gw` jump labels. Bright magenta on a near-black
+/// background so the label always pops over surrounding syntax.
+const JUMP_LABEL_FG: Color = Color::Rgb(255, 100, 200);
+const JUMP_LABEL_BG: Color = Color::Rgb(40, 0, 40);
 
 /// Width of the gutter prefix (severity sign + space). Kept in sync with
 /// [`place_cursor`] so the cursor lands on the right column.
@@ -46,6 +53,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let row_severity = build_row_severity(app, scroll, last_visible);
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
+    let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
 
     let visible: Vec<Line> = app
         .buffer
@@ -63,6 +71,10 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
                 .filter_map(|c| if c.row == i { Some(c.col) } else { None })
                 .collect();
             let hits = find_matches_in_line(line, search_query);
+            let row_jumps: Vec<(usize, char)> = jump_overlay
+                .iter()
+                .filter_map(|(pos, ch)| if pos.0 == i { Some((pos.1, *ch)) } else { None })
+                .collect();
             spans.extend(render_line(
                 i,
                 line,
@@ -70,6 +82,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
                 &captures,
                 &extra_cols,
                 &hits,
+                &row_jumps,
             ));
             Line::from(spans)
         })
@@ -144,10 +157,14 @@ fn render_line(
     captures: &[Capture],
     extra_cols: &[usize],
     search_hits: &[(usize, usize)],
+    jump_labels: &[(usize, char)],
 ) -> Vec<Span<'static>> {
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
         |col: usize| -> bool { search_hits.iter().any(|(lo, hi)| col >= *lo && col < *hi) };
+    let jump_label_at = |col: usize| -> Option<char> {
+        jump_labels.iter().find_map(|(c, ch)| if *c == col { Some(*ch) } else { None })
+    };
     let is_selected = |col: usize| -> bool {
         let Some(sel) = sel else { return false };
         match *sel {
@@ -227,11 +244,29 @@ fn render_line(
         s
     };
 
+    // Per-col character + style. A `gw` jump label overlays its char on
+    // top of the underlying buffer char with `JUMP_LABEL_*` styling.
+    let cell_at = |col: usize| -> (char, Style) {
+        if let Some(label) = jump_label_at(col) {
+            (
+                label,
+                Style::default()
+                    .fg(JUMP_LABEL_FG)
+                    .bg(JUMP_LABEL_BG)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )
+        } else {
+            (chars[col], style_at(col))
+        }
+    };
+
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut buf_style = style_at(0);
-    for (col, &c) in chars.iter().enumerate() {
-        let s = style_at(col);
+    let (c0, s0) = cell_at(0);
+    let mut buf_style = s0;
+    buf.push(c0);
+    for col in 1..chars.len() {
+        let (c, s) = cell_at(col);
         if s != buf_style && !buf.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
             buf_style = s;
@@ -258,6 +293,41 @@ fn render_line(
 /// selection layer.
 fn extra_cursor_style(base: Style) -> Style {
     base.bg(EXTRA_CURSOR_BG)
+}
+
+/// Lower the active `gw` jump state into a `(row, col) → char` overlay
+/// map suitable for the per-line renderer.
+///
+/// - Before any keystroke: each label contributes its first char at
+///   the target col, and (when present) its second char at col+1.
+/// - After the first keystroke: only labels whose `first` matches the
+///   typed char survive; they show as just their second char at the
+///   target col. Single-char labels never reach this state because
+///   `handle_jump_key` short-circuits to the jump.
+fn build_jump_overlay(state: Option<&JumpState>) -> HashMap<(usize, usize), char> {
+    let mut out = HashMap::new();
+    let Some(s) = state else { return out };
+    match s.typed_first {
+        None => {
+            for label in &s.labels {
+                out.insert((label.pos.row, label.pos.col), label.first);
+                if let Some(c2) = label.second {
+                    out.insert((label.pos.row, label.pos.col + 1), c2);
+                }
+            }
+        }
+        Some(first) => {
+            for label in &s.labels {
+                if label.first != first {
+                    continue;
+                }
+                if let Some(c2) = label.second {
+                    out.insert((label.pos.row, label.pos.col), c2);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// All matches of `query` in `line`, returned as half-open char

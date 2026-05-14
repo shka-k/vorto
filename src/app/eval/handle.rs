@@ -231,6 +231,7 @@ impl App {
                     cmds.push(Cmd::StatusInfo(format!("cleared {n} extra cursors")));
                 }
             }
+            D::JumpLabel => cmds.push(Cmd::StartJumpLabel),
             D::ToggleComment => match buffer_comment_token(self) {
                 Some(token) => {
                     let start_row = self.buffer.cursor.row;

@@ -20,6 +20,14 @@ impl App {
             return self.handle_prompt_key(key);
         }
 
+        // `gw` overlay swallows every key until the user picks a label
+        // or cancels. Sits above the panic-button to keep Esc / Ctrl-C
+        // local to the overlay (they cancel jump, not the whole app).
+        if self.jump_state.is_some() {
+            self.handle_jump_key(key);
+            return Ok(());
+        }
+
         // Global panic button.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;

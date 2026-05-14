@@ -251,6 +251,13 @@ pub enum DirectKind {
     MultiCursorPop,
     /// `<space>,` — drop every extra cursor and keep only primary.
     MultiCursorClear,
+    /// `gw` — easymotion / hop-style two-character label jump. Computes
+    /// jump targets at every visible word start, overlays a 2-char label
+    /// on each, and waits for the user to type the label. After the
+    /// first character only matching labels remain (showing their
+    /// second char); a unique first-char prefix jumps immediately. Esc
+    /// or any non-label key cancels.
+    JumpLabel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

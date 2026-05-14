@@ -101,4 +101,10 @@ pub enum Cmd {
     /// pipeline can log "what was requested" rather than "what got
     /// set".
     Quit,
+
+    // ── Jump-label overlay ───────────────────────────────────
+    /// `gw` — enter 2-char label jump mode over the current viewport.
+    /// The runtime computes targets (depends on the viewport metrics
+    /// that `App::buffer` carries) and seeds `App::jump_state`.
+    StartJumpLabel,
 }

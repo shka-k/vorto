@@ -48,6 +48,7 @@ impl App {
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
             Cmd::Quit => self.should_quit = true,
+            Cmd::StartJumpLabel => self.start_jump_label(),
         }
         Ok(())
     }
