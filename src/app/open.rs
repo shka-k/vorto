@@ -120,8 +120,20 @@ impl App {
     /// `open_path` when there's no sleeping snapshot to restore.
     pub fn open_path_force(&mut self, path: &Path) -> Result<()> {
         // Load up front — if this fails we want to leave the active
-        // buffer alone.
-        let loaded = Buffer::load(path)?;
+        // buffer alone. Missing files are treated as a new, unsaved
+        // buffer attached to `path` so `:w` materializes the file.
+        let (loaded, is_new) = match Buffer::load(path) {
+            Ok(b) => (b, false),
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                let mut b = Buffer::new();
+                b.path = Some(path.to_path_buf());
+                (b, true)
+            }
+            Err(e) => return Err(e),
+        };
         let canon = path
             .canonicalize()
             .unwrap_or_else(|_| path.to_path_buf());
@@ -140,7 +152,11 @@ impl App {
         // Pre-seed the LSP sync version so the first `didChange` after
         // open is a no-op when nothing has changed since load.
         self.lsp.set_last_synced_version(self.buffer.version);
-        self.status = Status::info(format!("opened {}", path.display()));
+        self.status = if is_new {
+            Status::info(format!("{} [new file]", path.display()))
+        } else {
+            Status::info(format!("opened {}", path.display()))
+        };
         // If the fuzzy preview worker already built a highlighter for
         // this path, steal it: we're about to render the buffer and the
         // tree is ready right now. Saves a worker round-trip and the
