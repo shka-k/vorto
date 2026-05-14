@@ -14,6 +14,10 @@ use crate::syntax::{self, Capture};
 
 /// Color of the highlight band drawn behind the target preview line.
 const PREVIEW_HIT_BG: Color = Color::Rgb(45, 45, 60);
+/// Color of the directory prefix in path-like picker rows.
+const DIR_FG: Color = Color::Blue;
+/// Color of fuzzy-match hit characters.
+const HIT_FG: Color = Color::Magenta;
 
 pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
     let Prompt::Fuzzy(finder) = &app.prompt.state else {
@@ -91,7 +95,7 @@ fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
         .take(list_h)
         .map(|(i, m)| {
             let raw = &finder.items[m.idx];
-            let line = render_match(raw, &m.positions, i == finder.selected);
+            let line = render_match(raw, &m.positions, i == finder.selected, finder.kind);
             ListItem::new(line)
         })
         .collect();
@@ -363,7 +367,12 @@ fn render_preview_row(
     Line::from(spans)
 }
 
-fn render_match<'a>(item: &'a str, positions: &[usize], selected: bool) -> Line<'a> {
+fn render_match<'a>(
+    item: &'a str,
+    positions: &[usize],
+    selected: bool,
+    kind: FuzzyKind,
+) -> Line<'a> {
     let base = if selected {
         Style::default()
             .bg(Color::DarkGray)
@@ -371,23 +380,45 @@ fn render_match<'a>(item: &'a str, positions: &[usize], selected: bool) -> Line<
     } else {
         Style::default()
     };
-    let hit = base.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let dir = base.fg(DIR_FG).add_modifier(Modifier::BOLD);
+    let hit = base.fg(HIT_FG).add_modifier(Modifier::BOLD);
+
+    // Directory portion: everything up to and including the last `/` in
+    // the path-like portion of the item. For Locations, the trailing
+    // `:line:col` suffix shouldn't be styled as directory, so we cap the
+    // search at the first colon.
+    let dir_end = match kind {
+        FuzzyKind::Files | FuzzyKind::Buffers => item.rfind('/').map(|b| b + 1),
+        FuzzyKind::Locations => {
+            let path_end = item.find(':').unwrap_or(item.len());
+            item[..path_end].rfind('/').map(|b| b + 1)
+        }
+        FuzzyKind::Lines => None,
+    };
 
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut buf_is_hit = false;
+    let mut buf_style = base;
+    let mut byte_pos = 0;
     for (i, c) in item.chars().enumerate() {
         let is_hit = positions.binary_search(&i).is_ok();
-        if is_hit != buf_is_hit && !buf.is_empty() {
-            let style = if buf_is_hit { hit } else { base };
-            spans.push(Span::styled(std::mem::take(&mut buf), style));
+        let in_dir = dir_end.map(|e| byte_pos < e).unwrap_or(false);
+        let style = if is_hit {
+            hit
+        } else if in_dir {
+            dir
+        } else {
+            base
+        };
+        if style != buf_style && !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
         }
+        buf_style = style;
         buf.push(c);
-        buf_is_hit = is_hit;
+        byte_pos += c.len_utf8();
     }
     if !buf.is_empty() {
-        let style = if buf_is_hit { hit } else { base };
-        spans.push(Span::styled(buf, style));
+        spans.push(Span::styled(buf, buf_style));
     }
     Line::from(spans)
 }
