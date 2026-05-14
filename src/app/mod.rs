@@ -26,7 +26,15 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::Sender;
 
-use crate::action::{LastFind, Token};
+use crate::action::{InsertKey, LastChange, LastFind, Token};
+
+/// Active insert-session recording. Lives on `App` so `handle_insert_key`
+/// can append the keystrokes the user types, and finalize on Esc.
+#[derive(Debug)]
+pub struct InsertRecording {
+    pub trigger: crate::action::Expr,
+    pub keys: Vec<InsertKey>,
+}
 use crate::config::Config;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
@@ -110,6 +118,14 @@ pub struct App {
     pub sleeping: HashMap<BufferRef, SleepingBuffer>,
     /// Last `f`/`F`/`t`/`T` so `;` and `,` know what to repeat.
     pub last_find: Option<LastFind>,
+    /// Last buffer-modifying change — what `.` replays. Updated when a
+    /// change finishes (immediately for one-shot Exprs, on Esc for
+    /// Insert-mode sessions).
+    pub last_change: Option<LastChange>,
+    /// Active Insert-session recording. `Some` while the user is in an
+    /// Insert mode entered through a recordable trigger; finalized into
+    /// `last_change` when Esc returns us to Normal.
+    pub recording: Option<InsertRecording>,
     /// True when a `g` prefix is pending in Visual mode. Normal mode
     /// uses its token stream for this; Visual mode bypasses the token
     /// pipeline so it tracks the one prefix it cares about here.
@@ -163,6 +179,8 @@ impl App {
             opened_paths: vec![BufferRef::Scratch],
             sleeping: HashMap::new(),
             last_find: None,
+            last_change: None,
+            recording: None,
             visual_g_pending: false,
             should_quit: false,
         }

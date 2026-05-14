@@ -594,6 +594,7 @@ impl Keymap {
                 KeyCode::Char('?'),
                 Direct(D::OpenPrompt(PromptKind::Search { forward: false })),
             ),
+            (KeyCode::Char('.'), Direct(D::RepeatLast)),
             (KeyCode::Char('g'), GotoPrefix),
             (KeyCode::Char(LEADER), LeaderPrefix),
         ];

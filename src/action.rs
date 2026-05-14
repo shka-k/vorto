@@ -223,6 +223,10 @@ pub enum DirectKind {
     /// `<space>c` — toggle a single-line comment on the current line
     /// using the active language's `comment_token`.
     ToggleComment,
+    /// `.` — replay the last buffer-modifying change. Intercepted in
+    /// `App::evaluate` before reaching the normal dispatch path, so this
+    /// variant never appears in `handle_direct`'s match arms.
+    RepeatLast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +271,24 @@ pub struct LastFind {
     pub ch: char,
     pub forward: bool,
     pub till: bool,
+}
+
+/// What `.` replays. Either a one-shot Expr (e.g. `dw`, `x`, `p`, `r<c>`)
+/// or an Insert-mode session — the trigger that entered Insert plus the
+/// keystrokes typed before Esc.
+#[derive(Debug, Clone)]
+pub enum LastChange {
+    Expr(Expr),
+    Insert { trigger: Expr, keys: Vec<InsertKey> },
+}
+
+/// Replay-able Insert-mode keystrokes. Cursor motions (arrow keys) end
+/// the recording in vim; we follow that by simply not recording them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertKey {
+    Char(char),
+    Newline,
+    Backspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

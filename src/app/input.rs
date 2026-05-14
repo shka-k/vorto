@@ -6,7 +6,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::action::{Ctx, MotionKind, Operator, PromptKind};
+use crate::action::{Ctx, InsertKey, LastChange, MotionKind, Operator, PromptKind};
 use crate::editor::Cursor;
 use crate::finder::FuzzyKind;
 use crate::mode::Mode;
@@ -60,19 +60,60 @@ impl App {
         let no_ctrl = !key.modifiers.contains(KeyModifiers::CONTROL);
         if no_ctrl && let KeyCode::Char(c) = key.code {
             self.buffer.insert_char(c);
+            self.record_insert_key(InsertKey::Char(c));
             return Ok(());
         }
         match key.code {
-            KeyCode::Esc => self.enter_mode(Mode::Normal),
-            KeyCode::Enter => self.buffer.insert_newline(),
-            KeyCode::Backspace => self.buffer.delete_char_before(),
-            KeyCode::Left => self.buffer.move_left(),
-            KeyCode::Right => self.buffer.move_right(true),
-            KeyCode::Up => self.buffer.move_up(),
-            KeyCode::Down => self.buffer.move_down(),
+            KeyCode::Esc => {
+                self.finalize_insert_recording();
+                self.enter_mode(Mode::Normal);
+            }
+            KeyCode::Enter => {
+                self.buffer.insert_newline();
+                self.record_insert_key(InsertKey::Newline);
+            }
+            KeyCode::Backspace => {
+                self.buffer.delete_char_before();
+                self.record_insert_key(InsertKey::Backspace);
+            }
+            // Arrow keys break vim's `.` recording — drop the in-flight
+            // session so the next `.` replays only the typing up to here.
+            KeyCode::Left => {
+                self.recording = None;
+                self.buffer.move_left();
+            }
+            KeyCode::Right => {
+                self.recording = None;
+                self.buffer.move_right(true);
+            }
+            KeyCode::Up => {
+                self.recording = None;
+                self.buffer.move_up();
+            }
+            KeyCode::Down => {
+                self.recording = None;
+                self.buffer.move_down();
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn record_insert_key(&mut self, k: InsertKey) {
+        if let Some(r) = self.recording.as_mut() {
+            r.keys.push(k);
+        }
+    }
+
+    /// Move the in-flight recording into `last_change`. Called on Esc
+    /// out of an Insert session that began with a recordable trigger.
+    fn finalize_insert_recording(&mut self) {
+        if let Some(r) = self.recording.take() {
+            self.last_change = Some(LastChange::Insert {
+                trigger: r.trigger,
+                keys: r.keys,
+            });
+        }
     }
 
     fn handle_visual_key(&mut self, key: KeyEvent) -> Result<()> {

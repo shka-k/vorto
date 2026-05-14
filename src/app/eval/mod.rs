@@ -14,13 +14,16 @@
 mod handle;
 mod parse;
 
+use handle::expr_modifies_buffer;
 pub(super) use parse::{Parse, classify, tokenize};
 
 use anyhow::Result;
 
-use super::{App, Status};
-use crate::action::{Ctx, DirectKind, Expr, MotionKind};
+use super::{App, InsertRecording, Status};
+use crate::action::{Ctx, DirectKind, Expr, InsertKey, LastChange, MotionExpr, MotionKind};
 use crate::config::CommandBind;
+use crate::effect::Cmd;
+use crate::mode::Mode;
 
 impl App {
     pub(super) fn execute_command(&mut self, cmd: &str) -> Result<()> {
@@ -58,10 +61,153 @@ impl App {
     }
 
     pub(super) fn evaluate(&mut self, expr: Expr, ctx: Ctx) -> Result<()> {
+        // `.` intercepts before normal dispatch so we don't recurse into
+        // the recording path while replaying.
+        if let Expr::Direct {
+            kind: DirectKind::RepeatLast,
+            count,
+        } = expr
+        {
+            return self.replay_last_change(count, ctx);
+        }
+
+        let modifies = expr_modifies_buffer(&expr);
+        let snapshot = if modifies { Some(expr.clone()) } else { None };
         let cmds = self.handle_expr(expr, ctx);
+        let enters_insert = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::EnterMode(Mode::Insert)));
+
+        if let Some(expr) = snapshot {
+            if enters_insert {
+                // Start a fresh Insert recording — the trigger is the
+                // Expr that got us here, the keys arrive via
+                // `handle_insert_key` and finalize on Esc.
+                self.recording = Some(InsertRecording {
+                    trigger: expr,
+                    keys: Vec::new(),
+                });
+            } else {
+                self.last_change = Some(LastChange::Expr(expr));
+                self.recording = None;
+            }
+        }
+
         self.run_cmds(cmds)
     }
+
+    /// `.` — replay the last recorded change. With a count prefix, the
+    /// count overrides the recorded one (vim's behaviour for `5.`).
+    fn replay_last_change(&mut self, count: u32, ctx: Ctx) -> Result<()> {
+        let Some(change) = self.last_change.clone() else {
+            self.status = Status::error("nothing to repeat".to_string());
+            return Ok(());
+        };
+        match change {
+            LastChange::Expr(e) => {
+                let e = override_count(e, count);
+                let cmds = self.handle_expr(e, ctx);
+                self.run_cmds(cmds)
+            }
+            LastChange::Insert { trigger, keys } => {
+                let trigger = override_count(trigger, count);
+                let cmds = self.handle_expr(trigger, ctx);
+                self.run_cmds(cmds)?;
+                for k in keys {
+                    match k {
+                        InsertKey::Char(c) => self.buffer.insert_char(c),
+                        InsertKey::Newline => self.buffer.insert_newline(),
+                        InsertKey::Backspace => self.buffer.delete_char_before(),
+                    }
+                }
+                self.enter_mode(Mode::Normal);
+                Ok(())
+            }
+        }
+    }
 }
+
+/// Replace the count carried by an `Expr` when the user supplied one
+/// explicitly via `N.`. A count of 0 or 1 leaves the original count
+/// alone — `.` with no prefix replays exactly what was recorded.
+fn override_count(expr: Expr, count: u32) -> Expr {
+    if count <= 1 {
+        return expr;
+    }
+    match expr {
+        Expr::Direct { kind, .. } => Expr::Direct { kind, count },
+        Expr::Motion(m) => Expr::Motion(MotionExpr { count, ..m }),
+        Expr::Op {
+            op,
+            target,
+            outer_count: _,
+        } => Expr::Op {
+            op,
+            target,
+            outer_count: count,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::{Operator, Target};
+
+    #[test]
+    fn override_count_leaves_expr_alone_when_no_prefix() {
+        let e = Expr::Direct {
+            kind: DirectKind::DeleteCharUnderCursor,
+            count: 3,
+        };
+        // `.` with no count prefix → recorded count survives.
+        let got = override_count(e.clone(), 1);
+        assert_eq!(got, e);
+        let got_zero = override_count(e.clone(), 0);
+        assert_eq!(got_zero, e);
+    }
+
+    #[test]
+    fn override_count_replaces_each_expr_shape() {
+        let direct = Expr::Direct {
+            kind: DirectKind::Paste,
+            count: 1,
+        };
+        let got = override_count(direct, 5);
+        assert!(matches!(
+            got,
+            Expr::Direct {
+                kind: DirectKind::Paste,
+                count: 5
+            }
+        ));
+
+        let op = Expr::Op {
+            op: Operator::Delete,
+            target: Target::Motion(MotionExpr {
+                motion: MotionKind::WordForward,
+                count: 1,
+            }),
+            outer_count: 1,
+        };
+        let got = override_count(op, 4);
+        match got {
+            Expr::Op { outer_count, .. } => assert_eq!(outer_count, 4),
+            _ => panic!("expected Op"),
+        }
+
+        let m = Expr::Motion(MotionExpr {
+            motion: MotionKind::Down,
+            count: 1,
+        });
+        let got = override_count(m, 7);
+        match got {
+            Expr::Motion(mx) => assert_eq!(mx.count, 7),
+            _ => panic!("expected Motion"),
+        }
+    }
+}
+
 
 // ────────────────────────────────────────────────────────────────────────
 // Helpers shared by `handle` and `runtime`.

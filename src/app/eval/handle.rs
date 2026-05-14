@@ -190,9 +190,10 @@ impl App {
             D::FindReferences => cmds.push(Cmd::LspFindReferences),
             D::Rename => cmds.push(Cmd::OpenRenamePrompt),
             D::CodeAction => cmds.push(Cmd::LspCodeAction),
+            // Intercepted by `App::evaluate` before reaching here.
+            D::RepeatLast => unreachable!("RepeatLast handled in App::evaluate"),
             D::ToggleComment => match buffer_comment_token(self) {
                 Some(token) => {
-                    self.buffer.snapshot();
                     let start_row = self.buffer.cursor.row;
                     let start_col = self.buffer.cursor.col;
                     let max = self.buffer.lines.len();
@@ -509,7 +510,7 @@ fn parse_save_path(rest: &str) -> Option<PathBuf> {
     }
 }
 
-fn expr_modifies_buffer(expr: &Expr) -> bool {
+pub(super) fn expr_modifies_buffer(expr: &Expr) -> bool {
     use DirectKind as D;
     match expr {
         Expr::Direct { kind, .. } => matches!(
@@ -529,6 +530,7 @@ fn expr_modifies_buffer(expr: &Expr) -> bool {
                 | D::SubstituteChar
                 | D::SubstituteLine
                 | D::ReplaceChar { .. }
+                | D::ToggleComment
         ),
         Expr::Motion(_) => false,
         Expr::Op { op, .. } => !matches!(op, Operator::Yank),
