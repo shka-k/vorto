@@ -89,7 +89,7 @@ fn run(
         let shape = app.config.cursor_shapes.for_mode(app.mode);
         if last_shape != Some(shape) {
             let mut out = io::stdout();
-            out.write_all(cursor_ansi(shape))?;
+            out.write_all(cursor_ansi(shape, app.config.cursor_shapes.blinking))?;
             out.flush()?;
             last_shape = Some(shape);
         }
@@ -135,10 +135,14 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
 /// DECSCUSR escape sequence — `CSI Ps SP q`, where Ps picks the shape.
 /// Written directly to stdout from the main loop so the terminal
 /// switches shape as the user changes mode.
-fn cursor_ansi(shape: CursorShape) -> &'static [u8] {
-    match shape {
-        CursorShape::Block => b"\x1b[2 q",
-        CursorShape::Bar => b"\x1b[6 q",
-        CursorShape::Underbar => b"\x1b[4 q",
+fn cursor_ansi(shape: CursorShape, blinking: bool) -> &'static [u8] {
+    match (shape, blinking) {
+        (CursorShape::Terminal, _) => b"\x1b[0 q",
+        (CursorShape::Block, true) => b"\x1b[1 q",
+        (CursorShape::Block, false) => b"\x1b[2 q",
+        (CursorShape::Underbar, true) => b"\x1b[3 q",
+        (CursorShape::Underbar, false) => b"\x1b[4 q",
+        (CursorShape::Bar, true) => b"\x1b[5 q",
+        (CursorShape::Bar, false) => b"\x1b[6 q",
     }
 }

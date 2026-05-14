@@ -9,6 +9,7 @@ use crate::mode::Mode;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CursorConfig {
+    pub blinking: Option<bool>,
     pub normal: Option<String>,
     pub insert: Option<String>,
     pub visual: Option<String>,
@@ -21,10 +22,14 @@ pub enum CursorShape {
     Block,
     Bar,
     Underbar,
+    /// Defer to the terminal's own cursor settings (DECSCUSR Ps=0).
+    /// `blinking` is ignored in this case.
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CursorShapes {
+    pub blinking: bool,
     pub normal: CursorShape,
     pub insert: CursorShape,
     pub visual: CursorShape,
@@ -35,6 +40,7 @@ pub struct CursorShapes {
 impl Default for CursorShapes {
     fn default() -> Self {
         Self {
+            blinking: false,
             normal: CursorShape::Block,
             insert: CursorShape::Bar,
             visual: CursorShape::Underbar,
@@ -61,8 +67,9 @@ fn parse_cursor_shape(s: &str) -> Result<CursorShape> {
         "block" => Ok(CursorShape::Block),
         "bar" | "line" => Ok(CursorShape::Bar),
         "underbar" | "underscore" | "underline" => Ok(CursorShape::Underbar),
+        "terminal" | "default" => Ok(CursorShape::Terminal),
         other => bail!(
-            "unknown cursor shape `{}` (expected block|bar|underbar)",
+            "unknown cursor shape `{}` (expected block|bar|underbar|terminal)",
             other
         ),
     }
@@ -72,6 +79,9 @@ fn parse_cursor_shape(s: &str) -> Result<CursorShape> {
 /// back to the per-mode defaults for any field the user didn't set.
 pub fn resolve_cursor_shapes(c: &CursorConfig) -> Result<CursorShapes> {
     let mut shapes = CursorShapes::default();
+    if let Some(b) = c.blinking {
+        shapes.blinking = b;
+    }
     if let Some(s) = &c.normal {
         shapes.normal = parse_cursor_shape(s).with_context(|| "cursor.normal")?;
     }
