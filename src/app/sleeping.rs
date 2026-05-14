@@ -78,6 +78,7 @@ impl Lines {
 pub(super) struct FrozenSnapshot {
     lines: Lines,
     cursor: Cursor,
+    extra_cursors: Vec<Cursor>,
     dirty: bool,
 }
 
@@ -88,6 +89,7 @@ pub(super) struct FrozenSnapshot {
 pub struct SleepingBuffer {
     lines: Lines,
     cursor: Cursor,
+    extra_cursors: Vec<Cursor>,
     path: Option<PathBuf>,
     pub dirty: bool,
     yank: String,
@@ -122,6 +124,7 @@ impl SleepingBuffer {
             .map(|s| FrozenSnapshot {
                 lines: freeze(s.lines),
                 cursor: s.cursor,
+                extra_cursors: s.extra_cursors,
                 dirty: s.dirty,
             })
             .collect();
@@ -131,6 +134,7 @@ impl SleepingBuffer {
             .map(|s| FrozenSnapshot {
                 lines: freeze(s.lines),
                 cursor: s.cursor,
+                extra_cursors: s.extra_cursors,
                 dirty: s.dirty,
             })
             .collect();
@@ -138,6 +142,7 @@ impl SleepingBuffer {
         SleepingBuffer {
             lines: freeze(b.lines),
             cursor: b.cursor,
+            extra_cursors: b.extra_cursors,
             path: b.path,
             dirty: b.dirty,
             yank: b.yank,
@@ -152,6 +157,7 @@ impl SleepingBuffer {
         let mut b = Buffer::new();
         b.lines = self.lines.thaw();
         b.cursor = self.cursor;
+        b.extra_cursors = self.extra_cursors;
         b.path = self.path;
         b.dirty = self.dirty;
         b.yank = self.yank;
@@ -163,6 +169,7 @@ impl SleepingBuffer {
             .map(|s| Snapshot {
                 lines: s.lines.thaw(),
                 cursor: s.cursor,
+                extra_cursors: s.extra_cursors,
                 dirty: s.dirty,
             })
             .collect();
@@ -172,6 +179,7 @@ impl SleepingBuffer {
             .map(|s| Snapshot {
                 lines: s.lines.thaw(),
                 cursor: s.cursor,
+                extra_cursors: s.extra_cursors,
                 dirty: s.dirty,
             })
             .collect();
@@ -229,6 +237,7 @@ mod tests {
             b.undo_stack.push(Snapshot {
                 lines: vec![format!("snapshot {i:03} of fifty-something bytes per row")],
                 cursor: Cursor::default(),
+                extra_cursors: Vec::new(),
                 dirty: false,
             });
         }

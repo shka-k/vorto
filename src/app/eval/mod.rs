@@ -22,6 +22,7 @@ use anyhow::Result;
 use super::{App, InsertRecording, Status};
 use crate::action::{Ctx, DirectKind, Expr, InsertKey, LastChange, MotionExpr, MotionKind};
 use crate::config::CommandBind;
+use crate::editor::Cursor;
 use crate::effect::Cmd;
 use crate::mode::Mode;
 
@@ -73,7 +74,20 @@ impl App {
 
         let modifies = expr_modifies_buffer(&expr);
         let snapshot = if modifies { Some(expr.clone()) } else { None };
-        let cmds = self.handle_expr(expr, ctx);
+        let cmds = if should_fan_out(&expr) && !self.buffer.extra_cursors.is_empty() {
+            // Multi-cursor fan-out. Buffer-modifying exprs take one
+            // shared snapshot up front so a single `u` undoes the
+            // whole batch; pure motions skip the snapshot (they
+            // wouldn't go on the undo stack in the single-cursor
+            // path either). The fan-out then applies the expr at
+            // every cursor with diff-based bookkeeping.
+            if modifies {
+                self.buffer.snapshot();
+            }
+            self.fan_out_op(expr, ctx)
+        } else {
+            self.handle_expr(expr, ctx)
+        };
         let enters_insert = cmds
             .iter()
             .any(|c| matches!(c, Cmd::EnterMode(Mode::Insert)));
@@ -253,6 +267,212 @@ pub(super) fn is_inclusive_motion(motion: MotionKind) -> bool {
             | M::FileEnd
             | M::BracketMatch
     )
+}
+
+/// True for expressions that should be applied at every cursor in
+/// multi-cursor mode. Covers:
+///
+/// - `c` / `d` operators against any target (motion, text-object,
+///   line-wise, search-match);
+/// - Pure motions (`j` / `w` / `$` / `f<c>` / etc.) — each cursor
+///   moves independently. Search-jumping motions are excluded
+///   because they emit `Cmd::JumpSearch` whose buffer mutation
+///   happens at runtime time, after the fan-out loop has already
+///   captured cursor positions;
+/// - Single-cursor-natural Directs that touch one character or the
+///   current line (`x`, `r`, `~`, `s`, `S`, `D`, `C`);
+/// - Line-count-changing edits (`o`, `O`, `J`, paste, `Y`) — handled
+///   by the row-delta branch of `adjust_already_processed`.
+///
+/// Yank is intentionally left in (each cursor's yank still overwrites
+/// the shared register, so the last-processed wins — same as the
+/// current single-cursor `y` overwriting from earlier yanks). Undo /
+/// redo / mode-switches / search are primary-only.
+fn should_fan_out(expr: &Expr) -> bool {
+    use DirectKind as D;
+    use MotionKind as M;
+    match expr {
+        Expr::Op { .. } => true,
+        Expr::Motion(m) => !matches!(
+            m.motion,
+            M::SearchNext | M::SearchPrev | M::SearchWordForward | M::SearchWordBack
+        ),
+        Expr::Direct { kind, .. } => matches!(
+            kind,
+            D::DeleteCharUnderCursor
+                | D::ReplaceChar { .. }
+                | D::ToggleCase
+                | D::SubstituteChar
+                | D::SubstituteLine
+                | D::DeleteToEol
+                | D::ChangeToEol
+                | D::OpenLineBelow
+                | D::OpenLineAbove
+                | D::Paste
+                | D::JoinLines
+                | D::YankLine
+        ),
+    }
+}
+
+impl App {
+    /// Run `expr` at the primary cursor and at every extra cursor,
+    /// keeping a single shared undo entry. Cursors are processed in
+    /// descending `(row, col)` order so a later (lower-position) edit
+    /// doesn't shift any already-processed cursor's saved position;
+    /// after each edit we compare the buffer's line lengths and shift
+    /// already-saved positions on the affected row to account for
+    /// chars added/removed at lower columns.
+    ///
+    /// `Cmd`s produced by individual cursor runs are deduped so the
+    /// runtime applies things like `EnterMode(Insert)` once.
+    pub(super) fn fan_out_op(&mut self, expr: Expr, ctx: Ctx) -> Vec<Cmd> {
+        let mut all: Vec<(usize, Cursor)> = std::iter::once((0usize, self.buffer.cursor))
+            .chain(
+                self.buffer
+                    .extra_cursors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (i + 1, *c)),
+            )
+            .collect();
+        all.sort_by_key(|(_, c)| std::cmp::Reverse((c.row, c.col)));
+
+        let mut new_positions = vec![Cursor::default(); all.len()];
+        let mut cmds: Vec<Cmd> = Vec::new();
+        let mut seen_mode = false;
+        let mut seen_status = false;
+        let mut seen_last_find = false;
+
+        for i in 0..all.len() {
+            let (orig_idx, pos) = all[i];
+            self.buffer.cursor = pos;
+            let before = line_chars(self);
+            let new_cmds = self.handle_expr_no_snapshot(expr.clone(), ctx);
+            let after = line_chars(self);
+            new_positions[orig_idx] = self.buffer.cursor;
+            adjust_already_processed(
+                &mut new_positions,
+                &all[..i],
+                &before,
+                &after,
+                pos,
+            );
+            for cmd in new_cmds {
+                match &cmd {
+                    Cmd::EnterMode(_) if seen_mode => continue,
+                    Cmd::EnterMode(_) => seen_mode = true,
+                    Cmd::StatusInfo(_) | Cmd::StatusError(_) if seen_status => continue,
+                    Cmd::StatusInfo(_) | Cmd::StatusError(_) => seen_status = true,
+                    Cmd::SetLastFind(_) if seen_last_find => continue,
+                    Cmd::SetLastFind(_) => seen_last_find = true,
+                    _ => {}
+                }
+                cmds.push(cmd);
+            }
+        }
+
+        // Write back: primary = positions[0], extras = positions[1..],
+        // deduping coincident positions.
+        self.buffer.cursor = new_positions[0];
+        let primary = new_positions[0];
+        let mut extras: Vec<Cursor> = Vec::with_capacity(new_positions.len() - 1);
+        for c in new_positions.into_iter().skip(1) {
+            if c == primary || extras.contains(&c) {
+                continue;
+            }
+            extras.push(c);
+        }
+        self.buffer.extra_cursors = extras;
+        cmds
+    }
+}
+
+/// Per-row char-count snapshot, used to spot what a single fan-out
+/// step did to the buffer.
+fn line_chars(app: &App) -> Vec<usize> {
+    app.buffer
+        .lines
+        .iter()
+        .map(|l| l.chars().count())
+        .collect()
+}
+
+/// Apply the buffer diff between `before` and `after` to the cursors
+/// already in `new_positions` for the indices listed in `already`.
+///
+/// Two regimes:
+///
+/// 1. **Same row count.** Per-row delta tells us how many chars the
+///    edit added or removed on each row. For each row with a non-zero
+///    delta we shift the cols of all already-processed cursors on
+///    that row that sit at or past `edit_origin.col` — anything to
+///    the left of a forward edit is untouched.
+///
+/// 2. **Row count changed.** We locate the first row where the line
+///    lengths diverge and treat it as the edit row. Cursors strictly
+///    past that row are shifted by the row delta. Cursors on the
+///    edit row are left alone — that's correct for `dd` / `J` (the
+///    row was either removed or merged with the next, and same-row
+///    edits don't cleanly translate). Final row indices are clamped
+///    to the new buffer bounds.
+fn adjust_already_processed(
+    new_positions: &mut [Cursor],
+    already: &[(usize, Cursor)],
+    before: &[usize],
+    after: &[usize],
+    edit_origin: Cursor,
+) {
+    if before.len() == after.len() {
+        for (row, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            if a == b {
+                continue;
+            }
+            let delta = *a as i64 - *b as i64;
+            for (orig_idx, _) in already {
+                let p = &mut new_positions[*orig_idx];
+                if p.row != row {
+                    continue;
+                }
+                if p.col < edit_origin.col {
+                    continue;
+                }
+                let new_col = p.col as i64 + delta;
+                p.col = new_col.max(edit_origin.col as i64) as usize;
+            }
+        }
+        return;
+    }
+    // Row count changed — find where and shift the tail.
+    let edit_row = first_diverging_row(before, after);
+    let row_delta = after.len() as i64 - before.len() as i64;
+    let last_row = after.len().saturating_sub(1);
+    for (orig_idx, _) in already {
+        let p = &mut new_positions[*orig_idx];
+        if p.row > edit_row {
+            let new_row = (p.row as i64 + row_delta).max(0) as usize;
+            p.row = new_row.min(last_row);
+            // Column may now reference a row whose length is shorter;
+            // clamp so callers don't see an out-of-range col.
+            let line_len = after.get(p.row).copied().unwrap_or(0);
+            if p.col > line_len {
+                p.col = line_len;
+            }
+        }
+    }
+}
+
+/// First row index where `before` and `after` line-length vectors
+/// differ. When one is a strict prefix of the other, returns the
+/// length of the shorter side — i.e. the first row that exists only
+/// in the longer side, which is the edit row for pure-append edits.
+fn first_diverging_row(before: &[usize], after: &[usize]) -> usize {
+    for i in 0..before.len().min(after.len()) {
+        if before[i] != after[i] {
+            return i;
+        }
+    }
+    before.len().min(after.len())
 }
 
 /// Extract the word under the cursor (char-class `Word`) as a plain

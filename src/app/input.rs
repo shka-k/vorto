@@ -59,7 +59,7 @@ impl App {
     fn handle_insert_key(&mut self, key: KeyEvent) -> Result<()> {
         let no_ctrl = !key.modifiers.contains(KeyModifiers::CONTROL);
         if no_ctrl && let KeyCode::Char(c) = key.code {
-            self.buffer.insert_char(c);
+            self.fan_out_insert_char(c);
             self.record_insert_key(InsertKey::Char(c));
             return Ok(());
         }
@@ -69,11 +69,15 @@ impl App {
                 self.enter_mode(Mode::Normal);
             }
             KeyCode::Enter => {
+                // Multi-cursor with Enter is tricky (one cursor splits a
+                // line, others on the same line need their row/col
+                // recomputed). Punt for v1 — only the primary types
+                // newlines, extras stay put.
                 self.buffer.insert_newline();
                 self.record_insert_key(InsertKey::Newline);
             }
             KeyCode::Backspace => {
-                self.buffer.delete_char_before();
+                self.fan_out_backspace();
                 self.record_insert_key(InsertKey::Backspace);
             }
             // Arrow keys break vim's `.` recording — drop the in-flight
@@ -97,6 +101,82 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Apply `insert_char(c)` at the primary cursor and every extra
+    /// cursor, adjusting positions so each extra ends up "after its own
+    /// inserted character" in the final buffer.
+    ///
+    /// Strategy: tag positions with their original index (primary = 0),
+    /// sort descending by `(row, col)`, and process in that order. The
+    /// descending order guarantees that a later, lower-position edit
+    /// can't shift any cursor we haven't processed yet. After each
+    /// edit, every *already-processed* cursor on the same row gets
+    /// `col += 1` — that one earlier cursor's character index has been
+    /// pushed right by the insertion we just did at a lower column.
+    fn fan_out_insert_char(&mut self, ch: char) {
+        if self.buffer.extra_cursors.is_empty() {
+            self.buffer.insert_char(ch);
+            return;
+        }
+        let mut all = collect_cursors(self);
+        all.sort_by_key(|(_, c)| std::cmp::Reverse((c.row, c.col)));
+        let mut new_positions = vec![Cursor::default(); all.len()];
+        for i in 0..all.len() {
+            let (orig_idx, pos) = all[i];
+            self.buffer.cursor = pos;
+            self.buffer.insert_char(ch);
+            new_positions[orig_idx] = self.buffer.cursor;
+            for (other_orig_idx, _) in all.iter().take(i) {
+                if new_positions[*other_orig_idx].row == pos.row {
+                    new_positions[*other_orig_idx].col += 1;
+                }
+            }
+        }
+        scatter_cursors(self, new_positions);
+    }
+
+    /// Backspace fan-out. Two cases:
+    ///   - cursor at col > 0: same-row deletion, mirrors `insert_char`
+    ///     fan-out with `col -= 1` shifts on same row.
+    ///   - cursor at col == 0: this would join with the previous line.
+    ///     We skip fan-out for these (only primary joins) — handling
+    ///     the row collapse on every extra is a separate bookkeeping
+    ///     problem we're leaving to v2.
+    fn fan_out_backspace(&mut self) {
+        if self.buffer.extra_cursors.is_empty() {
+            self.buffer.delete_char_before();
+            return;
+        }
+        let mut all = collect_cursors(self);
+        all.sort_by_key(|(_, c)| std::cmp::Reverse((c.row, c.col)));
+        let mut new_positions = vec![Cursor::default(); all.len()];
+        for i in 0..all.len() {
+            let (orig_idx, pos) = all[i];
+            if pos.col == 0 {
+                // Only the primary performs the line-join; extras at
+                // col 0 stay put rather than risk a row collapse.
+                if orig_idx == 0 {
+                    self.buffer.cursor = pos;
+                    self.buffer.delete_char_before();
+                    new_positions[orig_idx] = self.buffer.cursor;
+                } else {
+                    new_positions[orig_idx] = pos;
+                }
+                continue;
+            }
+            self.buffer.cursor = pos;
+            self.buffer.delete_char_before();
+            new_positions[orig_idx] = self.buffer.cursor;
+            for (other_orig_idx, _) in all.iter().take(i) {
+                if new_positions[*other_orig_idx].row == pos.row
+                    && new_positions[*other_orig_idx].col > 0
+                {
+                    new_positions[*other_orig_idx].col -= 1;
+                }
+            }
+        }
+        scatter_cursors(self, new_positions);
     }
 
     fn record_insert_key(&mut self, k: InsertKey) {
@@ -486,4 +566,39 @@ impl App {
             .unzip();
         self.prompt.open_buffers(items, refs);
     }
+}
+
+/// Snapshot every active cursor (primary first, then extras in their
+/// stored order) tagged with its original index. The original index is
+/// what `scatter_cursors` writes back to: index 0 is the primary,
+/// 1..N go back into `extra_cursors[0..N-1]` so the pop ordering of
+/// `<C-p>` is preserved.
+fn collect_cursors(app: &App) -> Vec<(usize, Cursor)> {
+    std::iter::once((0usize, app.buffer.cursor))
+        .chain(
+            app.buffer
+                .extra_cursors
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i + 1, *c)),
+        )
+        .collect()
+}
+
+/// Inverse of `collect_cursors`. `positions[0]` is the new primary;
+/// `positions[1..]` becomes the new extras (preserving their original
+/// ordering). Dedupes any extra that landed on the primary or on an
+/// earlier extra, since coincident cursors are visually indistinguishable
+/// and would just amplify subsequent edits.
+fn scatter_cursors(app: &mut App, positions: Vec<Cursor>) {
+    app.buffer.cursor = positions[0];
+    let primary = positions[0];
+    let mut extras: Vec<Cursor> = Vec::with_capacity(positions.len() - 1);
+    for c in positions.into_iter().skip(1) {
+        if c == primary || extras.contains(&c) {
+            continue;
+        }
+        extras.push(c);
+    }
+    app.buffer.extra_cursors = extras;
 }

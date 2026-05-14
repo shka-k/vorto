@@ -16,6 +16,12 @@ use crate::syntax::{self, Capture};
 /// both dark and light terminals.
 const SEL_BG: Color = Color::Rgb(58, 78, 122);
 
+/// Background used to render each *extra* multi-cursor cell. Distinct
+/// from `SEL_BG` so a user with both a visual selection and stacked
+/// cursors can tell them apart. The terminal's native cursor still
+/// paints the primary; only the additional cursors use this color.
+const EXTRA_CURSOR_BG: Color = Color::Rgb(160, 110, 60);
+
 /// Width of the gutter prefix (severity sign + space). Kept in sync with
 /// [`place_cursor`] so the cursor lands on the right column.
 const GUTTER_SIGN_WIDTH: u16 = 1;
@@ -33,6 +39,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .map(|h| h.captures_in_rows(scroll, last_visible))
         .unwrap_or_default();
     let row_severity = build_row_severity(app, scroll, last_visible);
+    let extras = &app.buffer.extra_cursors;
 
     let visible: Vec<Line> = app
         .buffer
@@ -45,7 +52,11 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             let mut spans = vec![sign_span(row_severity.get(&i).copied())];
             let num = format!("{:>4} ", i + 1);
             spans.push(Span::styled(num, Style::default().fg(Color::DarkGray)));
-            spans.extend(render_line(i, line, sel.as_ref(), &captures));
+            let extra_cols: Vec<usize> = extras
+                .iter()
+                .filter_map(|c| if c.row == i { Some(c.col) } else { None })
+                .collect();
+            spans.extend(render_line(i, line, sel.as_ref(), &captures, &extra_cols));
             Line::from(spans)
         })
         .collect();
@@ -117,7 +128,9 @@ fn render_line(
     line: &str,
     sel: Option<&Selection>,
     captures: &[Capture],
+    extra_cols: &[usize],
 ) -> Vec<Span<'static>> {
+    let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_selected = |col: usize| -> bool {
         let Some(sel) = sel else { return false };
         match *sel {
@@ -139,6 +152,12 @@ fn render_line(
 
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
+        if is_extra_cursor(0) {
+            return vec![Span::styled(
+                " ".to_string(),
+                Style::default().bg(EXTRA_CURSOR_BG),
+            )];
+        }
         if is_selected(0) {
             return vec![Span::styled(" ".to_string(), Style::default().bg(SEL_BG))];
         }
@@ -173,11 +192,16 @@ fn render_line(
         }
     }
 
-    // Overlay the visual-selection background per char.
+    // Overlay the visual-selection background per char, then the
+    // extra-cursor background on top so a cursor inside a selection
+    // still reads as a cursor cell.
     let style_at = |col: usize| -> Style {
         let mut s = base[col];
         if is_selected(col) {
             s = s.bg(SEL_BG);
+        }
+        if is_extra_cursor(col) {
+            s = s.bg(EXTRA_CURSOR_BG);
         }
         s
     };
@@ -195,6 +219,15 @@ fn render_line(
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));
+    }
+    // Past-end extra cursor — paint one extra cell so a cursor sitting
+    // one column past the last char (the natural Insert-mode position
+    // after typing) stays visible.
+    if is_extra_cursor(chars.len()) {
+        spans.push(Span::styled(
+            " ".to_string(),
+            Style::default().bg(EXTRA_CURSOR_BG),
+        ));
     }
     spans
 }

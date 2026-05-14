@@ -30,11 +30,21 @@ use crate::mode::Mode;
 impl App {
     /// Top-level entry point. Snapshot for undo if the expression
     /// modifies the buffer, then dispatch to the kind-specific
-    /// handler.
+    /// handler. Callers that need to drive multiple invocations under
+    /// a single undo step (multi-cursor fan-out) should use
+    /// [`handle_expr_no_snapshot`] directly after taking the snapshot
+    /// themselves.
     pub(super) fn handle_expr(&mut self, expr: Expr, ctx: Ctx) -> Vec<Cmd> {
         if expr_modifies_buffer(&expr) {
             self.buffer.snapshot();
         }
+        self.handle_expr_no_snapshot(expr, ctx)
+    }
+
+    /// Variant of [`handle_expr`] that does not take an undo snapshot.
+    /// Exposed so the multi-cursor fan-out can snapshot once for the
+    /// whole batch instead of N times.
+    pub(super) fn handle_expr_no_snapshot(&mut self, expr: Expr, ctx: Ctx) -> Vec<Cmd> {
         match expr {
             Expr::Direct { kind, count } => self.handle_direct(kind, count, ctx),
             Expr::Motion(m) => self.handle_motion(m),
@@ -197,6 +207,23 @@ impl App {
             }
             D::SearchWordKeep { forward } => {
                 push_word_search(self, &mut cmds, forward, false);
+            }
+            D::MultiCursorAddNext => add_next_cursor(self, &mut cmds),
+            D::MultiCursorPop => {
+                if let Some(c) = self.buffer.extra_cursors.pop() {
+                    self.buffer.cursor = c;
+                } else {
+                    cmds.push(Cmd::StatusInfo("no extra cursor to remove".into()));
+                }
+            }
+            D::MultiCursorClear => {
+                if self.buffer.extra_cursors.is_empty() {
+                    cmds.push(Cmd::StatusInfo("no extra cursors".into()));
+                } else {
+                    let n = self.buffer.extra_cursors.len();
+                    self.buffer.extra_cursors.clear();
+                    cmds.push(Cmd::StatusInfo(format!("cleared {n} extra cursors")));
+                }
             }
             D::ToggleComment => match buffer_comment_token(self) {
                 Some(token) => {
@@ -529,6 +556,43 @@ fn plan_quit(app: &App) -> Cmd {
         ));
     }
     Cmd::Quit
+}
+
+/// `<C-n>` body. Pulls the word under the cursor, finds its next
+/// occurrence forward from primary (wrapping around the buffer), and
+/// pushes primary as a new extra cursor before jumping primary to the
+/// match. Also seeds `App.search` via `Cmd::SetSearch` so `n` / `N`
+/// keep working on the same pattern after the user is done adding
+/// cursors. No-ops with a status message when there is no word, or
+/// the next match would land on a cursor that's already tracked.
+fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
+    let Some(word) = word_under_cursor(&app.buffer) else {
+        cmds.push(Cmd::StatusError("no word under cursor".into()));
+        return;
+    };
+    // Use a throwaway SearchState for the lookup so we can act on the
+    // result this turn — `Cmd::SetSearch` is only applied after
+    // `handle_expr` returns, so reading `app.search` here would see
+    // the pre-Ctrl-N pattern.
+    let mut tmp = crate::editor::SearchState::default();
+    tmp.set(word.clone(), true);
+    let Some(next) = tmp.find_next(&app.buffer, true) else {
+        cmds.push(Cmd::StatusError("no further match".into()));
+        return;
+    };
+    let primary = app.buffer.cursor;
+    if next == primary || app.buffer.extra_cursors.contains(&next) {
+        cmds.push(Cmd::StatusInfo("no further match".into()));
+        return;
+    }
+    app.buffer.extra_cursors.push(primary);
+    app.buffer.cursor = next;
+    cmds.push(Cmd::SetSearch {
+        pattern: word,
+        forward: true,
+    });
+    let n = app.buffer.extra_cursors.len() + 1;
+    cmds.push(Cmd::StatusInfo(format!("{n} cursors")));
 }
 
 fn parse_save_path(rest: &str) -> Option<PathBuf> {

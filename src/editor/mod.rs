@@ -28,6 +28,11 @@ use crate::syntax::Highlighter;
 pub struct Buffer {
     pub lines: Vec<String>,
     pub cursor: Cursor,
+    /// Additional cursor positions for multi-cursor editing. The primary
+    /// cursor lives in `cursor`; extras are *only* the non-primary ones,
+    /// stored in insertion order so a pop semantic ("remove last added")
+    /// is a simple `pop()`. Empty in the single-cursor common case.
+    pub extra_cursors: Vec<Cursor>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub yank: String,
@@ -64,6 +69,10 @@ pub struct Buffer {
 pub struct Snapshot {
     pub lines: Vec<String>,
     pub cursor: Cursor,
+    /// Multi-cursor extras at snapshot time. Empty when there are no
+    /// extras (the common case). Undo restores them along with the
+    /// primary cursor so the multi-cursor state round-trips.
+    pub extra_cursors: Vec<Cursor>,
     pub dirty: bool,
 }
 
@@ -95,6 +104,7 @@ impl Buffer {
         Ok(Self {
             lines,
             cursor: Cursor::default(),
+            extra_cursors: Vec::new(),
             path: Some(path.to_path_buf()),
             dirty: false,
             yank: String::new(),
@@ -369,6 +379,7 @@ impl Buffer {
         self.undo_stack.push(Snapshot {
             lines: self.lines.clone(),
             cursor: self.cursor,
+            extra_cursors: self.extra_cursors.clone(),
             dirty: self.dirty,
         });
         self.redo_stack.clear();
@@ -385,6 +396,7 @@ impl Buffer {
         self.redo_stack.push(Snapshot {
             lines: std::mem::replace(&mut self.lines, prev.lines),
             cursor: std::mem::replace(&mut self.cursor, prev.cursor),
+            extra_cursors: std::mem::replace(&mut self.extra_cursors, prev.extra_cursors),
             dirty: std::mem::replace(&mut self.dirty, prev.dirty),
         });
         self.version = self.version.wrapping_add(1);
@@ -399,6 +411,7 @@ impl Buffer {
         self.undo_stack.push(Snapshot {
             lines: std::mem::replace(&mut self.lines, next.lines),
             cursor: std::mem::replace(&mut self.cursor, next.cursor),
+            extra_cursors: std::mem::replace(&mut self.extra_cursors, next.extra_cursors),
             dirty: std::mem::replace(&mut self.dirty, next.dirty),
         });
         self.version = self.version.wrapping_add(1);

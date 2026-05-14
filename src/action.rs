@@ -237,6 +237,16 @@ pub enum DirectKind {
     /// when you want to highlight or set up for `n` / `gn` without
     /// losing your position.
     SearchWordKeep { forward: bool },
+    /// `<C-n>` — multi-cursor: find the next occurrence of the word
+    /// under the cursor, push the current primary into `extra_cursors`,
+    /// and jump primary to the match. Also seeds the search pattern so
+    /// `n` / `N` walk the same matches.
+    MultiCursorAddNext,
+    /// `<C-p>` — pop the most recently added extra cursor and move
+    /// primary back to its position. No-op when there are no extras.
+    MultiCursorPop,
+    /// `<space>,` — drop every extra cursor and keep only primary.
+    MultiCursorClear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

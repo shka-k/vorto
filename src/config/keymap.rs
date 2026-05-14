@@ -393,6 +393,12 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             token: Dir(D::SearchWordKeep { forward: false }),
             label: "search word ← (keep cursor)",
         },
+        Binding {
+            key: KeyCode::Char(','),
+            aliases: &[],
+            token: Dir(D::MultiCursorClear),
+            label: "clear extra cursors",
+        },
     ]
 };
 
@@ -651,6 +657,18 @@ impl Keymap {
         ] {
             self.bind_initial(KeySig::new(KeyCode::Char(ch), ctrl), Motion(m));
         }
+
+        // Multi-cursor: Ctrl-N adds a cursor at the next word match,
+        // Ctrl-P pops the most recently added one. Clearing all extras
+        // is on the leader (<space>,) — see LEADER_DEFAULTS.
+        self.bind_initial(
+            KeySig::new(KeyCode::Char('n'), ctrl),
+            Direct(D::MultiCursorAddNext),
+        );
+        self.bind_initial(
+            KeySig::new(KeyCode::Char('p'), ctrl),
+            Direct(D::MultiCursorPop),
+        );
 
         // Leader bindings — single source of truth in LEADER_DEFAULTS.
         for b in LEADER_DEFAULTS {
