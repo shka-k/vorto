@@ -111,6 +111,10 @@ fn install(args: &[String], grammar_dir: &PathBuf, query_dir: &PathBuf) -> Resul
 
     let mut failures = Vec::new();
     for r in &recipes {
+        if build::is_fully_installed(r.name, grammar_dir, query_dir) {
+            eprintln!("==> {} already installed, skipping", r.name);
+            continue;
+        }
         eprintln!("==> installing {} ({})", r.name, r.repo);
         match build::install(r, grammar_dir, query_dir) {
             Ok(report) => {

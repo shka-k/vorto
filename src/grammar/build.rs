@@ -180,6 +180,23 @@ pub fn installed_path(name: &str, grammar_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// True when both the shared library and every bundled `.scm` query for
+/// `name` already exist on disk. Used by `install` to skip work that
+/// would be a no-op. A grammar with no bundled queries counts as
+/// "installed" once the library is present.
+pub fn is_fully_installed(name: &str, grammar_dir: &Path, query_dir: &Path) -> bool {
+    if installed_path(name, grammar_dir).is_none() {
+        return false;
+    }
+    let bundled = super::assets::bundled_query_names(name);
+    if bundled.is_empty() {
+        return true;
+    }
+    let installed: std::collections::HashSet<String> =
+        installed_queries(name, query_dir).into_iter().collect();
+    bundled.iter().all(|n| installed.contains(n))
+}
+
 /// Names of the `.scm` files installed under `query_dir/<name>/`
 /// (without extension). Empty vec when the directory doesn't exist or
 /// has no `.scm` files. Used by `list` to summarize query status.
