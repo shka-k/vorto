@@ -58,6 +58,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_default();
     let row_severity = build_row_severity(app, scroll, last_visible);
     let vcs_statuses = app.buffer.vcs_statuses();
+    let cursor_row = app.buffer.cursor.row;
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
@@ -75,7 +76,15 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             // The breathing-room space sits between the number and the
             // bar; cursor column math in `place_cursor` matches.
             let num = format!("{:>4} ", i + 1);
-            spans.push(Span::styled(num, Style::default().fg(Color::DarkGray)));
+            // The cursor's row gets the terminal's default foreground
+            // (`Color::Reset`) so the number stays in sync with whatever
+            // color the terminal paints the cursor itself.
+            let num_style = if i == cursor_row {
+                Style::default().fg(Color::Reset)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(num, num_style));
             let vcs_status = vcs_statuses.get(i).copied().flatten();
             spans.push(vcs_bar_span(vcs_status));
             let extra_cols: Vec<usize> = extras
