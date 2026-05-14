@@ -140,32 +140,18 @@ impl Buffer {
         self.clamp_col(false);
     }
 
-    /// Next `w` target. Prefers tree-sitter leaf boundaries (so `foo(bar)`
-    /// stops on `foo`, `(`, `bar`, `)` rather than treating the whole
-    /// thing as one whitespace-delimited blob). Falls back to a
-    /// vim-style character-class walker — words = `[A-Za-z0-9_]+`,
-    /// punctuation = each contiguous run of other non-whitespace chars,
-    /// whitespace separates them — when no grammar is attached.
+    /// Next `w` target. Uses vim's character-class walker — words =
+    /// `[A-Za-z0-9_]+`, punctuation = each contiguous run of other
+    /// non-whitespace chars, whitespace separates them. We deliberately
+    /// don't consult tree-sitter here: grammars expose strings and
+    /// comments as single leaves, but vim walks through them character
+    /// class by character class.
     fn peek_word_forward(&self, from: Cursor) -> Cursor {
-        let ts = self
-            .highlighter
-            .as_ref()
-            .and_then(|h| h.next_token_start(from.row, from.col));
-        if let Some((r, c)) = ts {
-            return Cursor { row: r, col: c };
-        }
         word_forward_char_class(&self.lines, from)
     }
 
     /// Symmetric counterpart of [`peek_word_forward`] for `b`.
     fn peek_word_back(&self, from: Cursor) -> Cursor {
-        let ts = self
-            .highlighter
-            .as_ref()
-            .and_then(|h| h.prev_token_start(from.row, from.col));
-        if let Some((r, c)) = ts {
-            return Cursor { row: r, col: c };
-        }
         word_back_char_class(&self.lines, from)
     }
 }
@@ -473,10 +459,15 @@ fn word_forward_char_class(lines: &[String], from: Cursor) -> Cursor {
             };
         }
     }
-    // Wrap to next line's first non-whitespace.
+    // Wrap to the next line. Empty lines are words in vim, so we stop
+    // on the first one; otherwise we skip leading whitespace and land
+    // on the first non-blank char.
     let mut row = from.row + 1;
     while row < lines.len() {
         let cs: Vec<char> = lines[row].chars().collect();
+        if cs.is_empty() {
+            return Cursor { row, col: 0 };
+        }
         if let Some(col) = cs.iter().position(|&c| classify(c) != CharClass::Space) {
             return Cursor { row, col };
         }
@@ -559,6 +550,9 @@ fn big_word_forward(lines: &[String], from: Cursor) -> Cursor {
     let mut row = from.row + 1;
     while row < lines.len() {
         let cs: Vec<char> = lines[row].chars().collect();
+        if cs.is_empty() {
+            return Cursor { row, col: 0 };
+        }
         if let Some(col) = cs.iter().position(|&c| classify(c) != CharClass::Space) {
             return Cursor { row, col };
         }
@@ -739,6 +733,31 @@ mod tests {
         // goes straight to the trailing `)` at col 7.
         let l = lines("foo(bar)");
         assert_eq!(end(&l, 0, 0, true), (0, 7));
+    }
+
+    #[test]
+    fn word_forward_stops_on_empty_lines() {
+        // Vim treats empty lines as words: `w` from the end of `foo`
+        // should land on (1, 0), not skip past line 1 to `bar`.
+        let l = lines("foo\n\nbar");
+        assert_eq!(fwd(&l, 0, 2), (1, 0));
+        // From the empty line, the next `w` lands on `bar`.
+        assert_eq!(fwd(&l, 1, 0), (2, 0));
+    }
+
+    #[test]
+    fn word_forward_skips_blank_lines_to_first_word() {
+        // A line of only whitespace is *not* an empty line — vim skips
+        // it the same way it skips leading whitespace on a wrap.
+        let l = lines("foo\n   \nbar");
+        assert_eq!(fwd(&l, 0, 2), (2, 0));
+    }
+
+    #[test]
+    fn big_word_forward_stops_on_empty_lines() {
+        let l = lines("foo\n\nbar");
+        assert_eq!(big_fwd(&l, 0, 2), (1, 0));
+        assert_eq!(big_fwd(&l, 1, 0), (2, 0));
     }
 
     #[test]
