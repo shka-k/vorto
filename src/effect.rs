@@ -77,6 +77,8 @@ pub enum Cmd {
     },
     /// `gr` — `textDocument/references`.
     LspFindReferences,
+    /// `<space>a` — `textDocument/codeAction` at the cursor.
+    LspCodeAction,
 
     // ── Multi-buffer / lifecycle ─────────────────────────────
     BufferCycle {

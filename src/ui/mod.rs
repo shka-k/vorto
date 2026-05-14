@@ -17,6 +17,7 @@
 //! - [`fuzzy`] — the fuzzy picker popup with its source-preview pane.
 
 mod buffer;
+mod code_action;
 mod fuzzy;
 mod hints;
 mod status;
@@ -48,6 +49,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if matches!(app.prompt.state, Prompt::Fuzzy(_)) {
         fuzzy::draw_fuzzy(f, app, f.area());
+    }
+    if matches!(app.prompt.state, Prompt::CodeActionMenu { .. }) {
+        code_action::draw_code_action_menu(f, app, chunks[0]);
     }
     if !app.prompt.is_open() {
         hints::draw_pending_hints(f, app, chunks[1]);

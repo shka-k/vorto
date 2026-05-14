@@ -350,6 +350,10 @@ impl App {
                 Ok(())
             }
             PromptOutcome::OpenBuffer(r) => self.switch_to_buffer(r),
+            PromptOutcome::SelectCodeAction(action) => {
+                self.submit_code_action(action);
+                Ok(())
+            }
         }
     }
 

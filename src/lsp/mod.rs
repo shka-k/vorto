@@ -107,6 +107,21 @@ pub struct WorkspaceEdit {
     pub changes: HashMap<String, Vec<TextEdit>>,
 }
 
+/// LSP `CodeAction` (or `Command`) returned by `textDocument/codeAction`.
+/// We keep the raw JSON alongside the parsed `title`/`edit` so the
+/// caller can echo it back to `codeAction/resolve` for actions that
+/// arrive without an embedded edit (rust-analyzer's "Extract …"
+/// refactors are the typical case).
+#[derive(Debug, Clone)]
+pub struct CodeAction {
+    pub title: String,
+    pub edit: Option<WorkspaceEdit>,
+    /// Raw JSON value as the server sent it. Required for
+    /// `codeAction/resolve`, which the spec defines as round-tripping
+    /// the whole CodeAction object back.
+    pub raw: Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -191,7 +206,28 @@ impl LspClient {
                         "dynamicRegistration": false,
                         "didSave": true
                     },
-                    "publishDiagnostics": { "relatedInformation": false }
+                    "publishDiagnostics": { "relatedInformation": false },
+                    // rust-analyzer (and others) gate refactor assists on
+                    // `codeActionLiteralSupport`; without it the server only
+                    // returns plain `Command`s, which we don't execute, so
+                    // the picker would always look empty. `resolveSupport`
+                    // tells the server it's allowed to defer the heavy
+                    // `edit` until `codeAction/resolve`.
+                    "codeAction": {
+                        "dynamicRegistration": false,
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "", "quickfix", "refactor",
+                                    "refactor.extract", "refactor.inline",
+                                    "refactor.rewrite", "source",
+                                    "source.organizeImports"
+                                ]
+                            }
+                        },
+                        "resolveSupport": { "properties": ["edit"] },
+                        "dataSupport": true
+                    }
                 },
                 "window": {
                     "workDoneProgress": true
@@ -622,6 +658,48 @@ pub fn parse_workspace_edit(v: &Value) -> Option<WorkspaceEdit> {
         return None;
     }
     Some(WorkspaceEdit { changes: out })
+}
+
+/// Parse the result of `textDocument/codeAction`. The server returns
+/// `null`, a single object (rare), or an array mixing `CodeAction`
+/// objects and legacy `Command` objects. We treat everything with a
+/// `title` as a candidate; `Command`-only entries (no `edit` and no
+/// `data` for resolve) still appear in the picker but do nothing on
+/// submit because we don't run `workspace/executeCommand` yet.
+pub fn parse_code_actions(v: &Value) -> Vec<CodeAction> {
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<CodeAction>, item: &Value| {
+        let Some(title) = item.get("title").and_then(|t| t.as_str()) else {
+            return;
+        };
+        let edit = item.get("edit").and_then(parse_workspace_edit);
+        out.push(CodeAction {
+            title: title.to_string(),
+            edit,
+            raw: item.clone(),
+        });
+    };
+    if let Some(arr) = v.as_array() {
+        for item in arr {
+            push(&mut out, item);
+        }
+    } else if v.is_object() {
+        push(&mut out, v);
+    }
+    out
+}
+
+/// Parse the result of `codeAction/resolve` — same shape as a single
+/// `CodeAction` from the list response, just with the previously-missing
+/// `edit` filled in (in the typical case).
+pub fn parse_code_action(v: &Value) -> Option<CodeAction> {
+    let title = v.get("title").and_then(|t| t.as_str())?.to_string();
+    let edit = v.get("edit").and_then(parse_workspace_edit);
+    Some(CodeAction {
+        title,
+        edit,
+        raw: v.clone(),
+    })
 }
 
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {
@@ -1093,5 +1171,35 @@ mod tests {
         assert_eq!(edit.changes["file:///b.rs"][0].new_text, "Y");
 
         assert!(parse_workspace_edit(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn parse_code_actions_handles_array_and_unresolved() {
+        let v = json!([
+            {
+                "title": "Quickfix: add semicolon",
+                "edit": {
+                    "changes": {
+                        "file:///a.rs": [{
+                            "range": {
+                                "start": {"line": 0, "character": 5},
+                                "end":   {"line": 0, "character": 5}
+                            },
+                            "newText": ";"
+                        }]
+                    }
+                }
+            },
+            {
+                "title": "Refactor: extract function",
+                "data": "opaque-server-handle"
+            }
+        ]);
+        let actions = parse_code_actions(&v);
+        assert_eq!(actions.len(), 2);
+        assert!(actions[0].edit.is_some());
+        assert!(actions[1].edit.is_none());
+        // The raw JSON is preserved for round-tripping through resolve.
+        assert_eq!(actions[1].raw["data"], "opaque-server-handle");
     }
 }

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
-use crate::lsp::{self, Diagnostic, Location, LspEvent, LspEventOutcome, WorkspaceEdit};
+use crate::lsp::{self, CodeAction, Diagnostic, Location, LspEvent, LspEventOutcome, WorkspaceEdit};
 
 use super::{App, Status, root_cause};
 
@@ -42,6 +42,69 @@ impl App {
             return;
         }
         self.prompt.open_rename();
+    }
+
+    pub(super) fn lsp_code_action(&mut self) {
+        if !self.lsp.has_lsp() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        let cursor = self.buffer.cursor;
+        // Diagnostics borrow ends before the mutable `request_code_action`
+        // call, but the borrow checker can't prove that across `self`, so
+        // collect into an owned Vec first.
+        let diagnostics: Vec<Diagnostic> = self
+            .lsp
+            .current_diagnostics()
+            .map(|d| d.to_vec())
+            .unwrap_or_default();
+        if let Err(e) = self.lsp.request_code_action(cursor, &diagnostics) {
+            self.status = Status::error(format!("lsp codeAction: {}", root_cause(&e)));
+        }
+    }
+
+    pub(super) fn submit_code_action(&mut self, action: CodeAction) {
+        // Already-resolved actions go straight through. Otherwise round
+        // trip via `codeAction/resolve` so servers (rust-analyzer in
+        // particular) can fill in the heavy `edit` lazily.
+        if action.edit.is_some() {
+            self.apply_code_action(action);
+            return;
+        }
+        if !self.lsp.has_lsp() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        if let Err(e) = self.lsp.request_code_action_resolve(action.raw) {
+            self.status = Status::error(format!("lsp codeAction/resolve: {}", root_cause(&e)));
+        }
+    }
+
+    fn apply_code_action(&mut self, action: CodeAction) {
+        let title = action.title.clone();
+        let Some(edit) = action.edit else {
+            self.status = Status::info(format!("code action: {} (no edit)", title));
+            return;
+        };
+        match self.lsp.apply_workspace_edit(edit) {
+            Ok(result) => {
+                if !result.current_buffer_edits.is_empty() {
+                    self.buffer.snapshot();
+                    let mut lines = std::mem::take(&mut self.buffer.lines);
+                    lsp::apply_text_edits(&mut lines, result.current_buffer_edits);
+                    self.buffer.lines = lines;
+                    self.buffer.bump_version();
+                    self.buffer.dirty = true;
+                }
+                self.status = Status::info(format!(
+                    "{} ({} edits in {} files)",
+                    title, result.total_edits, result.files_touched
+                ));
+            }
+            Err(e) => {
+                self.status = Status::error(format!("code action: {}", root_cause(&e)));
+            }
+        }
     }
 
     pub(super) fn submit_rename(&mut self, new_name: String) {
@@ -84,6 +147,22 @@ impl App {
             .map(|loc| format_location_label(loc, &self.startup_cwd))
             .collect();
         self.prompt.open_locations(items, locations);
+    }
+
+    fn apply_code_actions_outcome(&mut self, actions: Vec<CodeAction>) {
+        if actions.is_empty() {
+            self.status = Status::info("no code actions");
+            return;
+        }
+        self.prompt.open_code_actions(actions);
+    }
+
+    fn apply_code_action_resolved_outcome(&mut self, action: Option<CodeAction>) {
+        let Some(action) = action else {
+            self.status = Status::error("code action: server returned no action");
+            return;
+        };
+        self.apply_code_action(action);
     }
 
     fn apply_rename_outcome(&mut self, new_name: String, edit: Option<WorkspaceEdit>) {
@@ -155,6 +234,10 @@ impl App {
             LspEventOutcome::Jump { label, locations } => self.apply_jump_outcome(label, locations),
             LspEventOutcome::References(locations) => self.apply_references_outcome(locations),
             LspEventOutcome::Rename { new_name, edit } => self.apply_rename_outcome(new_name, edit),
+            LspEventOutcome::CodeActions(actions) => self.apply_code_actions_outcome(actions),
+            LspEventOutcome::CodeActionResolved(action) => {
+                self.apply_code_action_resolved_outcome(action)
+            }
         }
     }
 

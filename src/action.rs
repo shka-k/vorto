@@ -217,6 +217,9 @@ pub enum DirectKind {
     /// `<space>r` — open a prompt to enter the new name, then send
     /// `textDocument/rename` and apply the returned `WorkspaceEdit`.
     Rename,
+    /// `<space>a` — request `textDocument/codeAction` at the cursor
+    /// and surface the results in a picker.
+    CodeAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

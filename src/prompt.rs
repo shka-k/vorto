@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::BufferRef;
 use crate::finder::{Finder, FuzzyKind};
-use crate::lsp::Location;
+use crate::lsp::{CodeAction, Location};
 
 /// Active prompt state. Mirrors the four ways the user can interact
 /// with the bottom-line input: `:` command line, `/` (or `?`) search,
@@ -27,6 +27,14 @@ pub enum Prompt {
     /// matches what the user sees (the cursor is locked while the
     /// prompt is up because Normal-mode input is suspended).
     Rename(String),
+    /// `<space>a` — popup menu of LSP code actions, anchored just under
+    /// the buffer cursor. Up/Down navigate, Enter submits, Esc cancels.
+    /// Filtering is intentionally omitted: action lists are short and
+    /// users want to read titles, not type query strings.
+    CodeActionMenu {
+        actions: Vec<CodeAction>,
+        selected: usize,
+    },
 }
 
 impl Prompt {
@@ -62,6 +70,10 @@ pub enum PromptOutcome {
     OpenBuffer(BufferRef),
     /// Rename submitted with the new identifier.
     SubmitRename(String),
+    /// Code action picker selection. The caller either applies the
+    /// embedded `WorkspaceEdit` or sends a `codeAction/resolve` round
+    /// trip first when `edit` is `None`.
+    SelectCodeAction(CodeAction),
 }
 
 pub struct PromptController {
@@ -138,6 +150,16 @@ impl PromptController {
         self.state = Prompt::Rename(String::new());
     }
 
+    /// Open the cursor-anchored code-actions popup. `actions` is consumed
+    /// — we own them while the menu is up so submit can hand a fully-
+    /// owned `CodeAction` to the caller without an extra clone.
+    pub fn open_code_actions(&mut self, actions: Vec<CodeAction>) {
+        self.state = Prompt::CodeActionMenu {
+            actions,
+            selected: 0,
+        };
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> PromptOutcome {
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
@@ -187,6 +209,23 @@ impl PromptController {
                 }
                 PromptOutcome::Nothing
             }
+            Prompt::CodeActionMenu { actions, selected } => {
+                let last = actions.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
+                    KeyCode::Char('k') => *selected = selected.saturating_sub(1),
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *selected = selected.saturating_sub(1)
+                    }
+                    KeyCode::Down => *selected = (*selected + 1).min(last),
+                    KeyCode::Char('j') => *selected = (*selected + 1).min(last),
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *selected = (*selected + 1).min(last)
+                    }
+                    _ => {}
+                }
+                PromptOutcome::Nothing
+            }
         }
     }
 
@@ -204,6 +243,16 @@ impl PromptController {
             Prompt::Search { forward, query } => PromptOutcome::Search { forward, query },
             Prompt::Rename(new_name) => PromptOutcome::SubmitRename(new_name),
             Prompt::Fuzzy(finder) => self.submit_fuzzy(finder),
+            Prompt::CodeActionMenu {
+                mut actions,
+                selected,
+            } => {
+                if selected < actions.len() {
+                    PromptOutcome::SelectCodeAction(actions.swap_remove(selected))
+                } else {
+                    PromptOutcome::Nothing
+                }
+            }
         }
     }
 

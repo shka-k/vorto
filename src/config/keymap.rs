@@ -348,6 +348,12 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             token: Dir(D::Rename),
             label: "rename (lsp)",
         },
+        Binding {
+            key: KeyCode::Char('a'),
+            aliases: &[],
+            token: Dir(D::CodeAction),
+            label: "code action (lsp)",
+        },
     ]
 };
 

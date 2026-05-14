@@ -189,6 +189,7 @@ impl App {
             }),
             D::FindReferences => cmds.push(Cmd::LspFindReferences),
             D::Rename => cmds.push(Cmd::OpenRenamePrompt),
+            D::CodeAction => cmds.push(Cmd::LspCodeAction),
         }
         cmds
     }

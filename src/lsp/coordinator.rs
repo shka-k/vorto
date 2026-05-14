@@ -12,7 +12,9 @@ use std::sync::mpsc::Sender;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{self as lsp, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit};
+use super::{
+    self as lsp, CodeAction, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit,
+};
 use crate::editor::Cursor;
 use crate::event::AppEvent;
 
@@ -30,6 +32,10 @@ pub enum LspRequestKind {
     /// `textDocument/rename` — apply the returned `WorkspaceEdit`.
     /// `new_name` is kept for the post-apply status line.
     Rename { new_name: String },
+    /// `textDocument/codeAction` — surface the list in a picker.
+    CodeAction,
+    /// `codeAction/resolve` — apply the now-fully-populated action.
+    CodeActionResolve,
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -52,6 +58,12 @@ pub enum LspEventOutcome {
         new_name: String,
         edit: Option<WorkspaceEdit>,
     },
+    /// `textDocument/codeAction` response: caller opens the picker.
+    CodeActions(Vec<CodeAction>),
+    /// `codeAction/resolve` response: caller applies the now-resolved
+    /// edit (or surfaces "nothing to change" when the server returned
+    /// an action with no edit).
+    CodeActionResolved(Option<CodeAction>),
 }
 
 /// Result of applying a [`WorkspaceEdit`]. Other-file edits are written
@@ -257,6 +269,51 @@ impl LspCoordinator {
         )
     }
 
+    /// `textDocument/codeAction` for the cursor position. The range is
+    /// a zero-width span at the cursor — sufficient for the common
+    /// "actions that apply at a point" case (quickfixes for the
+    /// diagnostic on this line, refactors for the symbol under the
+    /// cursor). `diagnostics` are forwarded so quickfix actions are
+    /// tagged correctly.
+    pub fn request_code_action(
+        &mut self,
+        cursor: Cursor,
+        diagnostics: &[Diagnostic],
+    ) -> Result<()> {
+        let uri = self.current_uri.clone().unwrap_or_default();
+        let line = cursor.row as u64;
+        let character = cursor.col as u64;
+        let diagnostics_json = Value::Array(
+            diagnostics
+                .iter()
+                .filter(|d| {
+                    d.range.start.line <= cursor.row as u32
+                        && cursor.row as u32 <= d.range.end.line
+                })
+                .map(diagnostic_to_json)
+                .collect(),
+        );
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": line, "character": character },
+                "end":   { "line": line, "character": character },
+            },
+            "context": { "diagnostics": diagnostics_json },
+        });
+        self.send_request("textDocument/codeAction", params, LspRequestKind::CodeAction)
+    }
+
+    /// `codeAction/resolve` — fill in `edit` (and any other lazily-
+    /// computed fields) for an action returned without one.
+    pub fn request_code_action_resolve(&mut self, action: Value) -> Result<()> {
+        self.send_request(
+            "codeAction/resolve",
+            action,
+            LspRequestKind::CodeActionResolve,
+        )
+    }
+
     pub fn request_rename(&mut self, new_name: String, cursor: Cursor) -> Result<()> {
         let mut params = self.text_document_position_params(cursor);
         if let Some(obj) = params.as_object_mut() {
@@ -339,6 +396,12 @@ impl LspCoordinator {
                         new_name,
                         edit: lsp::parse_workspace_edit(&result),
                     },
+                    LspRequestKind::CodeAction => {
+                        LspEventOutcome::CodeActions(lsp::parse_code_actions(&result))
+                    }
+                    LspRequestKind::CodeActionResolve => {
+                        LspEventOutcome::CodeActionResolved(lsp::parse_code_action(&result))
+                    }
                 }
             }
         }
@@ -377,4 +440,19 @@ impl LspCoordinator {
             total_edits,
         })
     }
+}
+
+/// Re-encode a `Diagnostic` as the JSON shape `textDocument/codeAction`
+/// expects in its `context.diagnostics`. Only the fields servers
+/// actually consult are populated (range, severity, message, source).
+fn diagnostic_to_json(d: &Diagnostic) -> Value {
+    serde_json::json!({
+        "range": {
+            "start": { "line": d.range.start.line, "character": d.range.start.character },
+            "end":   { "line": d.range.end.line,   "character": d.range.end.character },
+        },
+        "severity": d.severity as u8 + 1,
+        "message": d.message,
+        "source": d.source,
+    })
 }

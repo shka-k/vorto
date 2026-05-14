@@ -40,6 +40,7 @@ impl App {
             Cmd::OpenPath(path) => self.open_path(&path)?,
             Cmd::LspJump { method, label } => self.lsp_jump(method, label),
             Cmd::LspFindReferences => self.lsp_find_references(),
+            Cmd::LspCodeAction => self.lsp_code_action(),
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
             Cmd::Quit => self.should_quit = true,
