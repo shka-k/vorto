@@ -141,6 +141,12 @@ impl App {
                 KeyCode::Char('b') => {
                     self.apply_visual_motion(MotionKind::ViewportBottom)
                 }
+                // `gn` / `gN` — extend the selection to cover the next
+                // (or previous) search match. Anchor stays put; the
+                // shared helper just walks the active end out to the
+                // match's last char.
+                KeyCode::Char('n') => self.run_search_select(self.search.last_forward),
+                KeyCode::Char('N') => self.run_search_select(!self.search.last_forward),
                 _ => {}
             }
             return Ok(());

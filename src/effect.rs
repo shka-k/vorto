@@ -54,6 +54,14 @@ pub enum Cmd {
     JumpSearch {
         reverse: bool,
     },
+    /// `gn` / `gN` — find the next/previous match of the current
+    /// search pattern, jump the cursor to its start, enter Visual,
+    /// then extend the cursor to the end of the match. `reverse`
+    /// flips against the stored search direction, mirroring
+    /// `JumpSearch`'s semantics.
+    SearchSelectMatch {
+        reverse: bool,
+    },
     SetLastFind(LastFind),
 
     // ── Viewport ─────────────────────────────────────────────

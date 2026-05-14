@@ -34,6 +34,10 @@ impl App {
                 let forward = self.search.last_forward ^ reverse;
                 self.run_jump_search(forward);
             }
+            Cmd::SearchSelectMatch { reverse } => {
+                let forward = self.search.last_forward ^ reverse;
+                self.run_search_select(forward);
+            }
             Cmd::SetLastFind(lf) => self.last_find = Some(lf),
             Cmd::Scroll(anchor) => self.run_scroll(anchor),
             Cmd::Save { path, then_quit } => self.run_save(path.as_deref(), then_quit)?,
@@ -54,6 +58,26 @@ impl App {
         } else {
             self.status = Status::error("pattern not found");
         }
+    }
+
+    /// Body of `gn` / `gN`. Looks up the next match in the requested
+    /// direction; in Normal mode, drop the cursor on the match start
+    /// and enter Visual (which pins the anchor there); in Visual,
+    /// keep the existing anchor and only extend the active end. Either
+    /// way, the cursor lands on the match's last char so the selection
+    /// covers the whole match. Shared with Visual-mode key handling.
+    pub(super) fn run_search_select(&mut self, forward: bool) {
+        let Some((start, end_incl)) =
+            self.search.find_match_range(&self.buffer, forward)
+        else {
+            self.status = Status::error("pattern not found");
+            return;
+        };
+        if !self.mode.is_visual() {
+            self.buffer.cursor = start;
+            self.enter_mode(crate::mode::Mode::Visual);
+        }
+        self.buffer.cursor = end_incl;
     }
 
     /// Visual mode's `*` / `#` — extract the word under the cursor,

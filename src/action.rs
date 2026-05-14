@@ -227,6 +227,16 @@ pub enum DirectKind {
     /// `App::evaluate` before reaching the normal dispatch path, so this
     /// variant never appears in `handle_direct`'s match arms.
     RepeatLast,
+    /// `gn` / `gN` — find the next/previous match of the current search
+    /// pattern, enter Visual mode, and select the match. `reverse`
+    /// flips against the stored search direction (so `gN` after a `/`
+    /// becomes `reverse: true`).
+    SearchSelectNext { reverse: bool },
+    /// `g*` / `g#` — seed the search pattern from the word under the
+    /// cursor (same extraction as `*` / `#`) without jumping. Useful
+    /// when you want to highlight or set up for `n` / `gn` without
+    /// losing your position.
+    SearchWordKeep { forward: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +309,13 @@ pub enum Target {
     TextObject { scope: Scope, object: Object },
     /// dd, yy — operator applied to the current line line-wise.
     LineWise,
+    /// `dgn` / `cgn` / `ygn` — operator applied to the next/previous
+    /// match of the current search pattern. Differs from a normal
+    /// motion target: the range starts at the match's first char (not
+    /// the cursor), so it can't be expressed as `Target::Motion`.
+    /// `reverse` flips against the stored search direction, same
+    /// convention as `DirectKind::SearchSelectNext`.
+    SearchMatch { reverse: bool },
 }
 
 // ════════════════════════════════════════════════════════════════════════

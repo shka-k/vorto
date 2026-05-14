@@ -366,6 +366,16 @@ fn build_op_expr(op: Operator, after_op: &[Token], outer_count: u32) -> Option<E
             outer_count,
         }),
 
+        // `cgn` / `dgn` / `ygn` (and the `gN` variants) — operator
+        // followed by the gn target. Doesn't fit `Target::Motion`
+        // because the range starts at the match (not the cursor); use
+        // the dedicated `SearchMatch` target.
+        [GotoPrefix, Direct(DirectKind::SearchSelectNext { reverse })] => Some(Expr::Op {
+            op,
+            target: Target::SearchMatch { reverse: *reverse },
+            outer_count: outer_count.saturating_mul(motion_count),
+        }),
+
         // dib / di" — text objects (motion_count must be 1; multi-count
         // on a text object isn't supported yet)
         [Scope(s), Object(o)] if motion_count == 1 => Some(Expr::Op {

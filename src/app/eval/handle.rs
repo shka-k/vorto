@@ -192,6 +192,12 @@ impl App {
             D::CodeAction => cmds.push(Cmd::LspCodeAction),
             // Intercepted by `App::evaluate` before reaching here.
             D::RepeatLast => unreachable!("RepeatLast handled in App::evaluate"),
+            D::SearchSelectNext { reverse } => {
+                cmds.push(Cmd::SearchSelectMatch { reverse });
+            }
+            D::SearchWordKeep { forward } => {
+                push_word_search(self, &mut cmds, forward, false);
+            }
             D::ToggleComment => match buffer_comment_token(self) {
                 Some(token) => {
                     let start_row = self.buffer.cursor.row;
@@ -258,8 +264,8 @@ impl App {
             // and jump. The buffer mutation for the cursor jump
             // happens during `JumpSearch` because it depends on the
             // updated search pattern.
-            M::SearchWordForward => push_word_search(self, &mut cmds, true),
-            M::SearchWordBack => push_word_search(self, &mut cmds, false),
+            M::SearchWordForward => push_word_search(self, &mut cmds, true, true),
+            M::SearchWordBack => push_word_search(self, &mut cmds, false, true),
             M::WordForward => {
                 for _ in 0..n {
                     self.buffer.move_word_forward();
@@ -376,6 +382,25 @@ impl App {
                     self.apply_op_range_handle(op, start, end, &mut cmds);
                 }
             }
+            Target::SearchMatch { reverse } => {
+                // The match range starts at the pattern hit, not at
+                // the cursor — that's the whole point of having a
+                // dedicated target. We read `self.search` (allowed by
+                // the handler's discipline) and apply the op to each
+                // match found in sequence; `outer_count > 1` walks
+                // forward through successive matches (e.g. `2dgn`).
+                let forward = self.search.last_forward ^ reverse;
+                for _ in 0..outer_count {
+                    let Some((start, end_incl)) =
+                        self.search.find_match_range(&self.buffer, forward)
+                    else {
+                        cmds.push(Cmd::StatusError("pattern not found".into()));
+                        break;
+                    };
+                    let end = self.buffer.advance_one(end_incl);
+                    self.apply_op_range_handle(op, start, end, &mut cmds);
+                }
+            }
             Target::TextObject { scope, object } => {
                 for _ in 0..outer_count {
                     match self.buffer.text_object_range(scope, object) {
@@ -463,18 +488,22 @@ fn resolve_motion_pure(
     }
 }
 
-/// Pull the word at the cursor, push the matching `SetSearch` +
-/// `JumpSearch` pair. Factored out so `*` and `#` share the path.
-fn push_word_search(app: &App, cmds: &mut Vec<Cmd>, forward: bool) {
+/// Pull the word at the cursor, push the matching `SetSearch` (and,
+/// when `jump`, a `JumpSearch`). Factored out so `*` / `#` (which
+/// jump) and `g*` / `g#` (which only seed the pattern) share the
+/// extraction path.
+fn push_word_search(app: &App, cmds: &mut Vec<Cmd>, forward: bool, jump: bool) {
     match word_under_cursor(&app.buffer) {
         Some(word) => {
             cmds.push(Cmd::SetSearch {
                 pattern: word,
                 forward,
             });
-            // SetSearch above just set `last_forward` to `forward`, so
-            // jumping with `reverse: false` follows that direction.
-            cmds.push(Cmd::JumpSearch { reverse: false });
+            if jump {
+                // SetSearch above just set `last_forward` to `forward`,
+                // so jumping with `reverse: false` follows that direction.
+                cmds.push(Cmd::JumpSearch { reverse: false });
+            }
         }
         None => cmds.push(Cmd::StatusError("no word under cursor".into())),
     }

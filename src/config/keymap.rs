@@ -54,6 +54,15 @@ pub const OP_PENDING_BINDINGS: &[Binding] = {
             token: S(Scope::Inner),
             label: "inner …",
         },
+        // `g` after an operator opens the goto-prefix sub-grammar
+        // (`dge`, `dg_`, `dgn`, ...). The follow-up key is then
+        // resolved through `GOTO_BINDINGS` in `goto_pending_token`.
+        Binding {
+            key: KeyCode::Char('g'),
+            aliases: &[],
+            token: Token::GotoPrefix,
+            label: "goto …",
+        },
         Binding {
             key: KeyCode::Char('a'),
             aliases: &[],
@@ -285,6 +294,18 @@ pub const GOTO_BINDINGS: &[Binding] = {
             token: Dir(D::FindReferences),
             label: "references (lsp)",
         },
+        Binding {
+            key: KeyCode::Char('n'),
+            aliases: &[],
+            token: Dir(D::SearchSelectNext { reverse: false }),
+            label: "select next match",
+        },
+        Binding {
+            key: KeyCode::Char('N'),
+            aliases: &[],
+            token: Dir(D::SearchSelectNext { reverse: true }),
+            label: "select prev match",
+        },
     ]
 };
 
@@ -359,6 +380,18 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             aliases: &[],
             token: Dir(D::ToggleComment),
             label: "toggle line comment",
+        },
+        Binding {
+            key: KeyCode::Char('*'),
+            aliases: &[],
+            token: Dir(D::SearchWordKeep { forward: true }),
+            label: "search word (keep cursor)",
+        },
+        Binding {
+            key: KeyCode::Char('#'),
+            aliases: &[],
+            token: Dir(D::SearchWordKeep { forward: false }),
+            label: "search word ← (keep cursor)",
         },
     ]
 };
