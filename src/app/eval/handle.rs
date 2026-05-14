@@ -190,6 +190,26 @@ impl App {
             D::FindReferences => cmds.push(Cmd::LspFindReferences),
             D::Rename => cmds.push(Cmd::OpenRenamePrompt),
             D::CodeAction => cmds.push(Cmd::LspCodeAction),
+            D::ToggleComment => match buffer_comment_token(self) {
+                Some(token) => {
+                    self.buffer.snapshot();
+                    let start_row = self.buffer.cursor.row;
+                    let start_col = self.buffer.cursor.col;
+                    let max = self.buffer.lines.len();
+                    for i in 0..count {
+                        self.buffer.toggle_line_comment(&token);
+                        if i + 1 < count && self.buffer.cursor.row + 1 < max {
+                            self.buffer.cursor.row += 1;
+                        }
+                    }
+                    self.buffer.cursor.row = start_row;
+                    self.buffer.cursor.col = start_col;
+                    self.buffer.clamp_col(false);
+                }
+                None => cmds.push(Cmd::StatusError(
+                    "no comment token for this buffer".into(),
+                )),
+            },
         }
         cmds
     }
@@ -513,4 +533,14 @@ fn expr_modifies_buffer(expr: &Expr) -> bool {
         Expr::Motion(_) => false,
         Expr::Op { op, .. } => !matches!(op, Operator::Yank),
     }
+}
+
+/// Look up the active buffer's language comment token. Returns `None`
+/// when the buffer has no file path, the extension is unknown, or the
+/// language has no `comment_token` configured.
+fn buffer_comment_token(app: &App) -> Option<String> {
+    let path = app.buffer.path.as_ref()?;
+    let ext = path.extension()?.to_str()?;
+    let lang = app.config.languages.by_extension(ext)?;
+    lang.comment_token.clone()
 }

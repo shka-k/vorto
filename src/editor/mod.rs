@@ -405,6 +405,45 @@ impl Buffer {
         true
     }
 
+    /// Toggle a single-line comment on the current line using `token`
+    /// as the prefix (e.g. `"//"`, `"#"`). If the first non-blank run
+    /// of the line already starts with `token`, the prefix (and a
+    /// single trailing space, when present) is stripped; otherwise
+    /// `token + " "` is inserted at the first non-blank column. Blank
+    /// lines are skipped — vim-commentary semantics.
+    pub fn toggle_line_comment(&mut self, token: &str) {
+        let row = self.cursor.row;
+        let line = &self.lines[row];
+        let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
+        let indent_bytes = char_to_byte(line, indent_chars);
+        let rest = &line[indent_bytes..];
+        if rest.is_empty() {
+            return;
+        }
+        if rest.starts_with(token) {
+            let after_token = &rest[token.len()..];
+            let trim_len = if after_token.starts_with(' ') {
+                token.len() + 1
+            } else {
+                token.len()
+            };
+            self.lines[row].replace_range(indent_bytes..indent_bytes + trim_len, "");
+            let removed_chars = token.chars().count() + (trim_len - token.len());
+            if self.cursor.col > indent_chars {
+                self.cursor.col = self.cursor.col.saturating_sub(removed_chars);
+            }
+        } else {
+            let insert = format!("{} ", token);
+            self.lines[row].insert_str(indent_bytes, &insert);
+            let added_chars = insert.chars().count();
+            if self.cursor.col >= indent_chars {
+                self.cursor.col += added_chars;
+            }
+        }
+        self.clamp_col(false);
+        self.touch();
+    }
+
     /// Cursor one position past `c` (next char on the line, or first
     /// column of the next line if at line end). Used to turn an
     /// inclusive visual endpoint into the exclusive form `delete_range`

@@ -354,6 +354,12 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             token: Dir(D::CodeAction),
             label: "code action (lsp)",
         },
+        Binding {
+            key: KeyCode::Char('c'),
+            aliases: &[],
+            token: Dir(D::ToggleComment),
+            label: "toggle line comment",
+        },
     ]
 };
 

@@ -30,6 +30,10 @@ pub struct LanguageConfig {
     /// Override directory for `<lang>/highlights.scm` — overrides the
     /// global query dir for just this language.
     pub query_dir: Option<PathBuf>,
+    /// Single-line comment prefix used by the `<space>c` toggle (e.g.
+    /// `"//"` for Rust, `"#"` for Python). Unset means commenting is
+    /// disabled for the language.
+    pub comment_token: Option<String>,
     /// `[languages.<name>.lsp]` subtable — replaced whole, not deep-merged.
     pub lsp: Option<LspConfig>,
 }
@@ -66,6 +70,9 @@ impl LanguageConfig {
         if user.query_dir.is_some() {
             self.query_dir = user.query_dir;
         }
+        if user.comment_token.is_some() {
+            self.comment_token = user.comment_token;
+        }
         if user.lsp.is_some() {
             self.lsp = user.lsp;
         }
@@ -81,6 +88,7 @@ pub struct Language {
     pub grammar: String,
     pub grammar_dir: Option<PathBuf>,
     pub query_dir: Option<PathBuf>,
+    pub comment_token: Option<String>,
     pub lsp: Option<LspConfig>,
 }
 
@@ -92,6 +100,7 @@ impl Language {
             grammar: c.grammar.unwrap_or_else(|| name.to_string()),
             grammar_dir: c.grammar_dir,
             query_dir: c.query_dir,
+            comment_token: c.comment_token,
             lsp: c.lsp,
         }
     }
@@ -107,6 +116,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "rust".into(),
         LanguageConfig {
             extensions: Some(vec!["rs".into()]),
+            comment_token: Some("//".into()),
             lsp: Some(LspConfig {
                 command: "rust-analyzer".into(),
                 args: vec![],
@@ -120,6 +130,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "python".into(),
         LanguageConfig {
             extensions: Some(vec!["py".into()]),
+            comment_token: Some("#".into()),
             lsp: Some(LspConfig {
                 command: "pyright-langserver".into(),
                 args: vec!["--stdio".into()],
@@ -138,6 +149,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "toml".into(),
         LanguageConfig {
             extensions: Some(vec!["toml".into()]),
+            comment_token: Some("#".into()),
             lsp: Some(LspConfig {
                 command: "taplo".into(),
                 args: vec!["lsp".into(), "stdio".into()],
@@ -151,6 +163,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "typescript".into(),
         LanguageConfig {
             extensions: Some(vec!["ts".into(), "tsx".into()]),
+            comment_token: Some("//".into()),
             lsp: Some(LspConfig {
                 command: "typescript-language-server".into(),
                 args: vec!["--stdio".into()],
@@ -164,6 +177,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "javascript".into(),
         LanguageConfig {
             extensions: Some(vec!["js".into(), "jsx".into(), "mjs".into(), "cjs".into()]),
+            comment_token: Some("//".into()),
             lsp: Some(LspConfig {
                 command: "typescript-language-server".into(),
                 args: vec!["--stdio".into()],
@@ -177,6 +191,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         "go".into(),
         LanguageConfig {
             extensions: Some(vec!["go".into()]),
+            comment_token: Some("//".into()),
             lsp: Some(LspConfig {
                 command: "gopls".into(),
                 args: vec![],
