@@ -56,13 +56,19 @@ impl Loader {
 
     /// Try to build a fresh [`Highlighter`] for `spec`. Loads the
     /// grammar (cached), compiles its highlights query, and — if a
-    /// `textobjects.scm` is also present — its text-object query. The
-    /// text-object query is optional; missing files are not an error.
+    /// `textobjects.scm` / `indents.scm` is also present — their
+    /// queries too. Both are optional; missing files are not an error.
     pub fn highlighter_for(&mut self, spec: &LangSpec) -> Result<Highlighter> {
         let lang = self.load_language(spec)?;
         let highlights_src = self.read_query(spec, "highlights")?;
         let textobjects_src = self.read_query(spec, "textobjects").ok();
-        Highlighter::new(lang, &highlights_src, textobjects_src.as_deref())
+        let indents_src = self.read_query(spec, "indents").ok();
+        Highlighter::new(
+            lang,
+            &highlights_src,
+            textobjects_src.as_deref(),
+            indents_src.as_deref(),
+        )
     }
 
     /// Resolve `spec.grammar` to a `tree_sitter::Language`, loading the
@@ -141,6 +147,10 @@ pub struct Highlighter {
     /// `None` when the language has no textobjects file installed.
     textobjects: Option<Query>,
     textobject_capture_names: Vec<String>,
+    /// Optional `indents.scm` query. Drives the auto-indent on newline
+    /// / `o` / `O`. `None` when the language ships no indents file.
+    indents: Option<Query>,
+    indent_capture_names: Vec<String>,
     tree: Option<Tree>,
     source: String,
     parsed_version: Option<u64>,
@@ -152,6 +162,7 @@ impl Highlighter {
         language: Language,
         highlights_src: &str,
         textobjects_src: Option<&str>,
+        indents_src: Option<&str>,
     ) -> Result<Self> {
         let mut parser = Parser::new();
         parser
@@ -171,11 +182,31 @@ impl Highlighter {
             }
             None => (None, Vec::new()),
         };
+        // Indents query failures are non-fatal: a bad node name in
+        // indents.scm just disables auto-indent for the language —
+        // we still want highlighting/textobjects to work. The
+        // trailing-bracket fallback in `compute_new_line_indent`
+        // keeps newline/o/O usable in this degraded state.
+        let (indents, indent_capture_names) = match indents_src {
+            Some(src) => match Query::new(&language, src) {
+                Ok(q) => {
+                    let names = q.capture_names().iter().map(|s| s.to_string()).collect();
+                    (Some(q), names)
+                }
+                Err(e) => {
+                    eprintln!("indents.scm compile failed, auto-indent disabled: {e}");
+                    (None, Vec::new())
+                }
+            },
+            None => (None, Vec::new()),
+        };
         Ok(Self {
             parser,
             query,
             textobjects,
             textobject_capture_names,
+            indents,
+            indent_capture_names,
             tree: None,
             source: String::new(),
             parsed_version: None,
@@ -251,6 +282,45 @@ impl Highlighter {
         // the UI layer picks the more specific styling.
         out.sort_by_key(|c| (c.start_row, c.start_col));
         out
+    }
+
+    /// True when the `indents.scm` query has an `@indent.begin` capture
+    /// whose node *opens* on `row` (i.e. the node's start row equals
+    /// `row` and the node spans more than that single row). Used by
+    /// the auto-indent path to decide whether a new line inserted
+    /// after `row` should pick up one extra indent level beyond the
+    /// row's existing leading whitespace.
+    ///
+    /// Returns `false` when no indents query is installed, the tree
+    /// hasn't been built yet, or no matching capture starts on `row`.
+    pub fn indent_begins_at(&self, row: usize) -> bool {
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let Some(query) = self.indents.as_ref() else {
+            return false;
+        };
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_bytes());
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = self
+                    .indent_capture_names
+                    .get(cap.index as usize)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if name != "indent.begin" {
+                    continue;
+                }
+                let node = cap.node;
+                let start_row = node.start_position().row;
+                let end_row = node.end_position().row;
+                if start_row == row && end_row > row {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Find the smallest text-object range matching `target` (a query

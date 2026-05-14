@@ -127,10 +127,11 @@ impl App {
                 let trigger = override_count(trigger, count);
                 let cmds = self.handle_expr(trigger, ctx);
                 self.run_cmds(cmds)?;
+                let indent = self.indent_settings();
                 for k in keys {
                     match k {
-                        InsertKey::Char(c) => self.buffer.insert_char(c),
-                        InsertKey::Newline => self.buffer.insert_newline(),
+                        InsertKey::Char(c) => self.buffer.insert_char_smart(c, indent),
+                        InsertKey::Newline => self.buffer.insert_newline(indent),
                         InsertKey::Backspace => self.buffer.delete_char_before(),
                     }
                 }

@@ -81,7 +81,8 @@ impl App {
                 // line, others on the same line need their row/col
                 // recomputed). Punt for v1 — only the primary types
                 // newlines, extras stay put.
-                self.buffer.insert_newline();
+                let indent = self.indent_settings();
+                self.buffer.insert_newline(indent);
                 self.record_insert_key(InsertKey::Newline);
             }
             KeyCode::Backspace => {
@@ -124,7 +125,8 @@ impl App {
     /// pushed right by the insertion we just did at a lower column.
     fn fan_out_insert_char(&mut self, ch: char) {
         if self.buffer.extra_cursors.is_empty() {
-            self.buffer.insert_char(ch);
+            let indent = self.indent_settings();
+            self.buffer.insert_char_smart(ch, indent);
             return;
         }
         let mut all = collect_cursors(self);

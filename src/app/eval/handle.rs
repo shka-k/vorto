@@ -63,11 +63,13 @@ impl App {
             D::EnterMode(m) => cmds.push(Cmd::EnterMode(m)),
             D::OpenPrompt(k) => cmds.push(Cmd::OpenPrompt(k)),
             D::OpenLineBelow => {
-                self.buffer.insert_line_below();
+                let indent = self.indent_settings();
+                self.buffer.insert_line_below(indent);
                 cmds.push(Cmd::EnterMode(Mode::Insert));
             }
             D::OpenLineAbove => {
-                self.buffer.insert_line_above();
+                let indent = self.indent_settings();
+                self.buffer.insert_line_above(indent);
                 cmds.push(Cmd::EnterMode(Mode::Insert));
             }
             D::AppendAfterCursor => {

@@ -98,6 +98,21 @@ pub struct Cursor {
     pub col: usize,
 }
 
+/// Knobs the buffer needs to produce an indent string for a freshly
+/// inserted line. `width` is the spaces-per-level fallback when the
+/// reference line is space-indented; tab-indented references reuse a
+/// literal `\t` instead, so no separate `use_tabs` flag is needed.
+#[derive(Debug, Clone, Copy)]
+pub struct IndentSettings {
+    pub width: usize,
+}
+
+impl Default for IndentSettings {
+    fn default() -> Self {
+        Self { width: 4 }
+    }
+}
+
 impl Buffer {
     pub fn new() -> Self {
         Self {
@@ -285,27 +300,95 @@ impl Buffer {
         self.touch();
     }
 
-    pub fn insert_newline(&mut self) {
+    /// Insert `c` at the cursor, applying a one-step dedent first
+    /// when `c` is a closing bracket (`}` / `)` / `]`) and the line
+    /// up to the cursor is pure whitespace. This is the "type a
+    /// brace, watch it snap back to the matching column" behaviour
+    /// from every other modern editor.
+    ///
+    /// Identical to [`insert_char`] for any other character.
+    pub fn insert_char_smart(&mut self, c: char, indent: IndentSettings) {
+        if matches!(c, '}' | ')' | ']') && self.line_is_blank_before_cursor() {
+            self.dedent_current_line(indent);
+        }
+        self.insert_char(c);
+    }
+
+    /// True when every character on the cursor row strictly *before*
+    /// the cursor column is whitespace. An empty line (cursor at
+    /// col 0) qualifies too, vacuously.
+    pub fn line_is_blank_before_cursor(&self) -> bool {
+        let line = &self.lines[self.cursor.row];
+        line.chars().take(self.cursor.col).all(|c| c.is_whitespace())
+    }
+
+    /// Strip one indent level from the start of the cursor row,
+    /// adjusting `cursor.col` to follow. Tab-terminated leading
+    /// whitespace drops one trailing `\t`; space-terminated leading
+    /// whitespace rounds *down* to the nearest multiple of
+    /// `indent.width` strictly below the current column count
+    /// (so 8 → 4, 7 → 4, 4 → 0 with width 4).
+    pub fn dedent_current_line(&mut self, indent: IndentSettings) {
+        let line = self.lines[self.cursor.row].clone();
+        let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        if leading.is_empty() {
+            return;
+        }
+        let remove_chars = if leading.chars().last() == Some('\t') {
+            1
+        } else {
+            let trailing_spaces = leading.chars().rev().take_while(|c| *c == ' ').count();
+            let w = indent.width.max(1);
+            let target = (trailing_spaces.saturating_sub(1) / w) * w;
+            trailing_spaces - target
+        };
+        let leading_char_count = leading.chars().count();
+        let delete_start_char = leading_char_count - remove_chars;
+        let delete_start_byte = char_to_byte(&line, delete_start_char);
+        let delete_end_byte = char_to_byte(&line, delete_start_char + remove_chars);
+        self.lines[self.cursor.row].replace_range(delete_start_byte..delete_end_byte, "");
+        self.cursor.col = self.cursor.col.saturating_sub(remove_chars);
+        self.touch();
+    }
+
+    pub fn insert_newline(&mut self, indent: IndentSettings) {
         let line = self.lines[self.cursor.row].clone();
         let byte_idx = char_to_byte(&line, self.cursor.col);
         let (left, right) = line.split_at(byte_idx);
-        self.lines[self.cursor.row] = left.to_string();
-        self.lines.insert(self.cursor.row + 1, right.to_string());
+        let left_owned = left.to_string();
+        // Compute indent against the *left* half — that's what the
+        // line at `cursor.row` will hold once the split lands. Using
+        // a temporary line slice keeps the lookup self-contained.
+        let new_indent = compute_new_line_indent(&left_owned, self.cursor.row, &self.highlighter, indent);
+        self.lines[self.cursor.row] = left_owned;
+        let mut next = new_indent.clone();
+        next.push_str(right);
+        self.lines.insert(self.cursor.row + 1, next);
         self.cursor.row += 1;
-        self.cursor.col = 0;
+        self.cursor.col = new_indent.chars().count();
         self.touch();
     }
 
-    pub fn insert_line_below(&mut self) {
-        self.lines.insert(self.cursor.row + 1, String::new());
+    pub fn insert_line_below(&mut self, indent: IndentSettings) {
+        let reference = self.lines[self.cursor.row].clone();
+        let new_indent =
+            compute_new_line_indent(&reference, self.cursor.row, &self.highlighter, indent);
+        let col = new_indent.chars().count();
+        self.lines.insert(self.cursor.row + 1, new_indent);
         self.cursor.row += 1;
-        self.cursor.col = 0;
+        self.cursor.col = col;
         self.touch();
     }
 
-    pub fn insert_line_above(&mut self) {
-        self.lines.insert(self.cursor.row, String::new());
-        self.cursor.col = 0;
+    pub fn insert_line_above(&mut self, indent: IndentSettings) {
+        // For `O`, match the indent of the line being pushed down —
+        // the tree-sitter `@indent.begin` opening (if any) belongs to
+        // that line, so we copy its leading whitespace verbatim
+        // without adding an extra level.
+        let new_indent = copy_leading_indent(&self.lines[self.cursor.row], indent);
+        let col = new_indent.chars().count();
+        self.lines.insert(self.cursor.row, new_indent);
+        self.cursor.col = col;
         self.touch();
     }
 
@@ -567,4 +650,194 @@ fn classify(c: char) -> CharClass {
 
 fn is_blank_line(line: &str) -> bool {
     line.chars().all(|c| c.is_whitespace())
+}
+
+/// Leading-whitespace prefix of `line`, copied verbatim so the new
+/// line preserves whatever tabs-vs-spaces mix the reference uses.
+fn copy_leading_indent(line: &str, _settings: IndentSettings) -> String {
+    line.chars().take_while(|c| c.is_whitespace() && *c != '\n').collect()
+}
+
+/// Build the indent string for a brand-new line that sits *after*
+/// `ref_row` in the buffer (or that takes over `ref_row` after a
+/// mid-line split). Strategy:
+///
+/// 1. Copy `reference_line`'s existing leading whitespace — this is
+///    the basic vim `autoindent` behaviour and is what callers want
+///    when tree-sitter has nothing to say.
+/// 2. Add one extra indent level when either signal fires:
+///    - the tree-sitter `indents.scm` query reports an `@indent.begin`
+///      node opening on `ref_row` (and spanning past it); or
+///    - the reference line's last non-whitespace char is an opening
+///      bracket (`{`, `(`, `[`). This is the universal fallback —
+///      it catches mid-line Enter inside an empty pair (the tree
+///      hasn't seen the future split yet) and works for languages
+///      that ship no indents query at all.
+///
+/// Tab-indented references get an additional `\t`; space-indented
+/// (or empty-indent) references get `settings.width` spaces.
+fn compute_new_line_indent(
+    reference_line: &str,
+    ref_row: usize,
+    highlighter: &Option<crate::syntax::Highlighter>,
+    settings: IndentSettings,
+) -> String {
+    let base = copy_leading_indent(reference_line, settings);
+    let ts_begin = highlighter
+        .as_ref()
+        .is_some_and(|h| h.indent_begins_at(ref_row));
+    let trailing_opener = reference_line
+        .trim_end()
+        .chars()
+        .last()
+        .is_some_and(|c| matches!(c, '{' | '(' | '['));
+    if !(ts_begin || trailing_opener) {
+        return base;
+    }
+    let use_tabs = base.contains('\t');
+    let mut out = base;
+    if use_tabs {
+        out.push('\t');
+    } else {
+        for _ in 0..settings.width.max(1) {
+            out.push(' ');
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> IndentSettings {
+        IndentSettings { width: 4 }
+    }
+
+    #[test]
+    fn open_below_copies_leading_whitespace() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = 1;".into(), "    let y = 2;".into()];
+        b.cursor.row = 0;
+        b.insert_line_below(settings());
+        assert_eq!(b.lines[1], "    ");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn open_below_adds_level_after_opening_brace() {
+        let mut b = Buffer::new();
+        b.lines = vec!["fn foo() {".into(), "}".into()];
+        b.cursor.row = 0;
+        b.insert_line_below(settings());
+        assert_eq!(b.lines[1], "    ");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn open_below_uses_tabs_when_reference_does() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\tfn foo() {".into(), "}".into()];
+        b.cursor.row = 0;
+        b.insert_line_below(settings());
+        assert_eq!(b.lines[1], "\t\t");
+    }
+
+    #[test]
+    fn open_above_copies_indent_without_adding_level() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = 1;".into()];
+        b.cursor.row = 0;
+        b.insert_line_above(settings());
+        assert_eq!(b.lines[0], "    ");
+        assert_eq!(b.cursor.row, 0);
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn newline_splits_and_carries_indent() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = foo + bar;".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 16; // between '+' and ' bar'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "    let x = foo ");
+        assert_eq!(b.lines[1], "    + bar;");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn close_bracket_dedents_when_line_is_blank() {
+        // Typed `}` on a line that's all whitespace: dedent one
+        // level, then insert.
+        let mut b = Buffer::new();
+        b.lines = vec!["fn foo() {".into(), "        ".into()];
+        b.cursor.row = 1;
+        b.cursor.col = 8;
+        b.insert_char_smart('}', settings());
+        assert_eq!(b.lines[1], "    }");
+        assert_eq!(b.cursor.col, 5);
+    }
+
+    #[test]
+    fn close_bracket_no_dedent_when_text_precedes() {
+        // `}` after real code stays where the user typed it.
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = HashMap::new(".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 25;
+        b.insert_char_smart(')', settings());
+        assert_eq!(b.lines[0], "    let x = HashMap::new()");
+        assert_eq!(b.cursor.col, 26);
+    }
+
+    #[test]
+    fn close_bracket_dedents_partial_indent() {
+        // 7 spaces with width 4 → drop 3 to land on 4.
+        let mut b = Buffer::new();
+        b.lines = vec!["       ".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 7;
+        b.insert_char_smart(']', settings());
+        assert_eq!(b.lines[0], "    ]");
+        assert_eq!(b.cursor.col, 5);
+    }
+
+    #[test]
+    fn close_bracket_dedents_tab_indent() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\t\t".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 2;
+        b.insert_char_smart('}', settings());
+        assert_eq!(b.lines[0], "\t}");
+        assert_eq!(b.cursor.col, 2);
+    }
+
+    #[test]
+    fn close_bracket_clears_indent_when_already_at_one_level() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    ".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        b.insert_char_smart('}', settings());
+        assert_eq!(b.lines[0], "}");
+        assert_eq!(b.cursor.col, 1);
+    }
+
+    #[test]
+    fn newline_inside_empty_braces_adds_level() {
+        // Mid-line Enter between `{` and `}` should indent the new
+        // line one level deeper — the trailing-opener fallback fires
+        // even when the tree hasn't seen the split yet.
+        let mut b = Buffer::new();
+        b.lines = vec!["fn foo() {}".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 10; // between '{' and '}'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "fn foo() {");
+        assert_eq!(b.lines[1], "    }");
+        assert_eq!(b.cursor.col, 4);
+    }
 }

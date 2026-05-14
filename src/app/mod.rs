@@ -252,6 +252,16 @@ impl App {
         v
     }
 
+    /// `IndentSettings` derived from the active buffer's effective
+    /// editor config. Convenience wrapper so the input + eval layers
+    /// don't have to redo the `EditorConfig → IndentSettings`
+    /// conversion at every call site that inserts a new line.
+    pub(super) fn indent_settings(&self) -> crate::editor::IndentSettings {
+        crate::editor::IndentSettings {
+            width: self.effective_editor().indent_width.max(1),
+        }
+    }
+
     /// Effective editor settings for the active buffer: the global
     /// `[editor]` defaults with the buffer-language's per-language
     /// overrides layered on top. When the buffer has no path or its
