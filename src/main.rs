@@ -5,6 +5,7 @@ mod editor;
 mod effect;
 mod event;
 mod finder;
+mod grammar;
 mod lsp;
 mod mode;
 mod prompt;
@@ -28,7 +29,15 @@ use crate::app::App;
 use crate::config::CursorShape;
 
 fn main() -> Result<()> {
-    let path = std::env::args().nth(1);
+    let argv: Vec<String> = std::env::args().collect();
+    // `vorto grammar …` is a one-shot CLI that builds and installs
+    // tree-sitter `.so` libraries; it never enters the TUI, so handle
+    // it before we touch the terminal.
+    if argv.get(1).map(String::as_str) == Some("grammar") {
+        return grammar::cli::run(&argv[2..]);
+    }
+
+    let path = argv.into_iter().nth(1);
     // Anchor for LSP workspace root discovery — captured once here so the
     // value can't shift mid-session if anything changes the process's
     // cwd. Every later `:e` resolves against the same directory.

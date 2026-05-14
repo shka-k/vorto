@@ -201,6 +201,224 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
             ..Default::default()
         },
     );
+    m.insert(
+        "kotlin".into(),
+        LanguageConfig {
+            extensions: Some(vec!["kt".into(), "kts".into()]),
+            comment_token: Some("//".into()),
+            lsp: Some(LspConfig {
+                command: "kotlin-language-server".into(),
+                args: vec![],
+                language_id: Some("kotlin".into()),
+                root_markers: vec![
+                    "settings.gradle.kts".into(),
+                    "settings.gradle".into(),
+                    "build.gradle.kts".into(),
+                    "build.gradle".into(),
+                    "pom.xml".into(),
+                ],
+            }),
+            ..Default::default()
+        },
+    );
+    // `.h` is ambiguous (C or C++); we route it to C by default and
+    // assume mixed projects override via `[languages.cpp]` in user
+    // config. C++-specific headers (`.hpp`, `.hh`, `.hxx`) go to C++.
+    m.insert(
+        "c".into(),
+        LanguageConfig {
+            extensions: Some(vec!["c".into(), "h".into()]),
+            comment_token: Some("//".into()),
+            lsp: Some(LspConfig {
+                command: "clangd".into(),
+                args: vec![],
+                language_id: Some("c".into()),
+                root_markers: vec![
+                    "compile_commands.json".into(),
+                    ".clangd".into(),
+                    "Makefile".into(),
+                    "CMakeLists.txt".into(),
+                ],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "cpp".into(),
+        LanguageConfig {
+            extensions: Some(vec![
+                "cpp".into(),
+                "cc".into(),
+                "cxx".into(),
+                "hpp".into(),
+                "hh".into(),
+                "hxx".into(),
+            ]),
+            comment_token: Some("//".into()),
+            lsp: Some(LspConfig {
+                command: "clangd".into(),
+                args: vec![],
+                language_id: Some("cpp".into()),
+                root_markers: vec![
+                    "compile_commands.json".into(),
+                    ".clangd".into(),
+                    "CMakeLists.txt".into(),
+                ],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "java".into(),
+        LanguageConfig {
+            extensions: Some(vec!["java".into()]),
+            comment_token: Some("//".into()),
+            lsp: Some(LspConfig {
+                command: "jdtls".into(),
+                args: vec![],
+                language_id: Some("java".into()),
+                root_markers: vec![
+                    "pom.xml".into(),
+                    "build.gradle".into(),
+                    "build.gradle.kts".into(),
+                    ".project".into(),
+                ],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "bash".into(),
+        LanguageConfig {
+            extensions: Some(vec!["sh".into(), "bash".into()]),
+            comment_token: Some("#".into()),
+            lsp: Some(LspConfig {
+                command: "bash-language-server".into(),
+                args: vec!["start".into()],
+                language_id: Some("shellscript".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    // JSON has no native single-line comment; leaving `comment_token`
+    // unset disables the `<space>c` toggle for the language (correct).
+    m.insert(
+        "json".into(),
+        LanguageConfig {
+            extensions: Some(vec!["json".into()]),
+            comment_token: None,
+            lsp: Some(LspConfig {
+                command: "vscode-json-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("json".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "yaml".into(),
+        LanguageConfig {
+            extensions: Some(vec!["yaml".into(), "yml".into()]),
+            comment_token: Some("#".into()),
+            lsp: Some(LspConfig {
+                command: "yaml-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("yaml".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "markdown".into(),
+        LanguageConfig {
+            extensions: Some(vec!["md".into(), "markdown".into()]),
+            comment_token: None,
+            lsp: Some(LspConfig {
+                command: "marksman".into(),
+                args: vec!["server".into()],
+                language_id: Some("markdown".into()),
+                root_markers: vec![".marksman.toml".into()],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "html".into(),
+        LanguageConfig {
+            extensions: Some(vec!["html".into(), "htm".into()]),
+            comment_token: None,
+            lsp: Some(LspConfig {
+                command: "vscode-html-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("html".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "css".into(),
+        LanguageConfig {
+            extensions: Some(vec!["css".into()]),
+            comment_token: None,
+            lsp: Some(LspConfig {
+                command: "vscode-css-language-server".into(),
+                args: vec!["--stdio".into()],
+                language_id: Some("css".into()),
+                root_markers: vec![],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "lua".into(),
+        LanguageConfig {
+            extensions: Some(vec!["lua".into()]),
+            comment_token: Some("--".into()),
+            lsp: Some(LspConfig {
+                command: "lua-language-server".into(),
+                args: vec![],
+                language_id: Some("lua".into()),
+                root_markers: vec![
+                    ".luarc.json".into(),
+                    ".luarc.jsonc".into(),
+                    "stylua.toml".into(),
+                ],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "ruby".into(),
+        LanguageConfig {
+            extensions: Some(vec!["rb".into()]),
+            comment_token: Some("#".into()),
+            lsp: Some(LspConfig {
+                command: "ruby-lsp".into(),
+                args: vec![],
+                language_id: Some("ruby".into()),
+                root_markers: vec!["Gemfile".into(), ".rubocop.yml".into()],
+            }),
+            ..Default::default()
+        },
+    );
+    m.insert(
+        "zig".into(),
+        LanguageConfig {
+            extensions: Some(vec!["zig".into(), "zon".into()]),
+            comment_token: Some("//".into()),
+            lsp: Some(LspConfig {
+                command: "zls".into(),
+                args: vec![],
+                language_id: Some("zig".into()),
+                root_markers: vec!["build.zig".into()],
+            }),
+            ..Default::default()
+        },
+    );
     m
 }
 
