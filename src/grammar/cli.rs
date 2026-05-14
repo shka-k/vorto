@@ -11,7 +11,7 @@
 //! editor uses, so anything installed here is immediately picked up next
 //! time the editor starts.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::{Result, bail};
 
@@ -25,8 +25,8 @@ use super::recipe::{builtin_recipes, find_recipe};
 /// is everything after the `grammar` token.
 pub fn run(args: &[String]) -> Result<()> {
     let cfg = Config::load(config::default_path().as_deref())?;
-    let grammar_dir = cfg.grammar_dir.clone();
-    let query_dir = cfg.query_dir.clone();
+    let grammar_dir = cfg.grammar_dir.as_path();
+    let query_dir = cfg.query_dir.as_path();
 
     match args.split_first() {
         None => {
@@ -34,9 +34,9 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some((cmd, rest)) => match cmd.as_str() {
-            "list" | "ls" => list(&grammar_dir, &query_dir),
-            "install" | "add" => install(rest, &grammar_dir, &query_dir),
-            "remove" | "rm" | "uninstall" => remove(rest, &grammar_dir),
+            "list" | "ls" => list(grammar_dir, query_dir),
+            "install" | "add" => install(rest, grammar_dir, query_dir),
+            "remove" | "rm" | "uninstall" => remove(rest, grammar_dir),
             "help" | "-h" | "--help" => {
                 print_usage();
                 Ok(())
@@ -63,7 +63,7 @@ fn print_usage() {
     eprintln!("  vorto grammar list");
 }
 
-fn list(grammar_dir: &PathBuf, query_dir: &PathBuf) -> Result<()> {
+fn list(grammar_dir: &Path, query_dir: &Path) -> Result<()> {
     println!("grammar dir: {}", grammar_dir.display());
     println!("query dir:   {}", query_dir.display());
     println!();
@@ -88,7 +88,7 @@ fn list(grammar_dir: &PathBuf, query_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn install(args: &[String], grammar_dir: &PathBuf, query_dir: &PathBuf) -> Result<()> {
+fn install(args: &[String], grammar_dir: &Path, query_dir: &Path) -> Result<()> {
     let recipes = match args.first().map(String::as_str) {
         None => {
             bail!("install: need at least one grammar name (or `--all`)");
@@ -148,7 +148,7 @@ fn install(args: &[String], grammar_dir: &PathBuf, query_dir: &PathBuf) -> Resul
     Ok(())
 }
 
-fn remove(args: &[String], grammar_dir: &PathBuf) -> Result<()> {
+fn remove(args: &[String], grammar_dir: &Path) -> Result<()> {
     if args.is_empty() {
         bail!("remove: need at least one grammar name");
     }
