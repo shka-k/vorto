@@ -62,6 +62,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
+    let tab_width = app.effective_editor().tab_width.max(1);
 
     let visible: Vec<Line> = app
         .buffer
@@ -104,6 +105,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
                 &extra_cols,
                 &hits,
                 &row_jumps,
+                tab_width,
             ));
             Line::from(spans)
         })
@@ -119,13 +121,28 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let height = buf_area.height as usize;
     let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
-    let x = buf_area.x
-        + GUTTER_SIGN_WIDTH
-        + line_no_width
-        + GUTTER_VCS_WIDTH
-        + app.buffer.cursor.col as u16;
+    let tab_width = app.effective_editor().tab_width.max(1);
+    let line = &app.buffer.lines[app.buffer.cursor.row];
+    let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
+    let x = buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + GUTTER_VCS_WIDTH + visual_col as u16;
     let y = buf_area.y + (app.buffer.cursor.row - scroll) as u16;
     f.set_cursor_position((x, y));
+}
+
+/// Convert a character index on `line` into the visual column the
+/// character lands in once tabs have been expanded to `tab_width`-aligned
+/// stops. Walks the prefix exactly the way [`render_line`] does, so the
+/// cursor stays glued to the rendered char.
+fn char_col_to_visual(line: &str, char_col: usize, tab_width: usize) -> usize {
+    let mut v = 0usize;
+    for ch in line.chars().take(char_col) {
+        if ch == '\t' {
+            v += tab_width - (v % tab_width);
+        } else {
+            v += 1;
+        }
+    }
+    v
 }
 
 /// Build a `row → highest severity` lookup for the visible window. Rows
@@ -187,6 +204,7 @@ fn sign_span(sev: Option<Severity>) -> Span<'static> {
 /// `captures` is the row-range slice produced by the highlighter for
 /// the visible window; we filter per row internally rather than
 /// re-extracting per call.
+#[allow(clippy::too_many_arguments)]
 fn render_line(
     row: usize,
     line: &str,
@@ -195,6 +213,7 @@ fn render_line(
     extra_cols: &[usize],
     search_hits: &[(usize, usize)],
     jump_labels: &[(usize, char)],
+    tab_width: usize,
 ) -> Vec<Span<'static>> {
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
@@ -297,18 +316,50 @@ fn render_line(
         }
     };
 
+    // Each char takes one visible cell except `\t`, which jumps to the
+    // next `tab_width`-aligned stop. The expanded tab is filled with
+    // spaces so its background style (selection / search hit / extra
+    // cursor) covers the entire run, and `visual_col` tracks the running
+    // cell position so each tab measures from where it actually sits.
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let (c0, s0) = cell_at(0);
-    let mut buf_style = s0;
-    buf.push(c0);
-    for col in 1..chars.len() {
-        let (c, s) = cell_at(col);
-        if s != buf_style && !buf.is_empty() {
-            spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
-            buf_style = s;
+    let mut buf_style = Style::default();
+    let mut visual_col = 0usize;
+    let mut started = false;
+    for (col, &original) in chars.iter().enumerate() {
+        let (ch, style) = cell_at(col);
+        let width = if original == '\t' {
+            tab_width - (visual_col % tab_width)
+        } else {
+            1
+        };
+        if !started {
+            buf_style = style;
+            started = true;
+        } else if style != buf_style {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+            }
+            buf_style = style;
         }
-        buf.push(c);
+        if original == '\t' {
+            // If a jump label overlays the tab, show the label letter in
+            // the leading cell and pad the rest of the stop with spaces.
+            // Otherwise just emit `width` blank cells.
+            if ch != '\t' {
+                buf.push(ch);
+                for _ in 1..width {
+                    buf.push(' ');
+                }
+            } else {
+                for _ in 0..width {
+                    buf.push(' ');
+                }
+            }
+        } else {
+            buf.push(ch);
+        }
+        visual_col += width;
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));

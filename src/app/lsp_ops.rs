@@ -247,10 +247,6 @@ impl App {
         self.lsp.current_diagnostics()
     }
 
-    /// First diagnostic that covers the cursor row, prioritising errors.
-    pub fn diagnostic_on_cursor(&self) -> Option<&Diagnostic> {
-        self.lsp.diagnostic_on_cursor(self.buffer.cursor.row as u32)
-    }
 }
 
 /// Render a `path:line:col` label for an LSP `Location`. Used to

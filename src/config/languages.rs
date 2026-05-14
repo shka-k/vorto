@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use super::editor::EditorToml;
+
 /// Raw, partially-filled language entry as it appears in TOML or in the
 /// built-in defaults table. Every field is `Option<T>` so the overlay
 /// step can distinguish "user wrote nothing" from a meaningful empty
@@ -34,6 +36,12 @@ pub struct LanguageConfig {
     /// `"//"` for Rust, `"#"` for Python). Unset means commenting is
     /// disabled for the language.
     pub comment_token: Option<String>,
+    /// Editor-setting overrides for this language. Fields are flattened
+    /// into `[languages.<name>]` (e.g. `tab_width = 8` sits directly on
+    /// the language table, not under `[…].editor`). Field-level overlay
+    /// onto the global `[editor]` defaults.
+    #[serde(default, flatten)]
+    pub editor: EditorToml,
     /// `[languages.<name>.lsp]` subtable — replaced whole, not deep-merged.
     pub lsp: Option<LspConfig>,
 }
@@ -73,6 +81,15 @@ impl LanguageConfig {
         if user.comment_token.is_some() {
             self.comment_token = user.comment_token;
         }
+        // Editor settings are field-level overlay so users can flip
+        // just one knob (typically `tab_width`) without re-stating the
+        // other.
+        if user.editor.indent_width.is_some() {
+            self.editor.indent_width = user.editor.indent_width;
+        }
+        if user.editor.tab_width.is_some() {
+            self.editor.tab_width = user.editor.tab_width;
+        }
         if user.lsp.is_some() {
             self.lsp = user.lsp;
         }
@@ -89,6 +106,10 @@ pub struct Language {
     pub grammar_dir: Option<PathBuf>,
     pub query_dir: Option<PathBuf>,
     pub comment_token: Option<String>,
+    /// Per-language editor-setting overrides. Each field is optional;
+    /// at use time, overlay this onto the global `[editor]` to get the
+    /// effective values for the buffer.
+    pub editor: EditorToml,
     pub lsp: Option<LspConfig>,
 }
 
@@ -101,6 +122,7 @@ impl Language {
             grammar_dir: c.grammar_dir,
             query_dir: c.query_dir,
             comment_token: c.comment_token,
+            editor: c.editor,
             lsp: c.lsp,
         }
     }
@@ -187,11 +209,18 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
             ..Default::default()
         },
     );
+    // Go is canonically tab-indented (gofmt enforces it). We use a
+    // tab stop of 4 to match what most repos in this codebase's
+    // ecosystem ship with; users can override via `[languages.go]`.
     m.insert(
         "go".into(),
         LanguageConfig {
             extensions: Some(vec!["go".into()]),
             comment_token: Some("//".into()),
+            editor: EditorToml {
+                indent_width: Some(4),
+                tab_width: Some(4),
+            },
             lsp: Some(LspConfig {
                 command: "gopls".into(),
                 args: vec![],

@@ -17,9 +17,6 @@ use crate::config::{
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
 const HINT_MAX: usize = HINT_COLS * HINT_ROWS_MAX;
-/// Slightly darker than ANSI 8 (bright black) — sits clearly behind the
-/// buffer text without being pure black. Approximate `#1e1e1e`.
-const HINT_BG: Color = Color::Rgb(30, 30, 30);
 const HINT_PAD_X: u16 = 1;
 const HINT_PAD_Y: u16 = 1;
 
@@ -64,7 +61,7 @@ pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
         return;
     }
 
-    let bg = Style::default().bg(HINT_BG);
+    let bg = Style::default().bg(super::PANEL_BG);
     let title = " commands ";
     let block = Block::default()
         .borders(Borders::ALL)
@@ -144,7 +141,7 @@ pub(super) fn draw_pending_hints(f: &mut Frame, app: &App, status_area: Rect) {
         return;
     }
 
-    let bg = Style::default().bg(HINT_BG);
+    let bg = Style::default().bg(super::PANEL_BG);
     let title = format!(" {} ", name);
     let block = Block::default()
         .borders(Borders::ALL)

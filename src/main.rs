@@ -106,11 +106,25 @@ fn run(
         // Block on the next event. Both terminal input and LSP reader
         // threads feed this channel, so we wake on whichever comes first
         // and only redraw once after we drain the burst.
-        let first = match event_rx.recv() {
-            Ok(ev) => ev,
-            Err(_) => return Ok(()),
+        //
+        // When a toast is on screen, fall back to `recv_timeout` so the
+        // loop wakes when the TTL expires and the next redraw can drop
+        // the toast — otherwise it would linger until the user happens
+        // to press a key.
+        let first = match app.toast_remaining() {
+            Some(rem) => match event_rx.recv_timeout(rem) {
+                Ok(ev) => Some(ev),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            },
+            None => match event_rx.recv() {
+                Ok(ev) => Some(ev),
+                Err(_) => return Ok(()),
+            },
         };
-        dispatch(app, first)?;
+        if let Some(ev) = first {
+            dispatch(app, ev)?;
+        }
         // Drain any events that piled up while we were blocked so we
         // don't redraw between a Term+Lsp pair (e.g. didChange burst).
         while let Ok(ev) = event_rx.try_recv() {

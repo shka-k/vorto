@@ -18,7 +18,7 @@ mod types;
 
 pub use jump::JumpState;
 pub use sleeping::SleepingBuffer;
-pub use status::Status;
+pub use status::{Level, Status};
 pub use types::{BufferRef, Selection};
 
 use std::cell::RefCell;
@@ -37,7 +37,7 @@ pub struct InsertRecording {
     pub trigger: crate::action::Expr,
     pub keys: Vec<InsertKey>,
 }
-use crate::config::Config;
+use crate::config::{Config, EditorConfig};
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
 use crate::editor::SearchState;
@@ -212,6 +212,63 @@ impl App {
     /// an anchor is set. Returns `None` otherwise.
     pub fn selection(&self) -> Option<Selection> {
         types::selection(self.mode, self.visual_anchor, self.buffer.cursor)
+    }
+
+    /// How long the current `status` toast still has to live before it
+    /// ages out. `None` means the toast is empty or already expired and
+    /// the renderer should skip it; the main loop also reads this to
+    /// pick a `recv_timeout` so the toast vanishes on its own rather
+    /// than lingering until the next keypress.
+    pub fn toast_remaining(&self) -> Option<std::time::Duration> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(3);
+        if self.status.text().is_empty() {
+            return None;
+        }
+        let elapsed = self.status.shown_at().elapsed();
+        if elapsed >= TTL {
+            None
+        } else {
+            Some(TTL - elapsed)
+        }
+    }
+
+    /// Visual column (0-based cell offset, not char index) of the
+    /// primary cursor on its current line, after tabs are expanded
+    /// using the buffer's effective `tab_width`. Mirrors what
+    /// [`ui::buffer::place_cursor`] places on screen, so the status
+    /// bar and any other consumer can show a position that matches
+    /// where the cursor actually sits.
+    pub fn cursor_visual_col(&self) -> usize {
+        let tab_width = self.effective_editor().tab_width.max(1);
+        let line = &self.buffer.lines[self.buffer.cursor.row];
+        let mut v = 0usize;
+        for ch in line.chars().take(self.buffer.cursor.col) {
+            if ch == '\t' {
+                v += tab_width - (v % tab_width);
+            } else {
+                v += 1;
+            }
+        }
+        v
+    }
+
+    /// Effective editor settings for the active buffer: the global
+    /// `[editor]` defaults with the buffer-language's per-language
+    /// overrides layered on top. When the buffer has no path or its
+    /// extension doesn't resolve to a known language, the global
+    /// defaults are returned as-is.
+    pub fn effective_editor(&self) -> EditorConfig {
+        let base = self.config.editor;
+        let Some(path) = self.buffer.path.as_ref() else {
+            return base;
+        };
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            return base;
+        };
+        let Some(lang) = self.config.languages.by_extension(ext) else {
+            return base;
+        };
+        base.overlay(&lang.editor)
     }
 }
 

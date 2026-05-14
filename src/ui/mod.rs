@@ -24,8 +24,14 @@ mod status;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::Color;
 
 use crate::app::{App, Prompt};
+
+/// Shared overlay panel background — slightly darker than ANSI 8
+/// (bright black), so floating widgets (command hints, pending-op
+/// hints, toasts) read as a dim panel rather than pure black.
+pub(crate) const PANEL_BG: Color = Color::Rgb(30, 30, 30);
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -39,8 +45,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     buffer::draw_buffer(f, app, chunks[0]);
     status::draw_status(f, app, chunks[1]);
-    status::draw_message(f, app, chunks[2]);
     status::draw_command_line(f, app, chunks[2]);
+    status::draw_toast(f, app, chunks[0]);
 
     buffer::place_cursor(f, app, chunks[0]);
 

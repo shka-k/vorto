@@ -1,15 +1,16 @@
-//! Status bar (mode badge, filename, cursor position) and the message /
-//! diagnostic / `:` / `/` / rename line directly under it.
+//! Status bar (mode badge, filename, cursor position), the
+//! `:` / `/` / rename line directly under it, and the floating
+//! toast that surfaces info / error messages in the top-right
+//! corner of the buffer viewport.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::action::{Operator, Token};
-use crate::app::{App, Prompt};
-use crate::lsp::{Diagnostic, Severity};
+use crate::app::{App, Level, Prompt};
 use crate::mode::Mode;
 
 const STATUS_LEFT_WIDTH: u16 = 14;
@@ -47,10 +48,14 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         cols[1],
     );
 
+    // Visual column (tab-expanded), so the displayed `col` matches the
+    // cell the cursor visibly sits on. Using `cursor.col` directly would
+    // disagree with the on-screen position whenever a tab sits between
+    // the line start and the cursor.
     let pos = format!(
         "{}:{} ",
         app.buffer.cursor.row + 1,
-        app.buffer.cursor.col + 1
+        app.cursor_visual_col() + 1
     );
     let pending = format_pending(&app.tokens);
     let mut right_spans = Vec::new();
@@ -70,29 +75,71 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Status message + diagnostic on the line below the status bar. Skipped
-/// when a prompt is active so `draw_command_line` owns the row instead.
-pub(super) fn draw_message(f: &mut Frame, app: &App, area: Rect) {
-    if app.prompt.is_open() {
+/// Floating toast rendered in the top-right of the buffer viewport.
+/// Carries the most recent `Status::{info,warn,error}` message,
+/// foreground color picked per level. Skipped when the toast has aged
+/// out, when the message is empty, or when a prompt is open (the user
+/// is mid-input and shouldn't have an overlay dropped on top of the
+/// candidate list / preview).
+///
+/// Background + border match the `:command` hint panel (see
+/// `hints::draw_command_hints`) so floating overlays read as one
+/// consistent visual family.
+pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
+    if app.prompt.is_open() || app.toast_remaining().is_none() {
         return;
     }
-    let status_style = if app.status.is_error() {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
     let msg = app.status.text();
-    let mut spans: Vec<Span> = Vec::new();
-    if !msg.is_empty() {
-        spans.push(Span::styled(msg.to_string(), status_style));
+    // First line only — multi-line diagnostics would otherwise wreck
+    // the overlay. Width caps at half the viewport so the toast never
+    // eats the buffer entirely on a narrow terminal.
+    let text = msg.lines().next().unwrap_or("").to_string();
+    if text.is_empty() {
+        return;
     }
-    if !app.status.is_error() && let Some(d) = app.diagnostic_on_cursor() {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(diagnostic_span(d));
+    let visible: usize = text.chars().count();
+    let max = (buf_area.width / 2).max(1) as usize;
+    let body = if visible > max {
+        let mut t: String = text.chars().take(max.saturating_sub(1)).collect();
+        t.push('…');
+        t
+    } else {
+        text
+    };
+    let body_width = body.chars().count() as u16;
+    // Frame: 1-cell border on each side, plus 1-cell horizontal pad
+    // between the border and the text so it doesn't kiss the edges.
+    let toast_w = body_width + 4;
+    let toast_h = 3;
+    if toast_w > buf_area.width || buf_area.height < toast_h {
+        return;
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let area = Rect {
+        x: buf_area.x + buf_area.width - toast_w,
+        y: buf_area.y,
+        width: toast_w,
+        height: toast_h,
+    };
+    let bg = Style::default().bg(super::PANEL_BG);
+    let fg = match app.status.level() {
+        Level::Info => Color::Reset,
+        Level::Warn => Color::Yellow,
+        Level::Error => Color::Red,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(bg.fg(Color::DarkGray))
+        .style(bg);
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {} ", body),
+            bg.fg(fg).add_modifier(Modifier::BOLD),
+        ))),
+        inner,
+    );
 }
 
 fn file_label(app: &App) -> String {
@@ -128,23 +175,6 @@ pub(super) fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
     };
     let text = format!("{}{}", prefix, content);
     f.render_widget(Paragraph::new(text), area);
-}
-
-fn diagnostic_span(d: &Diagnostic) -> Span<'static> {
-    let color = match d.severity {
-        Severity::Error => Color::Red,
-        Severity::Warning => Color::Yellow,
-        Severity::Info => Color::LightBlue,
-        Severity::Hint => Color::DarkGray,
-    };
-    // First line only — diagnostics with embedded newlines (rust-analyzer
-    // does this for explanations) would otherwise wreck the status bar.
-    let text = d.message.lines().next().unwrap_or("").to_string();
-    let prefix = match &d.source {
-        Some(s) => format!("[{}] ", s),
-        None => String::new(),
-    };
-    Span::styled(format!("{}{}", prefix, text), Style::default().fg(color))
 }
 
 fn status_label(app: &App) -> (String, Color) {

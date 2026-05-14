@@ -24,6 +24,7 @@
 
 mod command;
 mod cursor;
+mod editor;
 mod keymap;
 mod keys;
 mod languages;
@@ -36,6 +37,7 @@ use serde::Deserialize;
 
 pub use command::{COMMAND_BINDS, CommandBind};
 pub use cursor::{CursorShape, CursorShapes};
+pub use editor::{EditorConfig, EditorToml};
 pub use keymap::{
     GOTO_BINDINGS, KeySig, Keymap, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
     Z_BINDINGS,
@@ -53,6 +55,9 @@ pub struct Config {
     pub keymap: Keymap,
     pub cursor_shapes: CursorShapes,
     pub languages: LanguageRegistry,
+    /// Global editor settings, applied to every buffer that doesn't get
+    /// a more specific override from a `[languages.<name>]` block.
+    pub editor: EditorConfig,
     /// Absolute path to the grammar directory (`<grammar>.{so,dylib,dll}`).
     pub grammar_dir: PathBuf,
     /// Absolute path to the query directory (`<lang>/highlights.scm`).
@@ -76,6 +81,7 @@ impl Config {
         }
 
         let cursor_shapes = resolve_cursor_shapes(&toml.cursor)?;
+        let editor = EditorConfig::default().overlay(&toml.editor);
         let languages = LanguageRegistry::build(toml.languages);
         let grammar_dir = toml
             .grammar_dir
@@ -90,6 +96,7 @@ impl Config {
             keymap,
             cursor_shapes,
             languages,
+            editor,
             grammar_dir,
             query_dir,
         })
@@ -106,6 +113,10 @@ struct Toml {
     bind: Vec<BindEntry>,
     #[serde(default)]
     cursor: CursorConfig,
+    /// Global `[editor]` table. Per-language overrides flatten the same
+    /// fields directly into each `[languages.<name>]` table.
+    #[serde(default)]
+    editor: EditorToml,
     /// `[languages.<name>]` blocks. Resolved against built-in defaults
     /// by [`LanguageRegistry::build`].
     #[serde(default)]

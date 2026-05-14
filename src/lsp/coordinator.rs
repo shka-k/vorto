@@ -143,21 +143,6 @@ impl LspCoordinator {
             .map(|v| v.as_slice())
     }
 
-    /// First diagnostic that covers the given row, prioritising errors.
-    pub fn diagnostic_on_cursor(&self, row: u32) -> Option<&Diagnostic> {
-        let mut best: Option<&Diagnostic> = None;
-        for d in self.current_diagnostics()? {
-            if d.range.start.line <= row && row <= d.range.end.line {
-                best = Some(match best {
-                    None => d,
-                    Some(prev) if (d.severity as u8) < (prev.severity as u8) => d,
-                    Some(prev) => prev,
-                });
-            }
-        }
-        best
-    }
-
     /// Tell the current document's LSP that we're done with it. No-op
     /// when there's no current document.
     pub fn detach_current(&mut self) {
