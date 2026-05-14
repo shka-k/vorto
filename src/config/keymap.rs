@@ -658,15 +658,18 @@ impl Keymap {
             self.bind_initial(KeySig::new(KeyCode::Char(ch), ctrl), Motion(m));
         }
 
-        // Multi-cursor: Ctrl-N adds a cursor at the next word match,
-        // Ctrl-P pops the most recently added one. Clearing all extras
-        // is on the leader (<space>,) — see LEADER_DEFAULTS.
+        // Multi-cursor: Ctrl-A adds a cursor at the next word match,
+        // Ctrl-K kills the most recently added one. Both letters
+        // avoid zellij's default mode-trigger Ctrl set (g/p/t/r/s/o/
+        // h/b/q/n) so they stay reachable inside a zellij session.
+        // Clearing all extras is on the leader (<space>,) — see
+        // LEADER_DEFAULTS.
         self.bind_initial(
-            KeySig::new(KeyCode::Char('n'), ctrl),
+            KeySig::new(KeyCode::Char('a'), ctrl),
             Direct(D::MultiCursorAddNext),
         );
         self.bind_initial(
-            KeySig::new(KeyCode::Char('p'), ctrl),
+            KeySig::new(KeyCode::Char('k'), ctrl),
             Direct(D::MultiCursorPop),
         );
 

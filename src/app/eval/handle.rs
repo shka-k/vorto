@@ -208,6 +208,12 @@ impl App {
             D::SearchWordKeep { forward } => {
                 push_word_search(self, &mut cmds, forward, false);
             }
+            D::ClearSearch => {
+                cmds.push(Cmd::SetSearch {
+                    pattern: String::new(),
+                    forward: true,
+                });
+            }
             D::MultiCursorAddNext => add_next_cursor(self, &mut cmds),
             D::MultiCursorPop => {
                 if let Some(c) = self.buffer.extra_cursors.pop() {

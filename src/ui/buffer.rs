@@ -16,10 +16,15 @@ use crate::syntax::{self, Capture};
 /// both dark and light terminals.
 const SEL_BG: Color = Color::Rgb(58, 78, 122);
 
-/// Background used to render each *extra* multi-cursor cell. Distinct
-/// from `SEL_BG` so a user with both a visual selection and stacked
-/// cursors can tell them apart. The terminal's native cursor still
-/// paints the primary; only the additional cursors use this color.
+/// Background used to highlight every visible match of the active
+/// search pattern (vim's `hlsearch`). ANSI bright-black (the terminal's
+/// dim gray) so it sits underneath text without competing with a
+/// visual selection.
+const SEARCH_HIT_BG: Color = Color::DarkGray;
+
+/// Background used to render each extra-cursor cell. Distinct from
+/// `SEL_BG` and `SEARCH_HIT_BG` so a stacked cursor remains visible
+/// even when it sits inside a selection or a search match.
 const EXTRA_CURSOR_BG: Color = Color::Rgb(160, 110, 60);
 
 /// Width of the gutter prefix (severity sign + space). Kept in sync with
@@ -40,6 +45,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_default();
     let row_severity = build_row_severity(app, scroll, last_visible);
     let extras = &app.buffer.extra_cursors;
+    let search_query = &app.search.query;
 
     let visible: Vec<Line> = app
         .buffer
@@ -56,7 +62,15 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .filter_map(|c| if c.row == i { Some(c.col) } else { None })
                 .collect();
-            spans.extend(render_line(i, line, sel.as_ref(), &captures, &extra_cols));
+            let hits = find_matches_in_line(line, search_query);
+            spans.extend(render_line(
+                i,
+                line,
+                sel.as_ref(),
+                &captures,
+                &extra_cols,
+                &hits,
+            ));
             Line::from(spans)
         })
         .collect();
@@ -129,8 +143,11 @@ fn render_line(
     sel: Option<&Selection>,
     captures: &[Capture],
     extra_cols: &[usize],
+    search_hits: &[(usize, usize)],
 ) -> Vec<Span<'static>> {
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
+    let is_search_hit =
+        |col: usize| -> bool { search_hits.iter().any(|(lo, hi)| col >= *lo && col < *hi) };
     let is_selected = |col: usize| -> bool {
         let Some(sel) = sel else { return false };
         match *sel {
@@ -152,16 +169,17 @@ fn render_line(
 
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() {
-        if is_extra_cursor(0) {
-            return vec![Span::styled(
-                " ".to_string(),
-                Style::default().bg(EXTRA_CURSOR_BG),
-            )];
-        }
+        let mut style = Style::default();
         if is_selected(0) {
-            return vec![Span::styled(" ".to_string(), Style::default().bg(SEL_BG))];
+            style = style.bg(SEL_BG);
         }
-        return Vec::new();
+        if is_extra_cursor(0) {
+            style = extra_cursor_style(style);
+        }
+        if style == Style::default() {
+            return Vec::new();
+        }
+        return vec![Span::styled(" ".to_string(), style)];
     }
 
     // Build the per-character base (highlight) style. Captures are
@@ -192,16 +210,19 @@ fn render_line(
         }
     }
 
-    // Overlay the visual-selection background per char, then the
-    // extra-cursor background on top so a cursor inside a selection
-    // still reads as a cursor cell.
+    // Backgrounds layered from least to most specific: search hit →
+    // visual selection → extra cursor (which uses an outline modifier
+    // rather than a fill, so it sits on top of any underlying bg).
     let style_at = |col: usize| -> Style {
         let mut s = base[col];
+        if is_search_hit(col) {
+            s = s.bg(SEARCH_HIT_BG);
+        }
         if is_selected(col) {
             s = s.bg(SEL_BG);
         }
         if is_extra_cursor(col) {
-            s = s.bg(EXTRA_CURSOR_BG);
+            s = extra_cursor_style(s);
         }
         s
     };
@@ -226,10 +247,42 @@ fn render_line(
     if is_extra_cursor(chars.len()) {
         spans.push(Span::styled(
             " ".to_string(),
-            Style::default().bg(EXTRA_CURSOR_BG),
+            extra_cursor_style(Style::default()),
         ));
     }
     spans
+}
+
+/// Style overlay applied to every extra-cursor cell. Solid background
+/// so the cell stays visible against any underlying syntax / search /
+/// selection layer.
+fn extra_cursor_style(base: Style) -> Style {
+    base.bg(EXTRA_CURSOR_BG)
+}
+
+/// All matches of `query` in `line`, returned as half-open char
+/// ranges. Empty `query` returns no hits, so callers don't accidentally
+/// paint the entire buffer when no search is active.
+fn find_matches_in_line(line: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q_chars = query.chars().count();
+    let mut hits = Vec::new();
+    let mut search_from = 0;
+    while let Some(byte_idx) = line[search_from..].find(query) {
+        let abs_byte = search_from + byte_idx;
+        let start_col = line[..abs_byte].chars().count();
+        hits.push((start_col, start_col + q_chars));
+        // Advance past this match so we don't re-find overlapping
+        // occurrences. `query.len()` is byte length, which is safe to
+        // add at a UTF-8 boundary.
+        search_from = abs_byte + query.len();
+        if search_from >= line.len() {
+            break;
+        }
+    }
+    hits
 }
 
 /// Update and return the viewport scroll position. Sticky: the scroll

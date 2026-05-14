@@ -101,4 +101,10 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         description: "go to line <n>",
         kind: DirectKind::GotoLine,
     },
+    CommandBind {
+        name: "noh",
+        aliases: &["nohl", "nohlsearch"],
+        description: "clear search highlight",
+        kind: DirectKind::ClearSearch,
+    },
 ];

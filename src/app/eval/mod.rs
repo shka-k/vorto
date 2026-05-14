@@ -441,23 +441,33 @@ fn adjust_already_processed(
                 p.col = new_col.max(edit_origin.col as i64) as usize;
             }
         }
-        return;
+    } else {
+        // Row count changed — find where and shift the tail.
+        let edit_row = first_diverging_row(before, after);
+        let row_delta = after.len() as i64 - before.len() as i64;
+        for (orig_idx, _) in already {
+            let p = &mut new_positions[*orig_idx];
+            if p.row > edit_row {
+                let new_row = (p.row as i64 + row_delta).max(0) as usize;
+                p.row = new_row;
+            }
+        }
     }
-    // Row count changed — find where and shift the tail.
-    let edit_row = first_diverging_row(before, after);
-    let row_delta = after.len() as i64 - before.len() as i64;
+    // Unconditional final clamp. Covers the case where a row that an
+    // already-processed cursor sat on was removed entirely — e.g.
+    // multiple `dd`s descending through the buffer leave saved
+    // positions whose `row` index no longer exists. Without this, the
+    // first render after the operation panics on an out-of-range line
+    // lookup.
     let last_row = after.len().saturating_sub(1);
     for (orig_idx, _) in already {
         let p = &mut new_positions[*orig_idx];
-        if p.row > edit_row {
-            let new_row = (p.row as i64 + row_delta).max(0) as usize;
-            p.row = new_row.min(last_row);
-            // Column may now reference a row whose length is shorter;
-            // clamp so callers don't see an out-of-range col.
-            let line_len = after.get(p.row).copied().unwrap_or(0);
-            if p.col > line_len {
-                p.col = line_len;
-            }
+        if p.row > last_row {
+            p.row = last_row;
+        }
+        let line_len = after.get(p.row).copied().unwrap_or(0);
+        if p.col > line_len {
+            p.col = line_len;
         }
     }
 }
