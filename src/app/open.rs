@@ -97,9 +97,8 @@ impl App {
     /// unsaved edits, undo stack, and cursor position across a
     /// `<space>b` round-trip. Otherwise load fresh from disk.
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
-        let canon = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let path = self.absolutize(path);
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
         let key = BufferRef::File(canon);
         if let Some(restored) = self.sleeping.remove(&key) {
             self.lsp.detach_current();
@@ -108,11 +107,26 @@ impl App {
             self.open_gen = self.open_gen.wrapping_add(1);
             self.lsp.set_last_synced_version(self.buffer.version);
             self.status = Status::info(format!("restored {}", path.display()));
-            self.spawn_highlighter_worker(path);
-            self.spawn_lsp_worker(path);
+            self.spawn_highlighter_worker(&path);
+            self.spawn_lsp_worker(&path);
             return Ok(());
         }
-        self.open_path_force(path)
+        self.open_path_force(&path)
+    }
+
+    /// Resolve a user-supplied path to an absolute path against
+    /// `startup_cwd`. Doesn't touch the filesystem — works for files
+    /// that don't exist yet, which `canonicalize()` rejects. Critical
+    /// for `:e new_file.rs`: without absolutizing, the relative path
+    /// flows into [`crate::lsp::path_to_uri`] which produces a broken
+    /// `file:///new_file.rs` URI (no directory), and the LSP server
+    /// silently ignores the document.
+    fn absolutize(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.startup_cwd.join(path)
+        }
     }
 
     /// Open `path` from disk, discarding any sleeping copy. Used on
