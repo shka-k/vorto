@@ -58,6 +58,12 @@ pub struct Buffer {
     /// for `H`/`M`/`L` and `<C-d>`/`<C-u>`/`<C-f>`/`<C-b>`. `0` until
     /// the first frame is drawn — motions guard against that.
     pub viewport_height: Cell<usize>,
+    /// Visual y (within the buffer viewport) of the row the cursor sits
+    /// on at the last draw. Differs from `cursor.row - scroll` when
+    /// inline diagnostics push subsequent rows down. The UI writes this
+    /// in `draw_buffer`; `place_cursor` and cursor-anchored overlays
+    /// read it.
+    pub cursor_visual_y: Cell<u16>,
     // `pub` so the sleeping-buffer freezer can take the stacks
     // by move (and reinstall them on thaw) without going through
     // accessor boilerplate. Editor-internal mutations still go
@@ -144,6 +150,7 @@ impl Buffer {
             highlighter: None,
             scroll: Cell::new(0),
             viewport_height: Cell::new(0),
+            cursor_visual_y: Cell::new(0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             vcs_base,

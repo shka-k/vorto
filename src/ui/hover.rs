@@ -29,16 +29,15 @@ pub(super) fn draw_hover(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     }
 
-    let buffer_scroll = app.buffer.scroll.get();
     let cursor_row = app.buffer.cursor.row;
-    if cursor_row < buffer_scroll {
+    let Some(rel_y) = app.visual_row_offset(cursor_row) else {
         return;
-    }
+    };
     // Mirror buffer::place_cursor: 1-char severity sign + 5-char line
     // number column. Same trick as code_action.rs.
     let gutter_width: u16 = 1 + 5;
     let cursor_x = buf_area.x + gutter_width + app.buffer.cursor.col as u16;
-    let cursor_y = buf_area.y + (cursor_row - buffer_scroll) as u16;
+    let cursor_y = buf_area.y + rel_y;
 
     // The longest line caps the inner width, but never beyond MAX_WIDTH.
     // Inner width also bounds the available content area on narrow

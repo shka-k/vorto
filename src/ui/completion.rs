@@ -24,16 +24,15 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     }
 
-    let buffer_scroll = app.buffer.scroll.get();
     let row = state.prefix_start.row;
-    if row < buffer_scroll {
+    let Some(rel_y) = app.visual_row_offset(row) else {
         return;
-    }
+    };
     // Same gutter math as the other cursor-anchored popups: 1-char
     // severity sign + 5-char line number column.
     let gutter_width: u16 = 1 + 5;
     let anchor_x = buf_area.x + gutter_width + state.prefix_start.col as u16;
-    let anchor_y = buf_area.y + (row - buffer_scroll) as u16;
+    let anchor_y = buf_area.y + rel_y;
 
     // Width: longest visible label (capped) + space + kind badge.
     let label_w = state

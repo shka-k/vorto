@@ -28,17 +28,16 @@ pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     }
 
-    let scroll = app.buffer.scroll.get();
     let cursor_row = app.buffer.cursor.row;
-    if cursor_row < scroll {
+    let Some(rel_y) = app.visual_row_offset(cursor_row) else {
         return;
-    }
+    };
     // Mirror buffer::place_cursor: 1-char severity sign + 5-char line
     // number column, then the cursor's column. We don't import the
     // constants from buffer.rs to keep ui submodules self-contained.
     let gutter_width: u16 = 1 + 5;
     let cursor_x = buf_area.x + gutter_width + app.buffer.cursor.col as u16;
-    let cursor_y = buf_area.y + (cursor_row - scroll) as u16;
+    let cursor_y = buf_area.y + rel_y;
 
     let inner_w = actions
         .iter()

@@ -46,7 +46,8 @@ const GUTTER_VCS_WIDTH: u16 = 1;
 
 pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let height = area.height as usize;
-    let scroll = compute_scroll(app, height);
+    let row_diag = build_row_diag_summary(app, app.buffer.cursor.row);
+    let scroll = compute_scroll(app, height, &row_diag);
 
     let sel = app.selection();
     let last_visible = scroll + height;
@@ -64,53 +65,69 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
     let tab_width = app.effective_editor().tab_width.max(1);
 
-    let visible: Vec<Line> = app
-        .buffer
-        .lines
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(height)
-        .map(|(i, line)| {
-            let mut spans = vec![sign_span(row_severity.get(&i).copied())];
-            // Gutter layout: <sign><4-digit num><space><vcs-bar><buffer>.
-            // The breathing-room space sits between the number and the
-            // bar; cursor column math in `place_cursor` matches.
-            let num = format!("{:>4} ", i + 1);
-            // The cursor's row gets the terminal's default foreground
-            // (`Color::Reset`) so the number stays in sync with whatever
-            // color the terminal paints the cursor itself.
-            let num_style = if i == cursor_row {
-                Style::default().fg(Color::Reset)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            spans.push(Span::styled(num, num_style));
-            let vcs_status = vcs_statuses.get(i).copied().flatten();
-            spans.push(vcs_bar_span(vcs_status));
-            let extra_cols: Vec<usize> = extras
-                .iter()
-                .filter_map(|c| if c.row == i { Some(c.col) } else { None })
-                .collect();
-            let hits = find_matches_in_line(line, search_query);
-            let row_jumps: Vec<(usize, char)> = jump_overlay
-                .iter()
-                .filter_map(|(pos, ch)| if pos.0 == i { Some((pos.1, *ch)) } else { None })
-                .collect();
-            spans.extend(render_line(
-                i,
-                line,
-                sel.as_ref(),
-                &captures,
-                &extra_cols,
-                &hits,
-                &row_jumps,
-                tab_width,
-            ));
-            Line::from(spans)
-        })
-        .collect();
+    // Interleave one virtual diagnostic line below each source row that
+    // has any diagnostics. Stop accumulating once we've consumed
+    // `height` visual rows.
+    let mut visible: Vec<Line> = Vec::with_capacity(height);
+    let mut visual_y: u16 = 0;
+    let mut cursor_visual_y: u16 = 0;
+    let inner_text_width = area
+        .width
+        .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
+    for (i, line) in app.buffer.lines.iter().enumerate().skip(scroll) {
+        if visual_y as usize >= height {
+            break;
+        }
+        if i == cursor_row {
+            cursor_visual_y = visual_y;
+        }
+        let mut spans = vec![sign_span(row_severity.get(&i).copied())];
+        // Gutter layout: <sign><4-digit num><space><vcs-bar><buffer>.
+        // The breathing-room space sits between the number and the
+        // bar; cursor column math in `place_cursor` matches.
+        let num = format!("{:>4} ", i + 1);
+        // The cursor's row gets the terminal's default foreground
+        // (`Color::Reset`) so the number stays in sync with whatever
+        // color the terminal paints the cursor itself.
+        let num_style = if i == cursor_row {
+            Style::default().fg(Color::Reset)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(num, num_style));
+        let vcs_status = vcs_statuses.get(i).copied().flatten();
+        spans.push(vcs_bar_span(vcs_status));
+        let extra_cols: Vec<usize> = extras
+            .iter()
+            .filter_map(|c| if c.row == i { Some(c.col) } else { None })
+            .collect();
+        let hits = find_matches_in_line(line, search_query);
+        let row_jumps: Vec<(usize, char)> = jump_overlay
+            .iter()
+            .filter_map(|(pos, ch)| if pos.0 == i { Some((pos.1, *ch)) } else { None })
+            .collect();
+        spans.extend(render_line(
+            i,
+            line,
+            sel.as_ref(),
+            &captures,
+            &extra_cols,
+            &hits,
+            &row_jumps,
+            tab_width,
+        ));
+        visible.push(Line::from(spans));
+        visual_y += 1;
+        if visual_y as usize >= height {
+            break;
+        }
+        if let Some(summary) = row_diag.get(&i) {
+            visible.push(diagnostic_line(summary, inner_text_width));
+            visual_y += 1;
+        }
+    }
 
+    app.buffer.cursor_visual_y.set(cursor_visual_y);
     f.render_widget(Paragraph::new(visible), area);
 }
 
@@ -118,14 +135,16 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     if app.prompt.is_open() {
         return;
     }
-    let height = buf_area.height as usize;
-    let scroll = compute_scroll(app, height);
     let line_no_width: u16 = 5;
     let tab_width = app.effective_editor().tab_width.max(1);
     let line = &app.buffer.lines[app.buffer.cursor.row];
     let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
     let x = buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + GUTTER_VCS_WIDTH + visual_col as u16;
-    let y = buf_area.y + (app.buffer.cursor.row - scroll) as u16;
+    // `draw_buffer` ran first this frame and published the cursor's
+    // visual y, accounting for any virtual diagnostic lines pushing it
+    // down. Use it directly so the terminal cursor stays glued to the
+    // rendered cursor row.
+    let y = buf_area.y + app.buffer.cursor_visual_y.get();
     f.set_cursor_position((x, y));
 }
 
@@ -450,17 +469,138 @@ fn find_matches_in_line(line: &str, query: &str) -> Vec<(usize, usize)> {
 /// down so the cursor sits on the bottom line. Otherwise the existing
 /// scroll is preserved — which is what fixes "cursor stuck at the
 /// bottom" on upward movement.
-fn compute_scroll(app: &App, height: usize) -> usize {
+///
+/// `row_diag` is the per-row diagnostic summary; rows with diagnostics
+/// each consume one extra visual row, so the "does the cursor fit"
+/// check uses visual heights rather than raw source-row counts.
+fn compute_scroll(
+    app: &App,
+    height: usize,
+    row_diag: &HashMap<usize, RowDiag>,
+) -> usize {
     let cur = app.buffer.cursor.row;
     let mut scroll = app.buffer.scroll.get();
     if cur < scroll {
         scroll = cur;
-    } else if height > 0 && cur >= scroll + height {
-        scroll = cur + 1 - height;
+    } else if height > 0 {
+        // Walk rows [scroll..cur], accumulating each row's visual
+        // height (1 + 1 if it has diagnostics). Advance scroll forward
+        // until the cursor's source row fits — the cursor itself only
+        // needs a single visual row, so we just need
+        // `consumed_above_cursor < height`.
+        loop {
+            if scroll >= cur {
+                break;
+            }
+            let mut consumed: usize = 0;
+            let mut fits = false;
+            for row in scroll..cur {
+                consumed += 1 + row_diag.get(&row).map_or(0, |_| 1);
+                if consumed >= height {
+                    break;
+                }
+            }
+            if consumed < height {
+                fits = true;
+            }
+            if fits {
+                break;
+            }
+            scroll += 1;
+        }
     }
     app.buffer.scroll.set(scroll);
     // Publish the height so `H`/`M`/`L` and the `<C-d>`/`<C-u>` family
     // (handled in the input thread) can read what's currently visible.
     app.buffer.viewport_height.set(height);
     scroll
+}
+
+/// Per-source-row diagnostic summary used for inline rendering. We
+/// fold every diagnostic that *starts* on a row into a single virtual
+/// line: the worst-severity message, with `(+N)` appended when more
+/// than one diagnostic shares the row. Capping at one virtual row per
+/// source row keeps the visual layout — and the cursor-y math — simple.
+pub(super) struct RowDiag {
+    pub severity: Severity,
+    pub message: String,
+    pub extra: usize,
+}
+
+/// Build the row → summary lookup, applying the cursor-vs-other-row
+/// filter: the cursor's row shows any severity, every other row only
+/// surfaces `Error` diagnostics inline. Keeps the buffer quiet when
+/// the cursor is elsewhere — warnings/info/hints stay accessible via
+/// the gutter sign and the status-bar toast.
+fn build_row_diag_summary(app: &App, cursor_row: usize) -> HashMap<usize, RowDiag> {
+    let mut out: HashMap<usize, RowDiag> = HashMap::new();
+    let Some(diags) = app.current_diagnostics() else {
+        return out;
+    };
+    for d in diags {
+        let row = d.range.start.line as usize;
+        if row != cursor_row && d.severity != Severity::Error {
+            continue;
+        }
+        // First line only — multi-line messages would blow past our
+        // single-virtual-row budget.
+        let msg = d.message.lines().next().unwrap_or("").to_string();
+        match out.get_mut(&row) {
+            None => {
+                out.insert(
+                    row,
+                    RowDiag {
+                        severity: d.severity,
+                        message: msg,
+                        extra: 0,
+                    },
+                );
+            }
+            Some(existing) => {
+                if (d.severity as u8) < (existing.severity as u8) {
+                    existing.severity = d.severity;
+                    existing.message = msg;
+                }
+                existing.extra += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Render one virtual diagnostic row. Layout mirrors a real source
+/// row's gutter (sign + line-number column + vcs bar) but with blanks
+/// so the message column-aligns with the source text above it.
+fn diagnostic_line(diag: &RowDiag, inner_text_width: usize) -> Line<'static> {
+    let color = severity_color(diag.severity);
+    // Blank gutter: 1 (sign) + 5 (line number column) + 1 (vcs bar).
+    let gutter = " ".repeat((GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize);
+    let mut text = String::from("↳ ");
+    text.push_str(&diag.message);
+    if diag.extra > 0 {
+        text.push_str(&format!(" (+{})", diag.extra));
+    }
+    if inner_text_width > 0 && text.chars().count() > inner_text_width {
+        let mut t: String = text.chars().take(inner_text_width.saturating_sub(1)).collect();
+        t.push('…');
+        text = t;
+    }
+    Line::from(vec![
+        Span::raw(gutter),
+        Span::styled(
+            text,
+            Style::default()
+                .fg(color)
+                .add_modifier(ratatui::style::Modifier::ITALIC),
+        ),
+    ])
+}
+
+fn severity_color(sev: Severity) -> Color {
+    match sev {
+        Severity::Error => Color::Red,
+        Severity::Warning => Color::Yellow,
+        Severity::Info => Color::LightBlue,
+        Severity::Hint => Color::DarkGray,
+    }
 }

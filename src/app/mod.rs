@@ -264,6 +264,45 @@ impl App {
         v
     }
 
+    /// Visual y (within the buffer viewport) of `row`, given the
+    /// current scroll. Accounts for inline diagnostic lines that push
+    /// subsequent source rows down. Returns `None` when `row` is
+    /// scrolled off the top.
+    ///
+    /// Cursor-anchored overlays (hover, completion, code-action menu)
+    /// use this so they sit below the right visual line — `cursor.row -
+    /// scroll` undercounts whenever any earlier visible row carries a
+    /// diagnostic.
+    pub fn visual_row_offset(&self, row: usize) -> Option<u16> {
+        let scroll = self.buffer.scroll.get();
+        if row < scroll {
+            return None;
+        }
+        // One extra visual row per source row whose diagnostics are
+        // surfaced inline. Mirrors `ui::buffer`'s filter: the cursor's
+        // row shows any severity, every other row only shows `Error`s.
+        let cursor_row = self.buffer.cursor.row;
+        let mut diag_rows: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        if let Some(diags) = self.current_diagnostics() {
+            for d in diags {
+                let r = d.range.start.line as usize;
+                if r != cursor_row && d.severity != crate::lsp::Severity::Error {
+                    continue;
+                }
+                diag_rows.insert(r);
+            }
+        }
+        let mut y: u16 = 0;
+        for r in scroll..row {
+            y = y.saturating_add(1);
+            if diag_rows.contains(&r) {
+                y = y.saturating_add(1);
+            }
+        }
+        Some(y)
+    }
+
     /// `IndentSettings` derived from the active buffer's effective
     /// editor config. Convenience wrapper so the input + eval layers
     /// don't have to redo the `EditorConfig → IndentSettings`
