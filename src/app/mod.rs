@@ -6,6 +6,7 @@
 //! orchestration, Normal-mode evaluation) is split across sibling
 //! `impl App { ... }` blocks in the submodules below.
 
+mod buffer_list;
 mod completion;
 mod eval;
 mod input;
@@ -17,6 +18,7 @@ mod runtime;
 mod sleeping;
 mod status;
 mod types;
+mod workers;
 
 pub use completion::CompletionState;
 
