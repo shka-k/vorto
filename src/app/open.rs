@@ -16,7 +16,9 @@ use crate::finder::PreviewEntry;
 use crate::lsp::{self, LspClient};
 use crate::syntax::Highlighter;
 
-use super::{App, BufferRef, SleepingBuffer, Status, is_command_not_found, root_cause};
+use crate::buffer_ref::BufferRef;
+
+use super::{App, SleepingBuffer, Status, is_command_not_found, root_cause};
 
 impl App {
     /// Dispatch a buffer-picker selection. Scratch and File both go

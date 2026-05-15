@@ -1,5 +1,6 @@
 mod action;
 mod app;
+mod buffer_ref;
 mod config;
 mod editor;
 mod effect;

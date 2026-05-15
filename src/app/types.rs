@@ -1,28 +1,16 @@
 //! Small app-state value types that live alongside `App` but are
 //! distinct enough to keep out of `mod.rs`.
 //!
-//! - [`BufferRef`] identifies a buffer in the MRU / sleeping map.
 //! - [`Selection`] is a derived view over the active visual range,
 //!   computed from the current mode + anchor + cursor.
 //!
-//! `LastFind` used to live here, but it's a pure motion-grammar value
-//! (mirrors `MotionKind::FindChar`'s fields) — it belongs in `action`
-//! so lower layers like `effect::Cmd::SetLastFind` can reference it
-//! without an upward import.
-
-use std::path::PathBuf;
+//! `BufferRef` used to live here too, but it's a pure value identifier
+//! that `prompt` and `ui` also need — it now lives at the crate root
+//! ([`crate::buffer_ref`]) so those lower layers don't have to import
+//! upward into `app`. `LastFind` is in `action` for the same reason.
 
 use crate::editor::Cursor;
 use crate::mode::Mode;
-
-/// One entry in the buffer-picker MRU. `Scratch` is the unnamed empty
-/// buffer vorto starts with (and that the user can return to); `File`
-/// is a previously-opened path.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum BufferRef {
-    Scratch,
-    File(PathBuf),
-}
 
 /// Resolved visual-mode selection bounds, derived from the anchor and
 /// the cursor according to the current visual sub-mode.

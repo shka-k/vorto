@@ -22,7 +22,9 @@ pub use completion::CompletionState;
 pub use jump::JumpState;
 pub use sleeping::SleepingBuffer;
 pub use status::{Level, Status};
-pub use types::{BufferRef, Selection};
+pub use types::Selection;
+
+use crate::buffer_ref::BufferRef;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

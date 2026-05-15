@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::BufferRef;
+use crate::buffer_ref::BufferRef;
 use crate::finder::{Finder, FuzzyKind};
 use crate::lsp::{CodeAction, Location};
 

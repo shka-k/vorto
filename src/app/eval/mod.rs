@@ -171,14 +171,14 @@ fn override_count(expr: Expr, count: u32) -> Expr {
 /// Human-readable list of dirty sleeping buffers for the `:q` refusal
 /// message. Trims long lists with "+N more" so the status bar stays
 /// readable.
-pub(super) fn format_dirty_list(refs: &[&super::BufferRef]) -> String {
+pub(super) fn format_dirty_list(refs: &[&crate::buffer_ref::BufferRef]) -> String {
     const SHOW: usize = 3;
     let names: Vec<String> = refs
         .iter()
         .take(SHOW)
         .map(|r| match r {
-            super::BufferRef::Scratch => "[scratch]".to_string(),
-            super::BufferRef::File(p) => p
+            crate::buffer_ref::BufferRef::Scratch => "[scratch]".to_string(),
+            crate::buffer_ref::BufferRef::File(p) => p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| p.display().to_string()),

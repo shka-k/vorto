@@ -21,7 +21,9 @@ use crate::action::PromptKind;
 use crate::finder::FuzzyKind;
 use crate::mode::Mode;
 
-use super::{App, BufferRef, eval};
+use crate::buffer_ref::BufferRef;
+
+use super::{App, eval};
 
 impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {

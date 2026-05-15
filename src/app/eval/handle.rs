@@ -23,7 +23,8 @@ use super::{format_dirty_list, is_inclusive_motion, word_under_cursor};
 use crate::action::{
     Ctx, DirectKind, Expr, LastFind, MotionExpr, MotionKind, Operator, PromptKind, Target,
 };
-use crate::app::{App, BufferRef};
+use crate::app::App;
+use crate::buffer_ref::BufferRef;
 use crate::effect::{Cmd, ScrollAnchor};
 use crate::mode::Mode;
 
