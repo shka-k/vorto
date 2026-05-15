@@ -1,3 +1,5 @@
+; inherits: typescript
+
 ; Types
 
 (type_identifier) @type
