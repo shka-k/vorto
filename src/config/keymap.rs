@@ -612,6 +612,8 @@ impl Keymap {
             (KeyCode::Char('d'), Op(Operator::Delete)),
             (KeyCode::Char('y'), Op(Operator::Yank)),
             (KeyCode::Char('c'), Op(Operator::Change)),
+            (KeyCode::Char('>'), Op(Operator::Indent)),
+            (KeyCode::Char('<'), Op(Operator::Dedent)),
             // ── standalone commands ──────────────────────────────────
             (KeyCode::Char('i'), Direct(D::EnterMode(Mode::Insert))),
             (KeyCode::Char('I'), Direct(D::InsertAtLineStart)),

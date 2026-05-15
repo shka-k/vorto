@@ -382,15 +382,33 @@ impl App {
         let mut cmds = Vec::new();
         match target {
             Target::LineWise => {
-                for _ in 0..outer_count {
-                    match op {
-                        Operator::Delete => self.buffer.delete_line(),
-                        Operator::Yank => {
-                            self.buffer.yank_line();
-                            cmds.push(Cmd::StatusInfo("yanked".into()));
+                if matches!(op, Operator::Indent | Operator::Dedent) {
+                    let indent = self.indent_settings();
+                    let start_row = self.buffer.cursor.row;
+                    let last = self.buffer.lines.len().saturating_sub(1);
+                    let span = outer_count.max(1) as usize - 1;
+                    let end_row = start_row.saturating_add(span).min(last);
+                    for r in start_row..=end_row {
+                        if matches!(op, Operator::Indent) {
+                            self.buffer.indent_line(r, indent);
+                        } else {
+                            self.buffer.dedent_line(r, indent);
                         }
-                        Operator::Change => {
-                            cmds.push(Cmd::StatusError("change not implemented yet".into()));
+                    }
+                    self.buffer.cursor.row = start_row;
+                    cursor_to_first_non_blank(&mut self.buffer);
+                } else {
+                    for _ in 0..outer_count {
+                        match op {
+                            Operator::Delete => self.buffer.delete_line(),
+                            Operator::Yank => {
+                                self.buffer.yank_line();
+                                cmds.push(Cmd::StatusInfo("yanked".into()));
+                            }
+                            Operator::Change => {
+                                cmds.push(Cmd::StatusError("change not implemented yet".into()));
+                            }
+                            Operator::Indent | Operator::Dedent => unreachable!(),
                         }
                     }
                 }
@@ -474,6 +492,25 @@ impl App {
             Operator::Change => {
                 self.buffer.delete_range(start, end);
                 cmds.push(Cmd::EnterMode(Mode::Insert));
+            }
+            Operator::Indent | Operator::Dedent => {
+                // `>` and `<` are line-wise even with a non-line target —
+                // every row spanned by the motion gets one indent step.
+                let indent = self.indent_settings();
+                let (lo, hi) = if (start.row, start.col) <= (end.row, end.col) {
+                    (start.row, end.row)
+                } else {
+                    (end.row, start.row)
+                };
+                for r in lo..=hi {
+                    if matches!(op, Operator::Indent) {
+                        self.buffer.indent_line(r, indent);
+                    } else {
+                        self.buffer.dedent_line(r, indent);
+                    }
+                }
+                self.buffer.cursor.row = lo;
+                cursor_to_first_non_blank(&mut self.buffer);
             }
         }
     }
@@ -604,6 +641,15 @@ fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
     });
     let n = app.buffer.extra_cursors.len() + 1;
     cmds.push(Cmd::StatusInfo(format!("{n} cursors")));
+}
+
+/// Move the cursor to the first non-whitespace column on its current
+/// row, falling back to col 0 on an all-blank line. Used after
+/// indent/dedent operators to match vim's landing position.
+fn cursor_to_first_non_blank(buf: &mut crate::editor::Buffer) {
+    let line = buf.current_line();
+    let col = line.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
+    buf.cursor.col = col;
 }
 
 fn parse_save_path(rest: &str) -> Option<PathBuf> {

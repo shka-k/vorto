@@ -190,6 +190,8 @@ fn op_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
         (Operator::Delete, KeyCode::Char('d'))
             | (Operator::Yank, KeyCode::Char('y'))
             | (Operator::Change, KeyCode::Char('c'))
+            | (Operator::Indent, KeyCode::Char('>'))
+            | (Operator::Dedent, KeyCode::Char('<'))
     );
     if same_key {
         return Some(Token::SelfDouble(pending_op));

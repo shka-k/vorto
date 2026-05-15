@@ -83,6 +83,8 @@ impl App {
             }
             KeyCode::Char('~') => self.toggle_case_selection(),
             KeyCode::Char('J') => self.join_selection_lines(),
+            KeyCode::Char('>') => self.indent_selection(true),
+            KeyCode::Char('<') => self.indent_selection(false),
             _ => {}
         }
         Ok(())
@@ -146,6 +148,34 @@ impl App {
         self.enter_mode(Mode::Normal);
     }
 
+    /// `>` / `<` in visual — shift every line covered by the selection
+    /// one indent level right (`indent = true`) or left. Always
+    /// line-wise, regardless of the visual sub-mode. Exits to Normal
+    /// with the cursor on the first non-blank of the top selected row,
+    /// matching vim's landing position.
+    fn indent_selection(&mut self, indent: bool) {
+        let Some(sel) = self.selection() else { return };
+        let (from_row, to_row) = match sel {
+            Selection::Char { from, to } => (from.row, to.row),
+            Selection::Line { from_row, to_row } => (from_row, to_row),
+            Selection::Block { r0, r1, .. } => (r0, r1),
+        };
+        self.buffer.snapshot();
+        let indent_settings = self.indent_settings();
+        for r in from_row..=to_row {
+            if indent {
+                self.buffer.indent_line(r, indent_settings);
+            } else {
+                self.buffer.dedent_line(r, indent_settings);
+            }
+        }
+        self.buffer.cursor.row = from_row;
+        let line = self.buffer.current_line();
+        let col = line.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
+        self.buffer.cursor.col = col;
+        self.enter_mode(Mode::Normal);
+    }
+
     fn toggle_visual(&mut self, target: Mode) {
         if self.mode == target {
             self.enter_mode(Mode::Normal);
@@ -172,6 +202,9 @@ impl App {
                         self.buffer.delete_range(from, end);
                         self.enter_mode(Mode::Insert);
                     }
+                    Operator::Indent | Operator::Dedent => {
+                        unreachable!("indent/dedent dispatched via indent_selection")
+                    }
                 }
             }
             Selection::Line { from_row, to_row } => match op {
@@ -186,6 +219,9 @@ impl App {
                     self.buffer.delete_lines(from_row, to_row);
                     self.enter_mode(Mode::Insert);
                 }
+                Operator::Indent | Operator::Dedent => {
+                    unreachable!("indent/dedent dispatched via indent_selection")
+                }
             },
             Selection::Block { r0, c0, r1, c1 } => match op {
                 Operator::Yank => {
@@ -197,6 +233,9 @@ impl App {
                 Operator::Change => {
                     self.buffer.delete_block(r0, c0, r1, c1);
                     self.enter_mode(Mode::Insert);
+                }
+                Operator::Indent | Operator::Dedent => {
+                    unreachable!("indent/dedent dispatched via indent_selection")
                 }
             },
         }

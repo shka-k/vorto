@@ -89,6 +89,71 @@ impl Buffer {
         line.chars().take(self.cursor.col).all(|c| c.is_whitespace())
     }
 
+    /// Add one indent level at the start of `row`. Picks tabs vs
+    /// spaces by looking at the row's existing leading whitespace:
+    /// any `\t` in the leading run means tab, otherwise spaces; an
+    /// empty leading run falls back to `indent.use_tabs`. Cursor
+    /// follows the shift when it's on this row.
+    pub fn indent_line(&mut self, row: usize, indent: IndentSettings) {
+        if row >= self.lines.len() {
+            return;
+        }
+        let line = &self.lines[row];
+        let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        let use_tabs = if leading.is_empty() {
+            indent.use_tabs
+        } else {
+            leading.contains('\t')
+        };
+        let prefix: String = if use_tabs {
+            "\t".to_string()
+        } else {
+            " ".repeat(indent.width.max(1))
+        };
+        let added_chars = prefix.chars().count();
+        self.lines[row].insert_str(0, &prefix);
+        if self.cursor.row == row {
+            self.cursor.col += added_chars;
+        }
+        self.touch();
+    }
+
+    /// Strip one indent level from the start of `row`. Same rounding
+    /// rules as [`dedent_current_line`] — tab-terminated leading
+    /// whitespace drops one trailing `\t`; space-terminated rounds
+    /// down to the nearest multiple of `indent.width` strictly below
+    /// the current count. Cursor follows on the affected row.
+    pub fn dedent_line(&mut self, row: usize, indent: IndentSettings) {
+        if row >= self.lines.len() {
+            return;
+        }
+        let line = self.lines[row].clone();
+        let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        if leading.is_empty() {
+            return;
+        }
+        let remove_chars = if leading.ends_with('\t') {
+            1
+        } else {
+            let trailing_spaces = leading.chars().rev().take_while(|c| *c == ' ').count();
+            let w = indent.width.max(1);
+            let target = (trailing_spaces.saturating_sub(1) / w) * w;
+            trailing_spaces - target
+        };
+        if remove_chars == 0 {
+            return;
+        }
+        let leading_char_count = leading.chars().count();
+        let delete_start_char = leading_char_count - remove_chars;
+        let delete_start_byte = char_to_byte(&line, delete_start_char);
+        let delete_end_byte = char_to_byte(&line, delete_start_char + remove_chars);
+        self.lines[row].replace_range(delete_start_byte..delete_end_byte, "");
+        if self.cursor.row == row {
+            self.cursor.col = self.cursor.col.saturating_sub(remove_chars);
+        }
+        self.touch();
+    }
+
     /// Strip one indent level from the start of the cursor row,
     /// adjusting `cursor.col` to follow. Tab-terminated leading
     /// whitespace drops one trailing `\t`; space-terminated leading
@@ -333,6 +398,72 @@ mod tests {
             width: 4,
             use_tabs: false,
         }
+    }
+
+    #[test]
+    fn indent_line_adds_spaces_for_empty_leading() {
+        let mut b = Buffer::new();
+        b.lines = vec!["let x = 1;".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        b.indent_line(0, settings());
+        assert_eq!(b.lines[0], "    let x = 1;");
+        assert_eq!(b.cursor.col, 8);
+    }
+
+    #[test]
+    fn indent_line_uses_tab_when_leading_has_tab() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\tx".into()];
+        b.cursor.row = 0;
+        b.indent_line(0, settings());
+        assert_eq!(b.lines[0], "\t\tx");
+    }
+
+    #[test]
+    fn indent_line_falls_back_to_use_tabs_on_blank_leading() {
+        let mut b = Buffer::new();
+        b.lines = vec!["x".into()];
+        let s = IndentSettings { width: 4, use_tabs: true };
+        b.indent_line(0, s);
+        assert_eq!(b.lines[0], "\tx");
+    }
+
+    #[test]
+    fn dedent_line_removes_one_level_of_spaces() {
+        let mut b = Buffer::new();
+        b.lines = vec!["        x".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 8;
+        b.dedent_line(0, settings());
+        assert_eq!(b.lines[0], "    x");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn dedent_line_rounds_partial_indent_down() {
+        let mut b = Buffer::new();
+        b.lines = vec!["       x".into()]; // 7 spaces
+        b.dedent_line(0, settings());
+        assert_eq!(b.lines[0], "    x");
+    }
+
+    #[test]
+    fn dedent_line_strips_trailing_tab() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\t\tx".into()];
+        b.dedent_line(0, settings());
+        assert_eq!(b.lines[0], "\tx");
+    }
+
+    #[test]
+    fn dedent_line_noop_on_no_leading_whitespace() {
+        let mut b = Buffer::new();
+        b.lines = vec!["x".into()];
+        b.cursor.col = 0;
+        b.dedent_line(0, settings());
+        assert_eq!(b.lines[0], "x");
+        assert_eq!(b.cursor.col, 0);
     }
 
     #[test]

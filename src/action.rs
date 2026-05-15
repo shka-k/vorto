@@ -49,6 +49,10 @@ pub enum Operator {
     Delete,
     Yank,
     Change,
+    /// `>` — shift target lines right by one indent level.
+    Indent,
+    /// `<` — shift target lines left by one indent level.
+    Dedent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

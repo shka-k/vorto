@@ -226,6 +226,8 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
                 Operator::Delete => ("delete", "d", "delete line (dd)"),
                 Operator::Yank => ("yank", "y", "yank line (yy)"),
                 Operator::Change => ("change", "c", "change line (cc)"),
+                Operator::Indent => ("indent", ">", "indent line (>>)"),
+                Operator::Dedent => ("dedent", "<", "dedent line (<<)"),
             };
             let mut entries = vec![(self_key.to_string(), self_label)];
             entries.extend(
