@@ -188,7 +188,8 @@ impl App {
     ///     problem we're leaving to v2.
     fn fan_out_backspace(&mut self) {
         if self.buffer.extra_cursors.is_empty() {
-            self.buffer.delete_char_before_smart();
+            let indent = self.indent_settings();
+            self.buffer.delete_char_before_smart(indent);
             return;
         }
         let mut all = collect_cursors(self);

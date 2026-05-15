@@ -192,7 +192,7 @@ impl Buffer {
         // Compute indent against the *left* half — that's what the
         // line at `cursor.row` will hold once the split lands. Using
         // a temporary line slice keeps the lookup self-contained.
-        let new_indent =
+        let mut new_indent =
             compute_new_line_indent(&left_owned, self.cursor.row, &self.highlighter, indent);
 
         // Empty-pair split: pressing Enter between an opener and its
@@ -219,6 +219,16 @@ impl Buffer {
             self.cursor.col = new_indent.chars().count();
             self.touch();
             return;
+        }
+
+        // Closer at the start of the right half: the new line carries
+        // the closer, so strip one indent level from the body indent.
+        // Mirror of `compute_new_line_indent`'s "add a level when the
+        // left ends with an opener" — without this, splitting before
+        // a `}` keeps the body's indent and the closer sits one level
+        // too deep.
+        if matches!(next_ch, Some('}' | ')' | ']')) {
+            new_indent = strip_one_indent_level(&new_indent, indent);
         }
 
         self.lines[self.cursor.row] = left_owned;
@@ -266,12 +276,26 @@ impl Buffer {
         self.touch();
     }
 
-    /// Backspace with auto-pair awareness: when the char being deleted
-    /// is an opener and the next char is its matching closer, both go.
-    /// Otherwise falls through to [`Buffer::delete_char_before`].
+    /// Backspace with auto-pair awareness and smart-indent dedent:
+    /// - When the char being deleted is an opener and the next char is
+    ///   its matching closer, both go.
+    /// - When the cursor sits in pure leading whitespace (every char on
+    ///   the row before the cursor is whitespace, and `col > 0`), one
+    ///   full indent level is removed instead of a single space —
+    ///   standard "smart backspace" / "tab stops" behaviour. Closer-led
+    ///   lines (`}` / `)` / `]`) collapse the same way as a side
+    ///   effect, mirroring the dedent-on-type rule for closers.
+    /// - At `col == 0` when the row above is blank (whitespace only) and
+    ///   the current row's first non-whitespace char is a closer, do
+    ///   the join *and* dedent the joined row by one level. The blank
+    ///   row above carries no contextual indent, so an orphaned closer
+    ///   left at a deeper level should collapse instead of just sliding
+    ///   up at the same depth.
+    /// - Otherwise falls through to [`Buffer::delete_char_before`].
+    ///
     /// Single-cursor only — the multi-cursor fan-out keeps using the
     /// dumb version so the per-cursor `col -= 1` shift stays valid.
-    pub fn delete_char_before_smart(&mut self) {
+    pub fn delete_char_before_smart(&mut self, indent: IndentSettings) {
         let prev = self.char_before_cursor();
         let next = self.char_at_cursor();
         if let (Some(p), Some(n)) = (prev, next)
@@ -284,6 +308,26 @@ impl Buffer {
             self.cursor.col -= 1;
             self.touch();
             return;
+        }
+        if self.cursor.col > 0 && self.line_is_blank_before_cursor() {
+            self.dedent_current_line(indent);
+            return;
+        }
+        if self.cursor.col == 0 && self.cursor.row > 0 {
+            let prev_blank = self.lines[self.cursor.row - 1]
+                .chars()
+                .all(|c| c.is_whitespace());
+            let curr_starts_with_closer = matches!(
+                self.lines[self.cursor.row]
+                    .chars()
+                    .find(|c| !c.is_whitespace()),
+                Some('}' | ')' | ']')
+            );
+            if prev_blank && curr_starts_with_closer {
+                self.delete_char_before();
+                self.dedent_current_line(indent);
+                return;
+            }
         }
         self.delete_char_before();
     }
@@ -327,6 +371,30 @@ fn should_auto_pair(opener: char, prev: Option<char>, next: Option<char>) -> boo
         return false;
     }
     true
+}
+
+/// Remove one indent level from the end of `indent` (which must be
+/// pure leading whitespace). Tab-terminated runs drop one `\t`;
+/// space-terminated runs round *down* to the nearest multiple of
+/// `settings.width` strictly below the current count — same rules
+/// `dedent_current_line` applies to a buffer row.
+fn strip_one_indent_level(indent: &str, settings: IndentSettings) -> String {
+    if indent.is_empty() {
+        return String::new();
+    }
+    if indent.ends_with('\t') {
+        let mut out = indent.to_string();
+        out.pop();
+        return out;
+    }
+    let trailing_spaces = indent.chars().rev().take_while(|c| *c == ' ').count();
+    if trailing_spaces == 0 {
+        return indent.to_string();
+    }
+    let w = settings.width.max(1);
+    let target = (trailing_spaces.saturating_sub(1) / w) * w;
+    let remove = trailing_spaces - target;
+    indent[..indent.len() - remove].to_string()
 }
 
 /// Leading-whitespace prefix of `line`, copied verbatim so the new
@@ -640,7 +708,7 @@ mod tests {
         b.lines = vec!["foo()".into()];
         b.cursor.row = 0;
         b.cursor.col = 4; // between '(' and ')'
-        b.delete_char_before_smart();
+        b.delete_char_before_smart(settings());
         assert_eq!(b.lines[0], "foo");
         assert_eq!(b.cursor.col, 3);
     }
@@ -652,7 +720,7 @@ mod tests {
         b.lines = vec!["(x)".into()];
         b.cursor.row = 0;
         b.cursor.col = 1;
-        b.delete_char_before_smart();
+        b.delete_char_before_smart(settings());
         assert_eq!(b.lines[0], "x)");
         assert_eq!(b.cursor.col, 0);
     }
@@ -700,5 +768,196 @@ mod tests {
         assert_eq!(b.lines[1], "    ");
         assert_eq!(b.lines[2], ")");
         assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn newline_before_closer_strips_one_indent_level() {
+        // Cursor sits before the `}` after a real statement: the new
+        // line carries the closer, so it should land one indent level
+        // out from the body — `}` aligned to the block's opener, not
+        // riding the body indent.
+        let mut b = Buffer::new();
+        b.lines = vec!["        bar();}".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 14; // before '}'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "        bar();");
+        assert_eq!(b.lines[1], "    }");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn newline_before_closer_clears_indent_at_one_level() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    bar();]".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 10; // before ']'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "    bar();");
+        assert_eq!(b.lines[1], "]");
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_before_closer_strips_one_tab() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\t\tbar();)".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 8; // before ')'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "\t\tbar();");
+        assert_eq!(b.lines[1], "\t)");
+    }
+
+    #[test]
+    fn backspace_before_closer_collapses_one_indent_level() {
+        // Cursor on a blank-before-closer line: backspace pulls the
+        // closer back one full indent level instead of nibbling a
+        // single space at a time.
+        let mut b = Buffer::new();
+        b.lines = vec!["        }".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 8; // before '}'
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    }");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn backspace_before_closer_clears_indent_at_one_level() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    }".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "}");
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn backspace_before_closer_strips_tab() {
+        let mut b = Buffer::new();
+        b.lines = vec!["\t\t]".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 2;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "\t]");
+        assert_eq!(b.cursor.col, 1);
+    }
+
+    #[test]
+    fn backspace_does_not_dedent_when_text_precedes_closer() {
+        // Real content before the closer — normal one-char backspace.
+        let mut b = Buffer::new();
+        b.lines = vec!["    x)".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 5; // between 'x' and ')'
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    )");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn backspace_inside_closer_line_indent_dedents() {
+        // Cursor anywhere inside the leading-whitespace run of a line
+        // that's "indent + closer" — backspace dedents the whole line
+        // by one level, not just one space.
+        let mut b = Buffer::new();
+        b.lines = vec!["        }".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4; // mid-indent, not at the closer
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    }");
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn backspace_on_closer_line_with_trailing_content_dedents() {
+        let mut b = Buffer::new();
+        b.lines = vec!["        });".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 8; // before ')'
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    });");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn backspace_inside_pure_whitespace_line_dedents() {
+        // Empty-but-indented line (e.g., the middle row of the 3-line
+        // spread after Enter inside `{}`). Backspace should collapse
+        // one indent level, not nibble a single space.
+        let mut b = Buffer::new();
+        b.lines = vec!["    ".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "");
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn backspace_in_indent_before_content_dedents() {
+        // Cursor in leading whitespace before regular content — also
+        // dedents (standard smart-backspace behaviour).
+        let mut b = Buffer::new();
+        b.lines = vec!["        let x = 1;".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 8; // right before 'let'
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    let x = 1;");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn backspace_past_first_non_blank_is_normal_one_char() {
+        // Once we're into content, backspace is one char as usual.
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = 1;".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 7; // between 't' of 'let' and ' '
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "    le x = 1;");
+        assert_eq!(b.cursor.col, 6);
+    }
+
+    #[test]
+    fn backspace_at_col0_of_closer_line_above_empty_joins_and_dedents() {
+        // Closer line orphaned over an empty row: Backspace at col 0
+        // should both eat the empty row above and dedent the closer.
+        let mut b = Buffer::new();
+        b.lines = vec!["".into(), "    }".into()];
+        b.cursor.row = 1;
+        b.cursor.col = 0;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines, vec!["}".to_string()]);
+        assert_eq!(b.cursor.row, 0);
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn backspace_at_col0_of_closer_line_above_blank_joins_and_dedents() {
+        // Whitespace-only row above counts as blank too.
+        let mut b = Buffer::new();
+        b.lines = vec!["    ".into(), "        }".into()];
+        b.cursor.row = 1;
+        b.cursor.col = 0;
+        b.delete_char_before_smart(settings());
+        // Join concatenates leading whitespace, then one level dedent.
+        assert_eq!(b.lines, vec!["        }".to_string()]);
+        assert_eq!(b.cursor.row, 0);
+    }
+
+    #[test]
+    fn backspace_at_col0_above_content_does_not_dedent() {
+        // Row above has real content — vanilla join, no dedent.
+        let mut b = Buffer::new();
+        b.lines = vec!["foo".into(), "    }".into()];
+        b.cursor.row = 1;
+        b.cursor.col = 0;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines, vec!["foo    }".to_string()]);
+        assert_eq!(b.cursor.row, 0);
+        assert_eq!(b.cursor.col, 3);
     }
 }
