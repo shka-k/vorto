@@ -7,7 +7,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::buffer_ref::BufferRef;
-use crate::finder::{Finder, FuzzyKind};
+use crate::finder::{Finder, FuzzyKind, IgnoreOpts};
 use crate::lsp::{CodeAction, Location};
 
 /// Active prompt state. Mirrors the four ways the user can interact
@@ -125,8 +125,8 @@ impl PromptController {
         };
     }
 
-    pub fn open_files(&mut self, startup_cwd: &Path) {
-        self.state = Prompt::Fuzzy(Finder::files(startup_cwd));
+    pub fn open_files(&mut self, startup_cwd: &Path, ignore: IgnoreOpts) {
+        self.state = Prompt::Fuzzy(Finder::files(startup_cwd, ignore));
     }
 
     pub fn open_lines(&mut self, lines: &[String]) {
@@ -302,7 +302,7 @@ impl PromptController {
             return PromptOutcome::Nothing;
         };
         match finder.kind {
-            FuzzyKind::Files => PromptOutcome::OpenRelativeFile(finder.items[sel.idx].clone()),
+            FuzzyKind::Files { .. } => PromptOutcome::OpenRelativeFile(finder.items[sel.idx].clone()),
             FuzzyKind::Lines => PromptOutcome::GotoLine(sel.idx),
             FuzzyKind::Locations => {
                 let loc = self.locations.get(sel.idx).cloned();

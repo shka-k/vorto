@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::keymap::KeySig;
 use crate::action::{DirectKind, MotionKind, Operator, PromptKind, Token};
-use crate::finder::FuzzyKind;
+use crate::finder::{FuzzyKind, IgnoreOpts};
 use crate::mode::Mode;
 
 /// Parse a vim-style key string into a sequence of `KeySig`s.
@@ -114,7 +114,12 @@ pub fn action_to_token(name: &str) -> Option<Token> {
         "command-prompt" => Direct(D::OpenPrompt(PromptKind::Command)),
         "search-forward" => Direct(D::OpenPrompt(PromptKind::Search { forward: true })),
         "search-backward" => Direct(D::OpenPrompt(PromptKind::Search { forward: false })),
-        "fuzzy-files" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
+        "fuzzy-files" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files {
+            ignore: IgnoreOpts::DEFAULT,
+        }))),
+        "fuzzy-files-hidden" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files {
+            ignore: IgnoreOpts::SHOW_HIDDEN,
+        }))),
         "fuzzy-lines" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
         "select-whole-buffer" => Direct(D::SelectWholeBuffer),
 

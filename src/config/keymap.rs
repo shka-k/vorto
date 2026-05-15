@@ -354,14 +354,27 @@ pub const Z_BINDINGS: &[Binding] = {
 /// hint renderer.
 pub const LEADER_DEFAULTS: &[Binding] = {
     use crate::action::{DirectKind as D, PromptKind};
-    use crate::finder::FuzzyKind;
+    use crate::finder::{FuzzyKind, IgnoreOpts};
     use Token::Direct as Dir;
     &[
         Binding {
             key: KeyCode::Char('f'),
             aliases: &[],
-            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files {
+                ignore: IgnoreOpts::DEFAULT,
+            }))),
             label: "fuzzy files",
+        },
+        // `<space>F` — same picker, but dotfile segments are kept so
+        // `.env`, `.github/...` etc. become visible. `.gitignore` is
+        // still honored.
+        Binding {
+            key: KeyCode::Char('F'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files {
+                ignore: IgnoreOpts::SHOW_HIDDEN,
+            }))),
+            label: "fuzzy files (+hidden)",
         },
         Binding {
             key: KeyCode::Char('l'),

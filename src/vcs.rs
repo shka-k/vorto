@@ -66,6 +66,38 @@ pub fn head_blob_lines(file: &Path) -> Option<Vec<String>> {
     Some(lines)
 }
 
+/// Files tracked by git plus untracked-but-not-ignored, relative to
+/// `cwd`. Returns `None` when `cwd` isn't inside a git repo or git
+/// isn't available — the caller falls back to a manual directory walk.
+///
+/// Respects `.gitignore`, `.git/info/exclude`, and the user's global
+/// excludesfile (via `--exclude-standard`), so the fuzzy file picker
+/// matches what `git status` would consider live tree content.
+pub fn tracked_files(cwd: &Path) -> Option<Vec<String>> {
+    repo_root(cwd)?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut paths = Vec::new();
+    for entry in out.stdout.split(|&b| b == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let Ok(s) = std::str::from_utf8(entry) else {
+            continue;
+        };
+        paths.push(s.to_string());
+    }
+    Some(paths)
+}
+
 /// `git status --porcelain` parsed into a canonical-path set. Each
 /// entry corresponds to a path that differs from HEAD in the work
 /// tree (modified, staged, deleted, renamed-to). Untracked files (`??`)

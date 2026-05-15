@@ -27,7 +27,8 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, popup);
 
     let title = match finder.kind {
-        FuzzyKind::Files => " fuzzy: files ",
+        FuzzyKind::Files { ignore } if !ignore.hidden => " fuzzy: files (+hidden) ",
+        FuzzyKind::Files { .. } => " fuzzy: files ",
         FuzzyKind::Lines => " fuzzy: lines ",
         FuzzyKind::Locations => " references ",
         FuzzyKind::Buffers => " fuzzy: buffers ",
@@ -111,7 +112,7 @@ fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area: Rect) {
         return;
     };
     match finder.kind {
-        FuzzyKind::Files => {
+        FuzzyKind::Files { .. } => {
             let rel = &finder.items[sel.idx];
             let path = app.startup_cwd.join(rel);
             preview_from_file(f, app, area, &path, 0);
@@ -388,7 +389,7 @@ fn render_match<'a>(
     // `:line:col` suffix shouldn't be styled as directory, so we cap the
     // search at the first colon.
     let dir_end = match kind {
-        FuzzyKind::Files | FuzzyKind::Buffers => item.rfind('/').map(|b| b + 1),
+        FuzzyKind::Files { .. } | FuzzyKind::Buffers => item.rfind('/').map(|b| b + 1),
         FuzzyKind::Locations => {
             let path_end = item.find(':').unwrap_or(item.len());
             item[..path_end].rfind('/').map(|b| b + 1)

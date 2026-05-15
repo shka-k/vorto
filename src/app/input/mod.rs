@@ -94,7 +94,9 @@ impl App {
         match kind {
             PromptKind::Command => self.prompt.open_command(),
             PromptKind::Search { forward } => self.prompt.open_search(forward),
-            PromptKind::Fuzzy(FuzzyKind::Files) => self.prompt.open_files(&self.startup_cwd),
+            PromptKind::Fuzzy(FuzzyKind::Files { ignore }) => {
+                self.prompt.open_files(&self.startup_cwd, ignore)
+            }
             PromptKind::Fuzzy(FuzzyKind::Lines) => self.prompt.open_lines(&self.buffer.lines),
             PromptKind::Fuzzy(FuzzyKind::Buffers) => self.open_buffer_picker(),
             // `Locations` pickers are built from server results, not opened
