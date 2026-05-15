@@ -23,6 +23,11 @@ pub struct EditorToml {
     /// Visual width of a literal `\t` character. Falls back to `4` when
     /// unset; Go-style codebases typically want `8`.
     pub tab_width: Option<usize>,
+    /// When `true`, auto-inserted indents (newline carry, opener-bracket
+    /// level bump) use `\t`; when `false`, they use `indent_width`
+    /// spaces. Falls back to `false`. Per-language override is the usual
+    /// way to flip this on (e.g. Go).
+    pub use_tabs: Option<bool>,
 }
 
 /// Fully-resolved editor settings — what the runtime actually reads
@@ -31,6 +36,7 @@ pub struct EditorToml {
 pub struct EditorConfig {
     pub indent_width: usize,
     pub tab_width: usize,
+    pub use_tabs: bool,
 }
 
 impl Default for EditorConfig {
@@ -38,6 +44,7 @@ impl Default for EditorConfig {
         Self {
             indent_width: DEFAULT_INDENT_WIDTH,
             tab_width: DEFAULT_TAB_WIDTH,
+            use_tabs: false,
         }
     }
 }
@@ -50,6 +57,7 @@ impl EditorConfig {
         Self {
             indent_width: user.indent_width.unwrap_or(self.indent_width),
             tab_width: user.tab_width.unwrap_or(self.tab_width),
+            use_tabs: user.use_tabs.unwrap_or(self.use_tabs),
         }
     }
 }
@@ -70,6 +78,7 @@ mod tests {
         let base = EditorConfig {
             indent_width: 4,
             tab_width: 4,
+            use_tabs: false,
         };
         let eff = base.overlay(&EditorToml {
             tab_width: Some(8),

@@ -99,17 +99,23 @@ pub struct Cursor {
 }
 
 /// Knobs the buffer needs to produce an indent string for a freshly
-/// inserted line. `width` is the spaces-per-level fallback when the
-/// reference line is space-indented; tab-indented references reuse a
-/// literal `\t` instead, so no separate `use_tabs` flag is needed.
+/// inserted line. `width` is the spaces-per-level fallback when a level
+/// is added in spaces. `use_tabs` is the tie-breaker when the reference
+/// line carries no indent of its own (empty file, top-level statement);
+/// when the reference line *does* have leading whitespace, that style is
+/// preserved so we don't mix tabs and spaces within a file.
 #[derive(Debug, Clone, Copy)]
 pub struct IndentSettings {
     pub width: usize,
+    pub use_tabs: bool,
 }
 
 impl Default for IndentSettings {
     fn default() -> Self {
-        Self { width: 4 }
+        Self {
+            width: 4,
+            use_tabs: false,
+        }
     }
 }
 
@@ -833,7 +839,11 @@ fn compute_new_line_indent(
     if !(ts_begin || trailing_opener) {
         return base;
     }
-    let use_tabs = base.contains('\t');
+    let use_tabs = if base.is_empty() {
+        settings.use_tabs
+    } else {
+        base.contains('\t')
+    };
     let mut out = base;
     if use_tabs {
         out.push('\t');
@@ -850,7 +860,10 @@ mod tests {
     use super::*;
 
     fn settings() -> IndentSettings {
-        IndentSettings { width: 4 }
+        IndentSettings {
+            width: 4,
+            use_tabs: false,
+        }
     }
 
     #[test]

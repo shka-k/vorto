@@ -257,8 +257,10 @@ impl App {
     /// don't have to redo the `EditorConfig → IndentSettings`
     /// conversion at every call site that inserts a new line.
     pub(super) fn indent_settings(&self) -> crate::editor::IndentSettings {
+        let eff = self.effective_editor();
         crate::editor::IndentSettings {
-            width: self.effective_editor().indent_width.max(1),
+            width: eff.indent_width.max(1),
+            use_tabs: eff.use_tabs,
         }
     }
 

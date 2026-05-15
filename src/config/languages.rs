@@ -90,6 +90,9 @@ impl LanguageConfig {
         if user.editor.tab_width.is_some() {
             self.editor.tab_width = user.editor.tab_width;
         }
+        if user.editor.use_tabs.is_some() {
+            self.editor.use_tabs = user.editor.use_tabs;
+        }
         if user.lsp.is_some() {
             self.lsp = user.lsp;
         }
@@ -220,6 +223,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
             editor: EditorToml {
                 indent_width: Some(4),
                 tab_width: Some(4),
+                use_tabs: Some(true),
             },
             lsp: Some(LspConfig {
                 command: "gopls".into(),

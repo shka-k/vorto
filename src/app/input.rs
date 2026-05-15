@@ -89,6 +89,10 @@ impl App {
                 self.fan_out_backspace();
                 self.record_insert_key(InsertKey::Backspace);
             }
+            KeyCode::Tab => {
+                self.fan_out_insert_char('\t');
+                self.record_insert_key(InsertKey::Char('\t'));
+            }
             // Arrow keys break vim's `.` recording — drop the in-flight
             // session so the next `.` replays only the typing up to here.
             KeyCode::Left => {
