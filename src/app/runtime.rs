@@ -51,8 +51,24 @@ impl App {
             Cmd::Quit => self.should_quit = true,
             Cmd::StartJumpLabel => self.start_jump_label(),
             Cmd::SelectWholeBuffer => self.run_select_whole_buffer(),
+            Cmd::SyncYank => self.sync_yank_to_clipboard(),
         }
         Ok(())
+    }
+
+    /// Push the current `Buffer.yank` onto the OS clipboard. Initializes
+    /// the `arboard` handle on first use; both init failure and a failed
+    /// `set_text` are swallowed silently so that headless / sandboxed
+    /// environments don't surface a noisy error on every yank — the
+    /// internal register keeps working and `p` paste-in-vorto is
+    /// unaffected.
+    pub(super) fn sync_yank_to_clipboard(&mut self) {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        if let Some(cb) = self.clipboard.as_mut() {
+            let _ = cb.set_text(self.buffer.yank.clone());
+        }
     }
 
     /// `gA` — select every line in the buffer. Sets the visual anchor

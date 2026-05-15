@@ -148,6 +148,12 @@ pub struct App {
     /// dismissing, or invalidating it (cursor row change / backspace
     /// past the prefix start).
     pub completion: Option<CompletionState>,
+    /// System clipboard handle, initialized lazily on first yank.
+    /// `None` means we haven't tried yet *or* the platform refused to
+    /// give us one (Wayland without a compositor, headless CI, …); the
+    /// internal `Buffer.yank` register keeps working either way, so a
+    /// failed init silently degrades to vorto-local yank.
+    pub clipboard: Option<arboard::Clipboard>,
     pub should_quit: bool,
 }
 
@@ -202,6 +208,7 @@ impl App {
             visual_g_pending: false,
             jump_state: None,
             completion: None,
+            clipboard: None,
             should_quit: false,
         }
     }

@@ -114,4 +114,10 @@ pub enum Cmd {
     /// `gA` — select the whole buffer. Pins the visual anchor at
     /// (0, 0), enters Visual-line, lands the cursor on the last row.
     SelectWholeBuffer,
+
+    // ── Clipboard ────────────────────────────────────────────
+    /// Push the current `Buffer.yank` to the OS clipboard. Emitted
+    /// alongside each yank so `p` works inside vorto *and* other apps
+    /// (browser, another terminal, …) can paste what was just yanked.
+    SyncYank,
 }

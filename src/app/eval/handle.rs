@@ -101,6 +101,7 @@ impl App {
                 for _ in 0..count {
                     self.buffer.yank_line();
                 }
+                cmds.push(Cmd::SyncYank);
                 cmds.push(Cmd::StatusInfo("yanked".into()));
             }
             D::JoinLines => {
@@ -404,6 +405,7 @@ impl App {
                             Operator::Delete => self.buffer.delete_line(),
                             Operator::Yank => {
                                 self.buffer.yank_line();
+                                cmds.push(Cmd::SyncYank);
                                 cmds.push(Cmd::StatusInfo("yanked".into()));
                             }
                             Operator::Change => {
@@ -488,6 +490,7 @@ impl App {
             Operator::Delete => self.buffer.delete_range(start, end),
             Operator::Yank => {
                 self.buffer.yank_range(start, end);
+                cmds.push(Cmd::SyncYank);
                 cmds.push(Cmd::StatusInfo("yanked".into()));
             }
             Operator::Change => {
