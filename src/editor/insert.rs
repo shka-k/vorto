@@ -101,7 +101,7 @@ impl Buffer {
         if leading.is_empty() {
             return;
         }
-        let remove_chars = if leading.chars().last() == Some('\t') {
+        let remove_chars = if leading.ends_with('\t') {
             1
         } else {
             let trailing_spaces = leading.chars().rev().take_while(|c| *c == ' ').count();
