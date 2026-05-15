@@ -43,6 +43,12 @@ pub enum LspRequestKind {
     /// time is carried back with the response so a stale answer (cursor
     /// moved row, prefix start changed) can be discarded.
     Completion { prefix_start: Cursor },
+    /// `completionItem/resolve` — sent after the user accepts a
+    /// completion that arrived without `additionalTextEdits`, asking
+    /// the server to fill them in. `uri` is the document URI at request
+    /// time so a response that lands after the user has switched
+    /// buffers can be discarded.
+    CompletionResolve { uri: String },
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -81,6 +87,15 @@ pub enum LspEventOutcome {
     Completion {
         prefix_start: Cursor,
         items: Vec<CompletionItem>,
+    },
+    /// `completionItem/resolve` response — `edits` are the (now
+    /// computed) `additionalTextEdits` for the previously-accepted
+    /// completion, to be applied to the document identified by `uri`.
+    /// Empty `edits` means the server had nothing to add (typical for
+    /// completions that don't trigger auto-import).
+    CompletionResolved {
+        uri: String,
+        edits: Vec<TextEdit>,
     },
 }
 
@@ -328,6 +343,25 @@ impl LspCoordinator {
         )
     }
 
+    /// `completionItem/resolve` — round-trip the accepted `CompletionItem`
+    /// JSON back to the server so it can fill in lazily-computed fields
+    /// (notably `additionalTextEdits` for auto-import). The current URI
+    /// is captured so a response arriving after the user has switched
+    /// buffers can be ignored.
+    pub fn request_completion_resolve(&mut self, raw: Value) -> Result<()> {
+        let uri = self.current_uri.clone().unwrap_or_default();
+        self.send_request(
+            "completionItem/resolve",
+            raw,
+            LspRequestKind::CompletionResolve { uri },
+        )
+    }
+
+    /// URI of the currently-open document, if any.
+    pub fn current_uri(&self) -> Option<&str> {
+        self.current_uri.as_deref()
+    }
+
     /// `codeAction/resolve` — fill in `edit` (and any other lazily-
     /// computed fields) for an action returned without one.
     pub fn request_code_action_resolve(&mut self, action: Value) -> Result<()> {
@@ -434,6 +468,15 @@ impl LspCoordinator {
                             prefix_start,
                             items: lsp::parse_completion(&result),
                         }
+                    }
+                    LspRequestKind::CompletionResolve { uri } => {
+                        // Servers that don't support resolve typically
+                        // echo the item back unchanged (or return null);
+                        // both shapes collapse to "no extra edits".
+                        let edits = lsp::parse_completion_resolve(&result)
+                            .map(|it| it.additional_text_edits)
+                            .unwrap_or_default();
+                        LspEventOutcome::CompletionResolved { uri, edits }
                     }
                 }
             }

@@ -272,7 +272,16 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         sort_text,
         detail,
         additional_text_edits,
+        raw: v.clone(),
     })
+}
+
+/// Parse a `completionItem/resolve` response. The result is a single
+/// CompletionItem object — same shape as one element of the array
+/// returned by `textDocument/completion`. Returns `None` when the
+/// server hands back something we can't make sense of (no `label`).
+pub fn parse_completion_resolve(v: &Value) -> Option<CompletionItem> {
+    parse_completion_item(v)
 }
 
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {
@@ -399,6 +408,39 @@ mod tests {
         assert_eq!(te.new_text, "foo()");
         // We pick `replace`, not `insert`.
         assert_eq!(te.range.end.character, 5);
+    }
+
+    #[test]
+    fn parse_completion_preserves_raw_for_resolve_round_trip() {
+        let v = json!([{
+            "label": "HashMap",
+            "data": { "opaque": "server-handle" }
+        }]);
+        let items = parse_completion(&v);
+        assert_eq!(items[0].raw["data"]["opaque"], "server-handle");
+    }
+
+    #[test]
+    fn parse_completion_resolve_pulls_out_additional_edits() {
+        // The resolve response is a single CompletionItem object,
+        // not an array — that's the shape distinction from the
+        // initial completion request.
+        let v = json!({
+            "label": "HashMap",
+            "additionalTextEdits": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end":   { "line": 0, "character": 0 }
+                },
+                "newText": "use std::collections::HashMap;\n"
+            }]
+        });
+        let item = parse_completion_resolve(&v).unwrap();
+        assert_eq!(item.additional_text_edits.len(), 1);
+        assert_eq!(
+            item.additional_text_edits[0].new_text,
+            "use std::collections::HashMap;\n"
+        );
     }
 
     #[test]

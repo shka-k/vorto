@@ -163,6 +163,7 @@ mod tests {
             sort_text: None,
             detail: None,
             additional_text_edits: Vec::new(),
+            raw: serde_json::Value::Null,
         }
     }
 

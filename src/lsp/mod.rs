@@ -45,8 +45,8 @@ mod uri;
 
 pub use edits::apply_text_edits;
 pub use parse::{
-    parse_code_action, parse_code_actions, parse_completion, parse_hover, parse_locations,
-    parse_workspace_edit,
+    parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve, parse_hover,
+    parse_locations, parse_workspace_edit,
 };
 pub use root::discover_root;
 pub use types::{
@@ -146,12 +146,30 @@ impl LspClient {
                     // Declaring `snippetSupport: false` keeps servers
                     // honest (rust-analyzer emits a different `newText`
                     // shape when snippets are off).
+                    // `resolveSupport.properties` opts the client into
+                    // the deferred-fields contract: rust-analyzer
+                    // (and a few others) will omit `additionalTextEdits`
+                    // — the `use …;` lines that drive auto-import —
+                    // from the initial completion response and only
+                    // compute them when we send `completionItem/resolve`.
+                    // Without declaring this, those servers ship the
+                    // edits up front anyway, but at the cost of
+                    // computing them for every candidate in the list;
+                    // declaring it lets the server defer the work to
+                    // just the one the user accepts.
                     "completion": {
                         "dynamicRegistration": false,
                         "completionItem": {
                             "snippetSupport": false,
                             "insertReplaceSupport": true,
-                            "labelDetailsSupport": true
+                            "labelDetailsSupport": true,
+                            "resolveSupport": {
+                                "properties": [
+                                    "additionalTextEdits",
+                                    "detail",
+                                    "documentation"
+                                ]
+                            }
                         }
                     }
                 },

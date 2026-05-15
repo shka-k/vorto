@@ -119,6 +119,12 @@ pub struct CompletionItem {
     /// and the popup applies it transparently so the user doesn't have
     /// to scroll up and add it themselves.
     pub additional_text_edits: Vec<TextEdit>,
+    /// Raw JSON of the item as the server sent it. Required for
+    /// `completionItem/resolve`, which the spec defines as sending the
+    /// whole CompletionItem back to the server unchanged. Servers (most
+    /// notably rust-analyzer) use opaque `data` fields here to carry
+    /// context they need to compute the deferred `additionalTextEdits`.
+    pub raw: Value,
 }
 
 /// Simplified LSP `WorkspaceEdit` — a flat map from document URI to the

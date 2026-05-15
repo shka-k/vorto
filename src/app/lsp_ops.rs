@@ -142,6 +142,13 @@ impl App {
     /// applied in the same batch via `apply_text_edits`. The post-edit
     /// cursor position is adjusted for any line-count shift caused by
     /// additional edits that sit above the cursor row.
+    ///
+    /// When the item arrived without `additionalTextEdits` we follow up
+    /// with `completionItem/resolve`. Servers that opt into the
+    /// `resolveSupport` contract (rust-analyzer, JDT.LS, …) defer the
+    /// import-line computation to that round trip so they don't have
+    /// to do it for every candidate in the popup; the result is
+    /// applied asynchronously by `apply_completion_resolved_outcome`.
     pub(super) fn accept_completion(&mut self) {
         let Some(state) = self.completion.take() else {
             return;
@@ -149,6 +156,8 @@ impl App {
         let Some(item) = state.current().cloned() else {
             return;
         };
+        let needs_resolve = item.additional_text_edits.is_empty();
+        let raw = item.raw.clone();
         let replacement = item
             .text_edit
             .as_ref()
@@ -211,6 +220,14 @@ impl App {
         self.buffer.cursor.col = final_col;
         self.buffer.bump_version();
         self.buffer.dirty = true;
+
+        // Best-effort follow-up. Servers that don't support resolve
+        // either echo the item back unchanged or surface an error — the
+        // coordinator drops both into an empty-edit outcome, so the user
+        // sees the primary insertion regardless.
+        if needs_resolve && self.lsp.has_lsp() {
+            let _ = self.lsp.request_completion_resolve(raw);
+        }
     }
 
     pub(super) fn cancel_completion(&mut self) {
@@ -426,7 +443,53 @@ impl App {
                 prefix_start,
                 items,
             } => self.apply_completion_outcome(prefix_start, items),
+            LspEventOutcome::CompletionResolved { uri, edits } => {
+                self.apply_completion_resolved_outcome(uri, edits)
+            }
         }
+    }
+
+    /// Apply the `additionalTextEdits` that came back on a
+    /// `completionItem/resolve` after the user already accepted the
+    /// completion. The primary insertion has already been applied to
+    /// the buffer; these are the auto-import / `use …;` lines the
+    /// server deferred until acceptance.
+    ///
+    /// Dropped silently when the user has switched buffers since the
+    /// resolve request was issued — applying imports to the wrong file
+    /// would be worse than skipping them.
+    fn apply_completion_resolved_outcome(&mut self, uri: String, edits: Vec<TextEdit>) {
+        if edits.is_empty() {
+            return;
+        }
+        let Some(current) = self.lsp.current_uri() else {
+            return;
+        };
+        if current != uri {
+            return;
+        }
+        // Edits above the cursor row shift the cursor down (or up, on
+        // deletion); edits at or below leave it where it is. Compute
+        // the net shift before applying so we can adjust the cursor.
+        let cursor_row = self.buffer.cursor.row;
+        let row_shift: i64 = edits
+            .iter()
+            .filter(|e| (e.range.start.line as usize) < cursor_row)
+            .map(|e| {
+                let added = e.new_text.matches('\n').count() as i64;
+                let removed = (e.range.end.line - e.range.start.line) as i64;
+                added - removed
+            })
+            .sum();
+        self.buffer.snapshot();
+        let mut lines = std::mem::take(&mut self.buffer.lines);
+        lsp::apply_text_edits(&mut lines, edits);
+        self.buffer.lines = lines;
+        let new_row = (cursor_row as i64 + row_shift).max(0) as usize;
+        let last = self.buffer.lines.len().saturating_sub(1);
+        self.buffer.cursor.row = new_row.min(last);
+        self.buffer.bump_version();
+        self.buffer.dirty = true;
     }
 
     fn apply_hover_outcome(&mut self, hover: Option<Hover>) {
