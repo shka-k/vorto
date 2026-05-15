@@ -137,7 +137,19 @@ impl App {
                 }
                 Some(())
             }
-            KeyCode::Tab | KeyCode::Enter => {
+            KeyCode::Tab => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(1);
+                }
+                Some(())
+            }
+            KeyCode::BackTab => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(-1);
+                }
+                Some(())
+            }
+            KeyCode::Enter => {
                 self.accept_completion();
                 Some(())
             }
