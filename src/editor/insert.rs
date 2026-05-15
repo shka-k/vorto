@@ -184,16 +184,44 @@ impl Buffer {
     }
 
     pub fn insert_newline(&mut self, indent: IndentSettings) {
+        // Splitting at column 0 just inserts a blank line *above* the
+        // current content. The right half is the original line verbatim
+        // — running auto-indent on it would re-indent text that the
+        // user already placed at column 0 (e.g. tree-sitter's
+        // `@indent.begin` fires on `func main() {` and would otherwise
+        // push it one level deeper).
+        if self.cursor.col == 0 {
+            self.lines.insert(self.cursor.row, String::new());
+            self.cursor.row += 1;
+            self.touch();
+            return;
+        }
         let line = self.lines[self.cursor.row].clone();
         let byte_idx = char_to_byte(&line, self.cursor.col);
         let (left, right) = line.split_at(byte_idx);
         let left_owned = left.to_string();
         let right_owned = right.to_string();
-        // Compute indent against the *left* half — that's what the
-        // line at `cursor.row` will hold once the split lands. Using
-        // a temporary line slice keeps the lookup self-contained.
-        let mut new_indent =
-            compute_new_line_indent(&left_owned, self.cursor.row, &self.highlighter, indent);
+        // Newline-specific indent rule (narrower than `o`/`O`): copy
+        // the left half's leading whitespace, then add one level only
+        // when tree-sitter's @indent.begin fires *and* the new line
+        // isn't itself starting with an opener. We deliberately skip
+        // the trailing-`{`/`(`/`[` heuristic — pressing Enter at the
+        // end of `func main() {` shouldn't push the cursor into the
+        // body, and splitting at `func main |{` shouldn't push the
+        // brace deeper than the header.
+        let prev = left_owned.chars().last();
+        let next_ch = right_owned.chars().next();
+        let base = copy_leading_indent(&left_owned, indent);
+        let ts_begin = self
+            .highlighter
+            .as_ref()
+            .is_some_and(|h| h.indent_begins_at(self.cursor.row));
+        let next_is_opener = matches!(next_ch, Some('{' | '(' | '['));
+        let mut new_indent = if ts_begin && !next_is_opener {
+            add_one_indent_level(&base, indent)
+        } else {
+            base
+        };
 
         // Empty-pair split: pressing Enter between an opener and its
         // matching closer (auto-paired or hand-typed) drops the closer
@@ -202,31 +230,28 @@ impl Buffer {
         // the closer would ride the inner indent and look like
         // `    }` inside `fn foo() {`, which the user expects to snap
         // back to column 0.
-        let prev = left_owned.chars().last();
-        let next_ch = right_owned.chars().next();
         let is_empty_pair = match (prev, next_ch) {
             (Some(p), Some(n)) => auto_pair_closer(p) == Some(n),
             _ => false,
         };
         if is_empty_pair {
             let base_indent = copy_leading_indent(&left_owned, indent);
-            let mut closer_line = base_indent;
+            let mut closer_line = base_indent.clone();
             closer_line.push_str(&right_owned);
+            let middle = add_one_indent_level(&base_indent, indent);
+            self.cursor.col = middle.chars().count();
             self.lines[self.cursor.row] = left_owned;
-            self.lines.insert(self.cursor.row + 1, new_indent.clone());
+            self.lines.insert(self.cursor.row + 1, middle);
             self.lines.insert(self.cursor.row + 2, closer_line);
             self.cursor.row += 1;
-            self.cursor.col = new_indent.chars().count();
             self.touch();
             return;
         }
 
         // Closer at the start of the right half: the new line carries
-        // the closer, so strip one indent level from the body indent.
-        // Mirror of `compute_new_line_indent`'s "add a level when the
-        // left ends with an opener" — without this, splitting before
-        // a `}` keeps the body's indent and the closer sits one level
-        // too deep.
+        // the closer, so strip one indent level from the body indent —
+        // without this, splitting before a `}` keeps the body's indent
+        // and the closer sits one level too deep.
         if matches!(next_ch, Some('}' | ')' | ']')) {
             new_indent = strip_one_indent_level(&new_indent, indent);
         }
@@ -441,23 +466,19 @@ fn copy_leading_indent(line: &str, _settings: IndentSettings) -> String {
 }
 
 /// Build the indent string for a brand-new line that sits *after*
-/// `ref_row` in the buffer (or that takes over `ref_row` after a
-/// mid-line split). Strategy:
+/// `ref_row` in the buffer (vim's `o` / `O`). Strategy:
 ///
-/// 1. Copy `reference_line`'s existing leading whitespace — this is
-///    the basic vim `autoindent` behaviour and is what callers want
-///    when tree-sitter has nothing to say.
+/// 1. Copy `reference_line`'s existing leading whitespace — the basic
+///    vim `autoindent` behaviour, used when nothing else fires.
 /// 2. Add one extra indent level when either signal fires:
-///    - the tree-sitter `indents.scm` query reports an `@indent.begin`
-///      node opening on `ref_row` (and spanning past it); or
-///    - the reference line's last non-whitespace char is an opening
-///      bracket (`{`, `(`, `[`). This is the universal fallback —
-///      it catches mid-line Enter inside an empty pair (the tree
-///      hasn't seen the future split yet) and works for languages
-///      that ship no indents query at all.
+///    - tree-sitter `indents.scm` reports an `@indent.begin` node
+///      opening on `ref_row` (and spanning past it), or
+///    - the reference line's last non-whitespace char is `{` / `(`
+///      / `[`. Universal fallback for languages without indents.scm.
 ///
-/// Tab-indented references get an additional `\t`; space-indented
-/// (or empty-indent) references get `settings.width` spaces.
+/// `insert_newline` deliberately uses a narrower rule (see inline)
+/// — pressing Enter on `func main() {` shouldn't auto-indent, but
+/// `o` on the same line should land in the body.
 fn compute_new_line_indent(
     reference_line: &str,
     ref_row: usize,
@@ -473,15 +494,23 @@ fn compute_new_line_indent(
         .chars()
         .last()
         .is_some_and(|c| matches!(c, '{' | '(' | '['));
-    if !(ts_begin || trailing_opener) {
-        return base;
+    if ts_begin || trailing_opener {
+        add_one_indent_level(&base, settings)
+    } else {
+        base
     }
+}
+
+/// Append one indent level to `base`. Tab-indented bases get an extra
+/// `\t`; space-indented (or empty) bases get `settings.width` spaces,
+/// honoring `settings.use_tabs` only when there's nothing to mimic.
+fn add_one_indent_level(base: &str, settings: IndentSettings) -> String {
     let use_tabs = if base.is_empty() {
         settings.use_tabs
     } else {
         base.contains('\t')
     };
-    let mut out = base;
+    let mut out = base.to_string();
     if use_tabs {
         out.push('\t');
     } else {
@@ -607,6 +636,88 @@ mod tests {
         b.insert_line_above(settings());
         assert_eq!(b.lines[0], "    ");
         assert_eq!(b.cursor.row, 0);
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn newline_at_col_zero_leaves_original_line_unindented() {
+        // Splitting at the very start of a line should drop a blank
+        // line above and leave the original content where it sat —
+        // even when the line opens a block (e.g. `func main() {`),
+        // which would otherwise trip the trailing-opener / tree-sitter
+        // `@indent.begin` rule and prepend an indent.
+        let mut b = Buffer::new();
+        b.lines = vec!["func main() {".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 0;
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "");
+        assert_eq!(b.lines[1], "func main() {");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_at_col_zero_preserves_existing_indent() {
+        // Same shortcut, but the original line already has indent —
+        // the right half keeps it verbatim, no extra level added.
+        let mut b = Buffer::new();
+        b.lines = vec!["    let x = 1;".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 0;
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "");
+        assert_eq!(b.lines[1], "    let x = 1;");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_after_trailing_opener_does_not_auto_indent() {
+        // Pressing Enter at end of `func main() {` no longer adds an
+        // indent level on its own — the trailing `{`/`(`/`[` heuristic
+        // was too eager. Tree-sitter's @indent.begin handles real
+        // cases; here there's no highlighter, so the new line stays
+        // at base indent.
+        let mut b = Buffer::new();
+        b.lines = vec!["func main() {".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 13; // end of line
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "func main() {");
+        assert_eq!(b.lines[1], "");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_before_opener_keeps_base_indent() {
+        // `func main |{` — splitting before `{` should leave the new
+        // line (which starts with `{`) at the function header's base
+        // indent, not one level deeper.
+        let mut b = Buffer::new();
+        b.lines = vec!["func main {".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 10; // before '{'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "func main ");
+        assert_eq!(b.lines[1], "{");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_before_opener_preserves_outer_indent() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    if cond ".into(), "(x) {}".into()];
+        // Place cursor before `(` on line 1 to exercise the
+        // opener-at-start rule with a non-empty base indent.
+        b.lines = vec!["    if cond (x".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 12; // before '('
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "    if cond ");
+        assert_eq!(b.lines[1], "    (x");
         assert_eq!(b.cursor.col, 4);
     }
 
