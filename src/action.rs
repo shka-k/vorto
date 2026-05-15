@@ -220,6 +220,9 @@ pub enum DirectKind {
     /// `<space>a` — request `textDocument/codeAction` at the cursor
     /// and surface the results in a picker.
     CodeAction,
+    /// `K` — request `textDocument/hover` for the symbol under the
+    /// cursor and display the result in a scrollable popup.
+    Hover,
     /// `<space>c` — toggle a single-line comment on the current line
     /// using the active language's `comment_token`.
     ToggleComment,

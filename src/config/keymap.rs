@@ -382,6 +382,12 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             label: "code action (lsp)",
         },
         Binding {
+            key: KeyCode::Char('K'),
+            aliases: &[KeyCode::Char('k')],
+            token: Dir(D::Hover),
+            label: "hover (lsp)",
+        },
+        Binding {
             key: KeyCode::Char('c'),
             aliases: &[],
             token: Dir(D::ToggleComment),
@@ -641,6 +647,10 @@ impl Keymap {
             ),
             (KeyCode::Char('.'), Direct(D::RepeatLast)),
             (KeyCode::Char('g'), GotoPrefix),
+            // `K` — LSP hover popup for the symbol under the cursor.
+            // Matches vim's `K` (which runs `man`-style lookups by
+            // default) and helix's binding.
+            (KeyCode::Char('K'), Direct(D::Hover)),
             (KeyCode::Char(LEADER), LeaderPrefix),
         ];
         for (code, token) in initial {

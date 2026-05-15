@@ -202,6 +202,7 @@ impl App {
             D::FindReferences => cmds.push(Cmd::LspFindReferences),
             D::Rename => cmds.push(Cmd::OpenRenamePrompt),
             D::CodeAction => cmds.push(Cmd::LspCodeAction),
+            D::Hover => cmds.push(Cmd::LspHover),
             // Intercepted by `App::evaluate` before reaching here.
             D::RepeatLast => unreachable!("RepeatLast handled in App::evaluate"),
             D::SearchSelectNext { reverse } => {

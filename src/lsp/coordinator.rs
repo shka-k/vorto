@@ -13,7 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::{
-    self as lsp, CodeAction, Diagnostic, Location, LspClient, LspEvent, TextEdit, WorkspaceEdit,
+    self as lsp, CodeAction, Diagnostic, Hover, Location, LspClient, LspEvent, TextEdit,
+    WorkspaceEdit,
 };
 use crate::editor::Cursor;
 use crate::event::AppEvent;
@@ -36,6 +37,8 @@ pub enum LspRequestKind {
     CodeAction,
     /// `codeAction/resolve` — apply the now-fully-populated action.
     CodeActionResolve,
+    /// `textDocument/hover` — display the result in a popup.
+    Hover,
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -64,6 +67,9 @@ pub enum LspEventOutcome {
     /// edit (or surfaces "nothing to change" when the server returned
     /// an action with no edit).
     CodeActionResolved(Option<CodeAction>),
+    /// `textDocument/hover` response: `None` when the server had nothing
+    /// to say (the typical "no info at this position" case).
+    Hover(Option<Hover>),
 }
 
 /// Result of applying a [`WorkspaceEdit`]. Other-file edits are written
@@ -289,6 +295,13 @@ impl LspCoordinator {
         self.send_request("textDocument/codeAction", params, LspRequestKind::CodeAction)
     }
 
+    /// `textDocument/hover` — fetch type / doc / signature info for the
+    /// symbol under the cursor.
+    pub fn request_hover(&mut self, cursor: Cursor) -> Result<()> {
+        let params = self.text_document_position_params(cursor);
+        self.send_request("textDocument/hover", params, LspRequestKind::Hover)
+    }
+
     /// `codeAction/resolve` — fill in `edit` (and any other lazily-
     /// computed fields) for an action returned without one.
     pub fn request_code_action_resolve(&mut self, action: Value) -> Result<()> {
@@ -386,6 +399,9 @@ impl LspCoordinator {
                     }
                     LspRequestKind::CodeActionResolve => {
                         LspEventOutcome::CodeActionResolved(lsp::parse_code_action(&result))
+                    }
+                    LspRequestKind::Hover => {
+                        LspEventOutcome::Hover(lsp::parse_hover(&result))
                     }
                 }
             }

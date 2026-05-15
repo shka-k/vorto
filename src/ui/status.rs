@@ -186,6 +186,7 @@ fn status_label(app: &App) -> (String, Color) {
         Prompt::Fuzzy(_) => ("FUZZY".into(), Color::LightMagenta),
         Prompt::Rename(_) => ("RENAME".into(), Color::LightCyan),
         Prompt::CodeActionMenu { .. } => ("CODE ACTION".into(), Color::LightMagenta),
+        Prompt::Hover { .. } => ("HOVER".into(), Color::LightBlue),
     }
 }
 

@@ -35,6 +35,13 @@ pub enum Prompt {
         actions: Vec<CodeAction>,
         selected: usize,
     },
+    /// `K` — read-only popup showing `textDocument/hover` content
+    /// anchored at the cursor. j/k/Up/Down/PageUp/PageDown scroll the
+    /// content; any other key (including Enter and Esc) closes it.
+    Hover {
+        content: String,
+        scroll: usize,
+    },
 }
 
 impl Prompt {
@@ -160,6 +167,13 @@ impl PromptController {
         };
     }
 
+    /// Open a hover popup with the given content. Cursor position is
+    /// captured by the renderer at draw time, so `App` doesn't need to
+    /// store it.
+    pub fn open_hover(&mut self, content: String) {
+        self.state = Prompt::Hover { content, scroll: 0 };
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> PromptOutcome {
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
@@ -226,6 +240,30 @@ impl PromptController {
                 }
                 PromptOutcome::Nothing
             }
+            Prompt::Hover { scroll, .. } => {
+                // Read-only popup. Esc/Ctrl-C/Enter are intercepted by
+                // the top of `handle_key`, so here we only see scroll
+                // keys and "anything else" (which we treat as dismiss).
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *scroll = scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        *scroll = scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        *scroll = scroll.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        *scroll = scroll.saturating_add(5);
+                    }
+                    _ => {
+                        self.close();
+                        return PromptOutcome::Cancelled;
+                    }
+                }
+                PromptOutcome::Nothing
+            }
         }
     }
 
@@ -253,6 +291,8 @@ impl PromptController {
                     PromptOutcome::Nothing
                 }
             }
+            // Hover is read-only — Enter just dismisses it.
+            Prompt::Hover { .. } => PromptOutcome::Cancelled,
         }
     }
 

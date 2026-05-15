@@ -20,6 +20,7 @@ mod buffer;
 mod code_action;
 mod fuzzy;
 mod hints;
+mod hover;
 mod status;
 
 use ratatui::Frame;
@@ -58,6 +59,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if matches!(app.prompt.state, Prompt::CodeActionMenu { .. }) {
         code_action::draw_code_action_menu(f, app, chunks[0]);
+    }
+    if matches!(app.prompt.state, Prompt::Hover { .. }) {
+        hover::draw_hover(f, app, chunks[0]);
     }
     if !app.prompt.is_open() {
         hints::draw_pending_hints(f, app, chunks[1]);

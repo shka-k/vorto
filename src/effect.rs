@@ -87,6 +87,8 @@ pub enum Cmd {
     LspFindReferences,
     /// `<space>a` — `textDocument/codeAction` at the cursor.
     LspCodeAction,
+    /// `K` — `textDocument/hover` for the symbol under the cursor.
+    LspHover,
 
     // ── Multi-buffer / lifecycle ─────────────────────────────
     BufferCycle {

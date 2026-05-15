@@ -7,7 +7,9 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
-use crate::lsp::{self, CodeAction, Diagnostic, Location, LspEvent, LspEventOutcome, WorkspaceEdit};
+use crate::lsp::{
+    self, CodeAction, Diagnostic, Hover, Location, LspEvent, LspEventOutcome, WorkspaceEdit,
+};
 
 use super::{App, Status, root_cause};
 
@@ -42,6 +44,16 @@ impl App {
             return;
         }
         self.prompt.open_rename();
+    }
+
+    pub(super) fn lsp_hover(&mut self) {
+        if !self.lsp.has_lsp() {
+            self.status = Status::error("no LSP for this buffer");
+            return;
+        }
+        if let Err(e) = self.lsp.request_hover(self.buffer.cursor) {
+            self.status = Status::error(format!("lsp hover: {}", root_cause(&e)));
+        }
     }
 
     pub(super) fn lsp_code_action(&mut self) {
@@ -238,7 +250,16 @@ impl App {
             LspEventOutcome::CodeActionResolved(action) => {
                 self.apply_code_action_resolved_outcome(action)
             }
+            LspEventOutcome::Hover(hover) => self.apply_hover_outcome(hover),
         }
+    }
+
+    fn apply_hover_outcome(&mut self, hover: Option<Hover>) {
+        let Some(h) = hover else {
+            self.status = Status::info("no hover info");
+            return;
+        };
+        self.prompt.open_hover(h.contents);
     }
 
     /// Diagnostics for the current buffer's URI, if any. Convenience for

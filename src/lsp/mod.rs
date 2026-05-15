@@ -11,9 +11,11 @@
 //! - A per-client reader thread blocks on stdout, parses framed messages,
 //!   and forwards interesting ones to the App via an mpsc channel.
 //!
-//! MVP scope: `initialize` handshake, full-document sync
-//! (`didOpen`/`didChange`/`didClose`), and `publishDiagnostics`. Hover,
-//! goto-definition, completion etc. are intentionally out of scope here.
+//! Implemented: `initialize` handshake, full-document sync
+//! (`didOpen`/`didChange`/`didSave`/`didClose`), `publishDiagnostics`,
+//! goto-definition / declaration / implementation, references, rename,
+//! code actions (+ `codeAction/resolve`), and hover. Completion,
+//! signature help, and inlay hints are intentionally out of scope.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -90,6 +92,15 @@ pub struct Position {
 pub struct Location {
     pub uri: String,
     pub range: Range,
+}
+
+/// `textDocument/hover` response, normalised. `contents` is whatever
+/// markdown/plaintext the server produced, already joined to a single
+/// string. The optional source `range` the server returns is dropped —
+/// we don't paint a highlight over the symbol while the popup is up.
+#[derive(Debug, Clone)]
+pub struct Hover {
+    pub contents: String,
 }
 
 /// LSP `TextEdit` — replace `range` with `new_text`.
@@ -702,6 +713,59 @@ pub fn parse_code_action(v: &Value) -> Option<CodeAction> {
     })
 }
 
+/// Parse a `textDocument/hover` response. `contents` may arrive as
+/// `MarkupContent { kind, value }`, a bare `MarkedString` (string or
+/// `{ language, value }`), or an array of `MarkedString`s — collapse all
+/// shapes into a single joined string. Returns `None` when `contents`
+/// is missing/empty or when the whole response is `null` (servers send
+/// `null` to mean "no hover info here").
+pub fn parse_hover(v: &Value) -> Option<Hover> {
+    if v.is_null() {
+        return None;
+    }
+    let contents = v.get("contents")?;
+    let joined = collect_hover_contents(contents);
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(Hover {
+        contents: trimmed.to_string(),
+    })
+}
+
+fn collect_hover_contents(v: &Value) -> String {
+    // `MarkupContent` — the modern shape.
+    if let Some(obj) = v.as_object()
+        && let Some(value) = obj.get("value").and_then(|x| x.as_str())
+        && obj.get("kind").is_some()
+    {
+        return value.to_string();
+    }
+    // Legacy `MarkedString` — either a plain string or
+    // `{ language, value }` (a code block).
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = v.as_object()
+        && let Some(value) = obj.get("value").and_then(|x| x.as_str())
+    {
+        let lang = obj.get("language").and_then(|x| x.as_str()).unwrap_or("");
+        return format!("```{}\n{}\n```", lang, value);
+    }
+    // Array of `MarkedString`s — join with blank lines so distinct
+    // entries (signature, doc, examples) stay visually separated.
+    if let Some(arr) = v.as_array() {
+        let parts: Vec<String> = arr
+            .iter()
+            .map(collect_hover_contents)
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        return parts.join("\n\n");
+    }
+    String::new()
+}
+
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {
     let range = parse_range(v.get("range")?)?;
     let new_text = v.get("newText")?.as_str()?.to_string();
@@ -1171,6 +1235,46 @@ mod tests {
         assert_eq!(edit.changes["file:///b.rs"][0].new_text, "Y");
 
         assert!(parse_workspace_edit(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn parse_hover_handles_all_content_shapes() {
+        // Modern MarkupContent.
+        let v = json!({
+            "contents": { "kind": "markdown", "value": "**fn** foo()" }
+        });
+        let h = parse_hover(&v).unwrap();
+        assert_eq!(h.contents, "**fn** foo()");
+
+        // Legacy bare MarkedString string.
+        let v = json!({ "contents": "plain text" });
+        assert_eq!(parse_hover(&v).unwrap().contents, "plain text");
+
+        // Legacy MarkedString with language fence.
+        let v = json!({
+            "contents": { "language": "rust", "value": "fn foo()" }
+        });
+        let h = parse_hover(&v).unwrap();
+        assert!(h.contents.contains("```rust"));
+        assert!(h.contents.contains("fn foo()"));
+
+        // Array of mixed entries — joined with blank lines.
+        let v = json!({
+            "contents": [
+                { "language": "rust", "value": "fn foo()" },
+                "docs go here"
+            ]
+        });
+        let h = parse_hover(&v).unwrap();
+        assert!(h.contents.contains("fn foo()"));
+        assert!(h.contents.contains("docs go here"));
+        assert!(h.contents.contains("\n\n"));
+
+        // Empty / null → None.
+        assert!(parse_hover(&Value::Null).is_none());
+        assert!(parse_hover(&json!({ "contents": "" })).is_none());
+        assert!(parse_hover(&json!({ "contents": [] })).is_none());
+
     }
 
     #[test]
