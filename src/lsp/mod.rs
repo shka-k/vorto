@@ -110,6 +110,39 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
+/// A single completion candidate. Lossily reduced from the LSP shape
+/// to the subset the popup actually needs.
+///
+/// `text_edit` wins over `insert_text` wins over `label` for insertion:
+/// the spec lets servers send any one of them and clients are required
+/// to fall back in that order. We don't currently support snippet
+/// placeholders (`$1`, `${1:foo}`) — they're inserted literally.
+#[derive(Debug, Clone)]
+pub struct CompletionItem {
+    /// What the user sees in the popup list.
+    pub label: String,
+    /// LSP `CompletionItemKind` (1-25). Used purely for the abbreviated
+    /// badge ("Fn", "Var", "Mod", …) on each row.
+    pub kind: u8,
+    /// Set when the server supplies a precise edit — that range may
+    /// extend further than our notion of "the prefix being typed"
+    /// (e.g. completing inside a partial path replaces the whole path).
+    pub text_edit: Option<TextEdit>,
+    /// Plain replacement text. Used when `text_edit` is absent.
+    pub insert_text: Option<String>,
+    /// Used for filter ranking when the server overrides what the user's
+    /// typed prefix should be matched against (rust-analyzer leans on
+    /// this for `::` and method-chain completions). Falls back to
+    /// `label` when absent.
+    pub filter_text: Option<String>,
+    /// Sort key. We honor it when present so rust-analyzer's "this
+    /// crate first" ordering survives client-side filtering.
+    pub sort_text: Option<String>,
+    /// Free-form details — usually a short type signature ("fn(u32) -> u32")
+    /// shown beside the label. May be empty.
+    pub detail: Option<String>,
+}
+
 /// Simplified LSP `WorkspaceEdit` — a flat map from document URI to the
 /// edits to apply there. We accept both `changes` and `documentChanges`
 /// shapes server-side and normalise into this view.
@@ -238,6 +271,20 @@ impl LspClient {
                         },
                         "resolveSupport": { "properties": ["edit"] },
                         "dataSupport": true
+                    },
+                    // We never request snippet expansion — the popup
+                    // inserts `newText` verbatim, so `$0` / `${1:x}`
+                    // tokens would land in the buffer as literal text.
+                    // Declaring `snippetSupport: false` keeps servers
+                    // honest (rust-analyzer emits a different `newText`
+                    // shape when snippets are off).
+                    "completion": {
+                        "dynamicRegistration": false,
+                        "completionItem": {
+                            "snippetSupport": false,
+                            "insertReplaceSupport": true,
+                            "labelDetailsSupport": true
+                        }
                     }
                 },
                 "window": {
@@ -766,6 +813,72 @@ fn collect_hover_contents(v: &Value) -> String {
     String::new()
 }
 
+/// Parse a `textDocument/completion` response. The result can be:
+/// - `null` (no completions),
+/// - `CompletionItem[]` (the simple case), or
+/// - `{ isIncomplete, items: CompletionItem[] }`.
+///
+/// All three collapse to a flat `Vec<CompletionItem>`. We don't surface
+/// `isIncomplete` — the popup doesn't re-request on every keystroke,
+/// so the distinction doesn't pay rent.
+pub fn parse_completion(v: &Value) -> Vec<CompletionItem> {
+    if v.is_null() {
+        return Vec::new();
+    }
+    let arr = if let Some(a) = v.as_array() {
+        a.as_slice()
+    } else if let Some(a) = v.get("items").and_then(|x| x.as_array()) {
+        a.as_slice()
+    } else {
+        return Vec::new();
+    };
+    arr.iter().filter_map(parse_completion_item).collect()
+}
+
+fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
+    let label = v.get("label")?.as_str()?.to_string();
+    let kind = v.get("kind").and_then(|x| x.as_u64()).unwrap_or(0) as u8;
+    let text_edit = v
+        .get("textEdit")
+        .and_then(|te| {
+            // Modern servers may send `InsertReplaceEdit { insert, replace, newText }`
+            // instead of `TextEdit { range, newText }`. Prefer the replace
+            // range — that's the one we'd want when the user accepts.
+            let new_text = te.get("newText")?.as_str()?.to_string();
+            let range = te
+                .get("range")
+                .or_else(|| te.get("replace"))
+                .or_else(|| te.get("insert"))?;
+            let range = parse_range(range)?;
+            Some(TextEdit { range, new_text })
+        });
+    let insert_text = v
+        .get("insertText")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let filter_text = v
+        .get("filterText")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let sort_text = v
+        .get("sortText")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let detail = v
+        .get("detail")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    Some(CompletionItem {
+        label,
+        kind,
+        text_edit,
+        insert_text,
+        filter_text,
+        sort_text,
+        detail,
+    })
+}
+
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {
     let range = parse_range(v.get("range")?)?;
     let new_text = v.get("newText")?.as_str()?.to_string();
@@ -1235,6 +1348,53 @@ mod tests {
         assert_eq!(edit.changes["file:///b.rs"][0].new_text, "Y");
 
         assert!(parse_workspace_edit(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn parse_completion_handles_array_and_list_shapes() {
+        // Bare CompletionItem[].
+        let v = json!([
+            { "label": "push", "kind": 2, "detail": "fn push(&mut self, x: T)" },
+            { "label": "pop",  "kind": 2 }
+        ]);
+        let items = parse_completion(&v);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "push");
+        assert_eq!(items[0].kind, 2);
+        assert_eq!(items[0].detail.as_deref(), Some("fn push(&mut self, x: T)"));
+
+        // CompletionList { isIncomplete, items }.
+        let v = json!({
+            "isIncomplete": true,
+            "items": [{ "label": "len" }]
+        });
+        let items = parse_completion(&v);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "len");
+
+        // null → empty.
+        assert!(parse_completion(&Value::Null).is_empty());
+
+        // textEdit honored, falling back to InsertReplaceEdit shape.
+        let v = json!([{
+            "label": "foo",
+            "textEdit": {
+                "newText": "foo()",
+                "replace": {
+                    "start": { "line": 1, "character": 2 },
+                    "end":   { "line": 1, "character": 5 }
+                },
+                "insert": {
+                    "start": { "line": 1, "character": 2 },
+                    "end":   { "line": 1, "character": 4 }
+                }
+            }
+        }]);
+        let items = parse_completion(&v);
+        let te = items[0].text_edit.as_ref().unwrap();
+        assert_eq!(te.new_text, "foo()");
+        // We pick `replace`, not `insert`.
+        assert_eq!(te.range.end.character, 5);
     }
 
     #[test]

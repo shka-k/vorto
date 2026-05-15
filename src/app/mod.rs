@@ -6,6 +6,7 @@
 //! orchestration, Normal-mode evaluation) is split across sibling
 //! `impl App { ... }` blocks in the submodules below.
 
+mod completion;
 mod eval;
 mod input;
 mod jump;
@@ -15,6 +16,8 @@ mod runtime;
 mod sleeping;
 mod status;
 mod types;
+
+pub use completion::CompletionState;
 
 pub use jump::JumpState;
 pub use sleeping::SleepingBuffer;
@@ -137,6 +140,11 @@ pub struct App {
     /// it's `Some`, the input dispatcher routes every key to
     /// [`App::handle_jump_key`] and the UI renders the label overlay.
     pub jump_state: Option<JumpState>,
+    /// Active LSP completion popup, if any. `Some` between a successful
+    /// `textDocument/completion` response and the user accepting,
+    /// dismissing, or invalidating it (cursor row change / backspace
+    /// past the prefix start).
+    pub completion: Option<CompletionState>,
     pub should_quit: bool,
 }
 
@@ -190,6 +198,7 @@ impl App {
             recording: None,
             visual_g_pending: false,
             jump_state: None,
+            completion: None,
             should_quit: false,
         }
     }

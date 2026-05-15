@@ -12,6 +12,7 @@ use crate::finder::FuzzyKind;
 use crate::mode::Mode;
 use crate::prompt::PromptOutcome;
 
+use super::completion::is_ident_continue;
 use super::{App, BufferRef, Selection, Status, eval, root_cause};
 
 impl App {
@@ -65,10 +66,42 @@ impl App {
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Completion popup, when open, intercepts navigation/accept
+        // keys before they reach the normal insert handling. Char
+        // input and Backspace fall through and trigger a re-filter
+        // afterwards. Esc closes the popup *first* (so the next Esc
+        // exits insert mode) — matches how every other editor behaves.
+        if self.completion.is_some()
+            && let Some(()) = self.handle_completion_key(key)
+        {
+            return Ok(());
+        }
+
+        // `<C-Space>` triggers a completion request. We do this before
+        // the bare-char fast path so it doesn't get typed literally.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char(' ') {
+            self.lsp_completion();
+            return Ok(());
+        }
+
         let no_ctrl = !key.modifiers.contains(KeyModifiers::CONTROL);
         if no_ctrl && let KeyCode::Char(c) = key.code {
             self.fan_out_insert_char(c);
             self.record_insert_key(InsertKey::Char(c));
+            self.update_completion_filter();
+            // Auto-trigger completion when the user starts typing an
+            // identifier and no popup is open. Identifier-continue chars
+            // only — punctuation, whitespace, and operators don't fire
+            // a request on their own. If the popup is already open, the
+            // re-filter above is enough; we don't refire because items
+            // are stable for the same prefix-start.
+            if self.completion.is_none()
+                && self.lsp.has_lsp()
+                && is_ident_continue(c)
+            {
+                self.lsp_completion();
+            }
             return Ok(());
         }
         match key.code {
@@ -84,36 +117,88 @@ impl App {
                 let indent = self.indent_settings();
                 self.buffer.insert_newline(indent);
                 self.record_insert_key(InsertKey::Newline);
+                self.cancel_completion();
             }
             KeyCode::Backspace => {
                 self.fan_out_backspace();
                 self.record_insert_key(InsertKey::Backspace);
+                self.update_completion_filter();
             }
             KeyCode::Tab => {
                 self.fan_out_insert_char('\t');
                 self.record_insert_key(InsertKey::Char('\t'));
+                self.update_completion_filter();
             }
             // Arrow keys break vim's `.` recording — drop the in-flight
             // session so the next `.` replays only the typing up to here.
             KeyCode::Left => {
                 self.recording = None;
                 self.buffer.move_left();
+                self.cancel_completion();
             }
             KeyCode::Right => {
                 self.recording = None;
                 self.buffer.move_right(true);
+                self.cancel_completion();
             }
             KeyCode::Up => {
                 self.recording = None;
                 self.buffer.move_up();
+                self.cancel_completion();
             }
             KeyCode::Down => {
                 self.recording = None;
                 self.buffer.move_down();
+                self.cancel_completion();
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Handle a key event while the completion popup is open. Returns
+    /// `Some(())` when the key was absorbed by the popup (selection
+    /// changed, popup closed, item accepted) — caller should bail.
+    /// Returns `None` when the key should fall through to the normal
+    /// insert-mode handling (typing a character that re-filters,
+    /// backspace, etc.).
+    fn handle_completion_key(&mut self, key: KeyEvent) -> Option<()> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.cancel_completion();
+                Some(())
+            }
+            KeyCode::Up => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(-1);
+                }
+                Some(())
+            }
+            KeyCode::Down => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(1);
+                }
+                Some(())
+            }
+            KeyCode::Char('p') if ctrl => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(-1);
+                }
+                Some(())
+            }
+            KeyCode::Char('n') if ctrl => {
+                if let Some(s) = self.completion.as_mut() {
+                    s.move_selection(1);
+                }
+                Some(())
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                self.accept_completion();
+                Some(())
+            }
+            _ => None,
+        }
     }
 
     /// Apply `insert_char(c)` at the primary cursor and every extra

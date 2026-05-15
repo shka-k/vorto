@@ -18,6 +18,7 @@
 
 mod buffer;
 mod code_action;
+mod completion;
 mod fuzzy;
 mod hints;
 mod hover;
@@ -62,6 +63,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if matches!(app.prompt.state, Prompt::Hover { .. }) {
         hover::draw_hover(f, app, chunks[0]);
+    }
+    if app.completion.is_some() {
+        completion::draw_completion(f, app, chunks[0]);
     }
     if !app.prompt.is_open() {
         hints::draw_pending_hints(f, app, chunks[1]);

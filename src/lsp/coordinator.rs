@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::{
-    self as lsp, CodeAction, Diagnostic, Hover, Location, LspClient, LspEvent, TextEdit,
-    WorkspaceEdit,
+    self as lsp, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspClient, LspEvent,
+    TextEdit, WorkspaceEdit,
 };
 use crate::editor::Cursor;
 use crate::event::AppEvent;
@@ -39,6 +39,10 @@ pub enum LspRequestKind {
     CodeActionResolve,
     /// `textDocument/hover` — display the result in a popup.
     Hover,
+    /// `textDocument/completion` — the prefix-start cursor at request
+    /// time is carried back with the response so a stale answer (cursor
+    /// moved row, prefix start changed) can be discarded.
+    Completion { prefix_start: Cursor },
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -67,9 +71,17 @@ pub enum LspEventOutcome {
     /// edit (or surfaces "nothing to change" when the server returned
     /// an action with no edit).
     CodeActionResolved(Option<CodeAction>),
+
     /// `textDocument/hover` response: `None` when the server had nothing
     /// to say (the typical "no info at this position" case).
     Hover(Option<Hover>),
+    /// `textDocument/completion` response. Empty `items` means "no
+    /// matches" — the caller decides whether to suppress the popup or
+    /// show a single "no completions" hint.
+    Completion {
+        prefix_start: Cursor,
+        items: Vec<CompletionItem>,
+    },
 }
 
 /// Result of applying a [`WorkspaceEdit`]. Other-file edits are written
@@ -302,6 +314,20 @@ impl LspCoordinator {
         self.send_request("textDocument/hover", params, LspRequestKind::Hover)
     }
 
+    /// `textDocument/completion` — fetch completion candidates at the
+    /// cursor. `prefix_start` is where the identifier under the cursor
+    /// begins (cursor itself when there's nothing typed yet) and is
+    /// carried through to the response so a stale reply (user moved
+    /// row or backspaced past the start) can be discarded.
+    pub fn request_completion(&mut self, cursor: Cursor, prefix_start: Cursor) -> Result<()> {
+        let params = self.text_document_position_params(cursor);
+        self.send_request(
+            "textDocument/completion",
+            params,
+            LspRequestKind::Completion { prefix_start },
+        )
+    }
+
     /// `codeAction/resolve` — fill in `edit` (and any other lazily-
     /// computed fields) for an action returned without one.
     pub fn request_code_action_resolve(&mut self, action: Value) -> Result<()> {
@@ -402,6 +428,12 @@ impl LspCoordinator {
                     }
                     LspRequestKind::Hover => {
                         LspEventOutcome::Hover(lsp::parse_hover(&result))
+                    }
+                    LspRequestKind::Completion { prefix_start } => {
+                        LspEventOutcome::Completion {
+                            prefix_start,
+                            items: lsp::parse_completion(&result),
+                        }
                     }
                 }
             }
