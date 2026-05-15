@@ -8,9 +8,10 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 
 use crate::lsp::{
-    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, LspEventOutcome,
-    WorkspaceEdit,
+    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, WorkspaceEdit,
 };
+
+use super::LspEventOutcome;
 
 use super::completion::{CompletionState, identifier_prefix_start, prefix_slice};
 use super::{App, Status, root_cause};

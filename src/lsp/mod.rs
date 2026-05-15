@@ -37,14 +37,12 @@ use serde_json::{Value, json};
 use crate::config::LspConfig;
 
 mod codec;
-mod coordinator;
 mod edits;
 mod parse;
 mod root;
 mod types;
 mod uri;
 
-pub use coordinator::{LspCoordinator, LspEventOutcome};
 pub use edits::apply_text_edits;
 pub use parse::{
     parse_code_action, parse_code_actions, parse_completion, parse_hover, parse_locations,
