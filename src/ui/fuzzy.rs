@@ -87,6 +87,7 @@ fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
     );
 
     let list_h = chunks[2].height as usize;
+    let list_w = chunks[2].width as usize;
     let scroll = finder.selected.saturating_sub(list_h.saturating_sub(1));
     let items: Vec<ListItem> = finder
         .matches
@@ -96,7 +97,13 @@ fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
         .take(list_h)
         .map(|(i, m)| {
             let raw = &finder.items[m.idx];
-            let line = render_match(raw, &m.positions, i == finder.selected, finder.kind);
+            let line = render_match(
+                raw,
+                &m.positions,
+                i == finder.selected,
+                finder.kind,
+                list_w,
+            );
             ListItem::new(line)
         })
         .collect();
@@ -373,6 +380,7 @@ fn render_match<'a>(
     positions: &[usize],
     selected: bool,
     kind: FuzzyKind,
+    width: usize,
 ) -> Line<'a> {
     let base = if selected {
         Style::default()
@@ -383,27 +391,45 @@ fn render_match<'a>(
     };
     let dir = base.fg(DIR_FG).add_modifier(Modifier::BOLD);
     let hit = base.fg(HIT_FG).add_modifier(Modifier::BOLD);
+    let ellipsis = base.fg(Color::DarkGray);
 
-    // Directory portion: everything up to and including the last `/` in
-    // the path-like portion of the item. For Locations, the trailing
-    // `:line:col` suffix shouldn't be styled as directory, so we cap the
-    // search at the first colon.
-    let dir_end = match kind {
-        FuzzyKind::Files { .. } | FuzzyKind::Buffers => item.rfind('/').map(|b| b + 1),
+    // Compute dir_end as a char index. For path-like kinds it's the
+    // index just past the last `/`; for Locations we stop searching at
+    // the `:line:col` suffix so `:` doesn't get colored as directory.
+    let chars: Vec<char> = item.chars().collect();
+    let dir_end_char: Option<usize> = match kind {
+        FuzzyKind::Files { .. } | FuzzyKind::Buffers => {
+            chars.iter().rposition(|c| *c == '/').map(|i| i + 1)
+        }
         FuzzyKind::Locations => {
-            let path_end = item.find(':').unwrap_or(item.len());
-            item[..path_end].rfind('/').map(|b| b + 1)
+            let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
+            chars[..path_end].iter().rposition(|c| *c == '/').map(|i| i + 1)
         }
         FuzzyKind::Lines => None,
     };
 
+    // Head-truncate when the item is longer than the available width so
+    // the filename (right side of the path) stays visible. One column is
+    // reserved for the leading ellipsis.
     let mut spans = Vec::new();
+    let start = if width >= 2 && chars.len() > width {
+        spans.push(Span::styled("…", ellipsis));
+        chars.len() - (width - 1)
+    } else {
+        0
+    };
+    // When truncation lands inside the directory portion, the remaining
+    // dir prefix still gets the dir color up to dir_end. When the cut
+    // falls past dir_end, dir_end - start <= 0 and the whole tail is
+    // filename-colored — exactly what we want.
+    let dir_end_visible = dir_end_char.map(|e| e.saturating_sub(start));
+
     let mut buf = String::new();
     let mut buf_style = base;
-    let mut byte_pos = 0;
-    for (i, c) in item.chars().enumerate() {
-        let is_hit = positions.binary_search(&i).is_ok();
-        let in_dir = dir_end.map(|e| byte_pos < e).unwrap_or(false);
+    for (offset, &c) in chars[start..].iter().enumerate() {
+        let orig_i = start + offset;
+        let is_hit = positions.binary_search(&orig_i).is_ok();
+        let in_dir = dir_end_visible.map(|e| offset < e).unwrap_or(false);
         let style = if is_hit {
             hit
         } else if in_dir {
@@ -416,7 +442,6 @@ fn render_match<'a>(
         }
         buf_style = style;
         buf.push(c);
-        byte_pos += c.len_utf8();
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));
