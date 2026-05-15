@@ -38,6 +38,19 @@ fn main() -> Result<()> {
     if argv.get(1).map(String::as_str) == Some("grammar") {
         return grammar::cli::run(&argv[2..]);
     }
+    // `--version` / `--help` are likewise one-shots — print and exit
+    // before any terminal setup.
+    match argv.get(1).map(String::as_str) {
+        Some("-V" | "--version") => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("-h" | "--help") => {
+            print_usage();
+            return Ok(());
+        }
+        _ => {}
+    }
 
     let path = argv.into_iter().nth(1);
     // Anchor for LSP workspace root discovery — captured once here so the
@@ -155,6 +168,20 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
         event::AppEvent::PreviewReady(entry) => app.handle_preview_ready(entry),
     }
     Ok(())
+}
+
+fn print_usage() {
+    println!(
+        "{name} {version}
+
+Usage:
+    vorto [FILE]
+    vorto grammar <list|install|remove> [args]
+    vorto -h | --help
+    vorto -V | --version",
+        name = env!("CARGO_PKG_NAME"),
+        version = env!("CARGO_PKG_VERSION"),
+    );
 }
 
 /// DECSCUSR escape sequence — `CSI Ps SP q`, where Ps picks the shape.
