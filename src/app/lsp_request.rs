@@ -126,12 +126,30 @@ impl App {
         };
         let needs_resolve = item.additional_text_edits.is_empty();
         let raw = item.raw.clone();
-        let replacement = item
+        let base = item
             .text_edit
             .as_ref()
             .map(|te| te.new_text.clone())
             .or_else(|| item.insert_text.clone())
             .unwrap_or_else(|| item.label.clone());
+
+        // Auto-append `()` for callable kinds (Method=2, Function=3,
+        // Constructor=4) when the server's replacement is a bare name —
+        // single-line and without an existing paren. Snippet support is
+        // disabled at handshake time, so callables come back as the raw
+        // identifier; tacking on `()` saves the user a keystroke and
+        // matches what other editors do. The cursor lands between the
+        // parens so the user can start typing args immediately.
+        let kind_is_callable = matches!(item.kind, 2..=4);
+        let appended_call = kind_is_callable
+            && !base.contains('(')
+            && !base.contains('\n')
+            && !base.is_empty();
+        let replacement = if appended_call {
+            format!("{}()", base)
+        } else {
+            base
+        };
 
         self.buffer.snapshot();
 
@@ -177,7 +195,10 @@ impl App {
         let final_row =
             (prefix_start.row as i64 + row_shift + replacement_newlines as i64).max(0) as usize;
         let final_col = if replacement_newlines == 0 {
-            prefix_start.col + replacement.chars().count()
+            let end = prefix_start.col + replacement.chars().count();
+            // When we auto-appended `()`, drop the cursor between the
+            // parens so the user can start typing args.
+            if appended_call { end - 1 } else { end }
         } else {
             // Multi-line replacement: cursor lands at the end of the
             // last inserted line.
