@@ -45,8 +45,8 @@ mod uri;
 
 pub use edits::apply_text_edits;
 pub use parse::{
-    parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve, parse_hover,
-    parse_locations, parse_workspace_edit,
+    parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve,
+    parse_hover, parse_locations, parse_workspace_edit,
 };
 pub use root::discover_root;
 pub use types::{
@@ -77,7 +77,12 @@ pub struct LspClient {
 impl LspClient {
     /// Spawn the server, run the initialize handshake synchronously, then
     /// detach a reader thread that forwards future messages to `tx`.
+    /// `client_key` is the per-server identifier the reader thread will
+    /// stamp on every outbound [`LspEvent`] so the coordinator can route
+    /// responses back to the right pending request when multiple
+    /// servers share a buffer.
     pub fn spawn(
+        client_key: &str,
         lang_name: &str,
         spec: &LspConfig,
         root_uri: &str,
@@ -207,8 +212,8 @@ impl LspClient {
             .unwrap_or_else(|| lang_name.to_string());
 
         let stdin_reader = Arc::clone(&stdin);
-        let lang_for_reader = lang_name.to_string();
-        thread::spawn(move || reader_loop(reader, emit, stdin_reader, lang_for_reader));
+        let key_for_reader = client_key.to_string();
+        thread::spawn(move || reader_loop(reader, emit, stdin_reader, key_for_reader));
 
         Ok(Self {
             _child: child,

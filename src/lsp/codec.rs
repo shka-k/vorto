@@ -69,13 +69,16 @@ pub(super) fn reader_loop(
     mut reader: BufReader<ChildStdout>,
     emit: Box<dyn Fn(LspEvent) + Send>,
     stdin: Arc<Mutex<ChildStdin>>,
-    lang: String,
+    client: String,
 ) {
     loop {
         let msg = match read_message(&mut reader) {
             Ok(m) => m,
             Err(e) => {
-                emit(LspEvent::Error(format!("lsp reader: {}", e)));
+                emit(LspEvent::Error {
+                    client: client.clone(),
+                    message: format!("lsp reader: {}", e),
+                });
                 return;
             }
         };
@@ -98,7 +101,7 @@ pub(super) fn reader_loop(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             emit(LspEvent::Response {
-                lang: lang.clone(),
+                client: client.clone(),
                 id,
                 result,
                 error,
@@ -108,7 +111,9 @@ pub(super) fn reader_loop(
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         match method {
             "textDocument/publishDiagnostics" => {
-                if let Some(ev) = msg.get("params").and_then(parse_publish_diagnostics) {
+                if let Some(ev) =
+                    msg.get("params").and_then(|p| parse_publish_diagnostics(&client, p))
+                {
                     emit(ev);
                 }
             }
@@ -157,7 +162,7 @@ pub(super) fn handle_server_request(stdin: &Arc<Mutex<ChildStdin>>, msg: &Value)
     let _ = write_framed(stdin, &reply);
 }
 
-fn parse_publish_diagnostics(params: &Value) -> Option<LspEvent> {
+fn parse_publish_diagnostics(client: &str, params: &Value) -> Option<LspEvent> {
     let uri = params.get("uri")?.as_str()?.to_string();
     let items = params.get("diagnostics")?.as_array()?;
     let mut out = Vec::with_capacity(items.len());
@@ -191,7 +196,11 @@ fn parse_publish_diagnostics(params: &Value) -> Option<LspEvent> {
             source,
         });
     }
-    Some(LspEvent::Diagnostics { uri, items: out })
+    Some(LspEvent::Diagnostics {
+        client: client.to_string(),
+        uri,
+        items: out,
+    })
 }
 
 #[cfg(test)]
@@ -228,10 +237,11 @@ mod tests {
                 "source": "rust-analyzer"
             }]
         });
-        let ev = parse_publish_diagnostics(&params).unwrap();
-        let LspEvent::Diagnostics { uri, items } = ev else {
+        let ev = parse_publish_diagnostics("rust::rust-analyzer", &params).unwrap();
+        let LspEvent::Diagnostics { client, uri, items } = ev else {
             panic!("wrong variant");
         };
+        assert_eq!(client, "rust::rust-analyzer");
         assert_eq!(uri, "file:///foo.rs");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].severity, Severity::Error);

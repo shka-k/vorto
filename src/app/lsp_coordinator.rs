@@ -4,6 +4,13 @@
 //! request things. The coordinator drives the wire-level protocol and
 //! reports back via [`LspEventOutcome`] — App turns outcomes into
 //! user-visible side effects (status messages, file opens, buffer edits).
+//!
+//! Multi-server support: a buffer can have more than one LSP attached
+//! (e.g. `vtsls` + `typescript-language-server`). Each spawned client
+//! gets a unique `client_key` of the form `"<lang>::<server-name>"`.
+//! Outgoing requests fan out to every client active for the current
+//! document, and responses are accumulated in a per-request `Group`
+//! before a single merged [`LspEventOutcome`] is surfaced.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,36 +26,29 @@ use crate::lsp::{
     WorkspaceEdit,
 };
 
+/// Build the canonical client identifier from a language name and a
+/// server name. The same recipe runs everywhere `client_key` is needed
+/// so spawn / attach / lookup stay in lockstep.
+pub fn client_key(lang: &str, server: &str) -> String {
+    format!("{}::{}", lang, server)
+}
+
 /// What an outstanding LSP request was for. Stored under
-/// `pending[(lang, id)]` and consumed when the matching
-/// [`LspEvent::Response`] arrives.
-#[derive(Debug, Clone)]
+/// `pending[(client_key, id)]` so a response on the shared event
+/// channel can be routed to the right accumulator. Per-request
+/// context (labels, prefix positions, new names, request-time URIs)
+/// lives on the [`GroupAccum`] for that request instead — pending
+/// entries only need a discriminator.
+#[derive(Debug, Clone, Copy)]
 pub enum LspRequestKind {
-    /// Any `Location[]`-shaped jump request — `definition`,
-    /// `declaration`, `implementation`. Only the user-visible label
-    /// is needed for the "no results" status message.
-    Jump { label: &'static str },
-    /// `textDocument/references` — show the locations in a picker.
+    Jump,
     References,
-    /// `textDocument/rename` — apply the returned `WorkspaceEdit`.
-    /// `new_name` is kept for the post-apply status line.
-    Rename { new_name: String },
-    /// `textDocument/codeAction` — surface the list in a picker.
+    Rename,
     CodeAction,
-    /// `codeAction/resolve` — apply the now-fully-populated action.
     CodeActionResolve,
-    /// `textDocument/hover` — display the result in a popup.
     Hover,
-    /// `textDocument/completion` — the prefix-start cursor at request
-    /// time is carried back with the response so a stale answer (cursor
-    /// moved row, prefix start changed) can be discarded.
-    Completion { prefix_start: Cursor },
-    /// `completionItem/resolve` — sent after the user accepts a
-    /// completion that arrived without `additionalTextEdits`, asking
-    /// the server to fill them in. `uri` is the document URI at request
-    /// time so a response that lands after the user has switched
-    /// buffers can be discarded.
-    CompletionResolve { uri: String },
+    Completion,
+    CompletionResolve,
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -59,40 +59,22 @@ pub enum LspEventOutcome {
     Nothing,
     InfoMessage(String),
     ErrorMessage(String),
-    /// Jump-style response: caller should open the first location.
     Jump {
         label: &'static str,
         locations: Vec<Location>,
     },
-    /// References response: caller picks single-jump vs picker.
     References(Vec<Location>),
-    /// Rename response: caller applies the edit (or shows "nothing to change").
     Rename {
         new_name: String,
         edit: Option<WorkspaceEdit>,
     },
-    /// `textDocument/codeAction` response: caller opens the picker.
     CodeActions(Vec<CodeAction>),
-    /// `codeAction/resolve` response: caller applies the now-resolved
-    /// edit (or surfaces "nothing to change" when the server returned
-    /// an action with no edit).
     CodeActionResolved(Option<CodeAction>),
-
-    /// `textDocument/hover` response: `None` when the server had nothing
-    /// to say (the typical "no info at this position" case).
     Hover(Option<Hover>),
-    /// `textDocument/completion` response. Empty `items` means "no
-    /// matches" — the caller decides whether to suppress the popup or
-    /// show a single "no completions" hint.
     Completion {
         prefix_start: Cursor,
         items: Vec<CompletionItem>,
     },
-    /// `completionItem/resolve` response — `edits` are the (now
-    /// computed) `additionalTextEdits` for the previously-accepted
-    /// completion, to be applied to the document identified by `uri`.
-    /// Empty `edits` means the server had nothing to add (typical for
-    /// completions that don't trigger auto-import).
     CompletionResolved {
         uri: String,
         edits: Vec<TextEdit>,
@@ -102,40 +84,87 @@ pub enum LspEventOutcome {
 /// Result of applying a [`WorkspaceEdit`]. Other-file edits are written
 /// to disk by the coordinator; the active buffer's edits are returned
 /// for the caller to apply through its own `Buffer` (with undo, version
-/// bump, etc.) — keeping buffer mutation out of the coordinator.
+/// bump, etc.).
 pub struct WorkspaceEditResult {
     pub current_buffer_edits: Vec<TextEdit>,
     pub files_touched: usize,
     pub total_edits: usize,
 }
 
+/// Accumulator state for an in-flight fan-out. One `Group` is allocated
+/// per user-initiated LSP request and lives until every client we
+/// dispatched to has either responded, errored, or been declared dead.
+struct Group {
+    /// How many client responses (or terminal errors) are still
+    /// outstanding before we surface the merged outcome.
+    remaining: usize,
+    accum: GroupAccum,
+}
+
+enum GroupAccum {
+    Jump {
+        label: &'static str,
+        locations: Vec<Location>,
+    },
+    References(Vec<Location>),
+    /// First non-empty edit wins. Rename across multiple servers in a
+    /// single buffer is rare and trying to merge edit lists from two
+    /// servers could double-apply.
+    Rename {
+        new_name: String,
+        edit: Option<WorkspaceEdit>,
+    },
+    CodeAction(Vec<CodeAction>),
+    /// Joined with blank lines on emit.
+    Hover(Vec<String>),
+    Completion {
+        prefix_start: Cursor,
+        items: Vec<CompletionItem>,
+    },
+    /// Resolve outcomes are inherently single-client; the group just
+    /// carries the per-request context until the one response arrives.
+    CompletionResolve {
+        uri: String,
+        edits: Vec<TextEdit>,
+    },
+    CodeActionResolve {
+        action: Option<CodeAction>,
+    },
+}
+
+/// Per-pending-request bookkeeping. Held under
+/// `pending[(client_key, request_id)]`.
+struct Pending {
+    group: u64,
+    kind: LspRequestKind,
+}
+
 pub struct LspCoordinator {
-    /// Live LSP clients, keyed by language name. Spawned lazily on the
-    /// first `ensure_client` for a language with `[languages.<name>.lsp]`
-    /// configured. The same client is reused across files of that
-    /// language.
+    /// Live LSP clients, keyed by `client_key` (see [`client_key`]).
     clients: HashMap<String, LspClient>,
-    /// Diagnostics keyed by URI. URIs are produced via `lsp::path_to_uri`
-    /// so the lookup matches whatever the server reports back.
-    diagnostics: HashMap<String, Vec<Diagnostic>>,
-    /// Outstanding LSP request bookkeeping. Keyed by `(lang, id)` so a
-    /// response arriving on the shared event channel can be routed back
-    /// to the right handler regardless of which client sent it.
-    pending: HashMap<(String, u64), LspRequestKind>,
-    /// URI of the document currently considered "open" (cached so
-    /// `didChange`/`didClose` don't re-canonicalise every time).
+    /// Diagnostics keyed first by URI, then by the client that
+    /// published them. Merged across clients on read so the UI sees
+    /// every server's findings at once. `publishDiagnostics` is
+    /// authoritative per `(client, uri)` — an empty `items` from one
+    /// client only clears that client's slice.
+    diagnostics: HashMap<String, HashMap<String, Vec<Diagnostic>>>,
+    /// Outstanding LSP request bookkeeping. Keyed by `(client_key, id)`
+    /// so a response on the shared event channel routes back to the
+    /// right pending entry.
+    pending: HashMap<(String, u64), Pending>,
+    /// Fan-out accumulators keyed by a per-request group id.
+    groups: HashMap<u64, Group>,
+    next_group_id: u64,
+    /// URI of the document currently considered "open".
     current_uri: Option<String>,
-    /// Language name of the currently-open document.
+    /// Language name of the currently-open document. Mostly cosmetic —
+    /// `current_clients` is what drives request dispatch.
     current_language: Option<String>,
-    /// Last buffer `version` we synced via `didChange`. Compared by
-    /// `App` against the live buffer's version to decide whether to
-    /// fire a sync.
+    /// Client keys attached to the current document. All fan-out
+    /// requests dispatch to every entry here.
+    current_clients: Vec<String>,
     last_synced_version: u64,
-    /// Sender shared with input + LSP reader threads. Cloned into each
-    /// new LSP client at spawn time.
     event_tx: Sender<AppEvent>,
-    /// Working directory captured at process startup. All workspace
-    /// root discovery anchors here.
     startup_cwd: PathBuf,
 }
 
@@ -145,8 +174,11 @@ impl LspCoordinator {
             clients: HashMap::new(),
             diagnostics: HashMap::new(),
             pending: HashMap::new(),
+            groups: HashMap::new(),
+            next_group_id: 0,
             current_uri: None,
             current_language: None,
+            current_clients: Vec::new(),
             last_synced_version: 0,
             event_tx,
             startup_cwd,
@@ -161,56 +193,72 @@ impl LspCoordinator {
         self.last_synced_version = v;
     }
 
+    /// True when at least one client is attached to the current
+    /// document. Drives the "no LSP for this buffer" guard in the App.
     pub fn has_lsp(&self) -> bool {
-        match (&self.current_uri, &self.current_language) {
-            (Some(_), Some(lang)) => self.clients.contains_key(lang),
-            _ => false,
+        self.current_uri.is_some() && !self.current_clients.is_empty()
+    }
+
+    /// Merged diagnostics across all clients for the current buffer's
+    /// URI, if any. Cloned into an owned Vec because the underlying
+    /// storage is per-client and we have to fold across that on read.
+    pub fn current_diagnostics(&self) -> Option<Vec<Diagnostic>> {
+        let uri = self.current_uri.as_ref()?;
+        let per_client = self.diagnostics.get(uri)?;
+        let mut out: Vec<Diagnostic> =
+            per_client.values().flat_map(|v| v.iter().cloned()).collect();
+        if out.is_empty() {
+            return None;
         }
+        // Sort for a stable presentation regardless of which server
+        // happened to publish first.
+        out.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        Some(out)
     }
 
-    /// Diagnostics for the current buffer's URI, if any.
-    pub fn current_diagnostics(&self) -> Option<&[Diagnostic]> {
-        self.current_uri
-            .as_ref()
-            .and_then(|u| self.diagnostics.get(u))
-            .map(|v| v.as_slice())
-    }
-
-    /// Tell the current document's LSP that we're done with it. No-op
-    /// when there's no current document.
+    /// Tell every client attached to the current document that we're
+    /// done with it. No-op when nothing is attached.
     pub fn detach_current(&mut self) {
-        let (Some(uri), Some(lang)) = (self.current_uri.take(), self.current_language.take())
-        else {
+        let Some(uri) = self.current_uri.take() else {
             return;
         };
-        if let Some(client) = self.clients.get_mut(&lang) {
-            let _ = client.did_close(&uri);
+        let clients = std::mem::take(&mut self.current_clients);
+        for key in &clients {
+            if let Some(client) = self.clients.get_mut(key) {
+                let _ = client.did_close(&uri);
+            }
         }
+        self.current_language = None;
     }
 
-    /// Returns `true` when a client for `lang_name` is already attached.
-    /// Lets the file-open worker decide whether to spawn at all.
-    pub fn has_client(&self, lang_name: &str) -> bool {
-        self.clients.contains_key(lang_name)
+    /// Returns `true` when a client for `client_key` is already attached.
+    pub fn has_client(&self, client_key: &str) -> bool {
+        self.clients.contains_key(client_key)
     }
 
     /// Adopt a pre-spawned `LspClient`. Used by the file-open worker
-    /// thread: it spawns the server off the main thread and the main
-    /// loop installs the finished client here. No-op (returns false)
-    /// if the same language already has a client — the freshly spawned
-    /// one will be dropped, which sends EOF on its stdin and the server
-    /// shuts down on its own.
-    pub fn attach_client(&mut self, lang_name: &str, client: LspClient) -> bool {
-        if self.clients.contains_key(lang_name) {
+    /// thread. Returns false (and the freshly-spawned client is dropped
+    /// by the caller) when the same `client_key` is already attached —
+    /// e.g. a parallel open of another file with the same language
+    /// won the race.
+    pub fn attach_client(&mut self, client_key: &str, client: LspClient) -> bool {
+        if self.clients.contains_key(client_key) {
             return false;
         }
-        self.clients.insert(lang_name.to_string(), client);
+        self.clients.insert(client_key.to_string(), client);
         true
     }
 
-    /// Build the `emit` closure passed to `LspClient::spawn`. Exposed
-    /// so a worker thread can spawn a client without needing the
-    /// coordinator's private channel.
+    /// Mark `client_key` as one of the active clients for the current
+    /// document. Idempotent. The caller (worker) is also responsible
+    /// for firing `didOpen` against the new client.
+    pub fn add_current_client(&mut self, client_key: &str) {
+        if !self.current_clients.iter().any(|k| k == client_key) {
+            self.current_clients.push(client_key.to_string());
+        }
+    }
+
+    /// Build the `emit` closure passed to `LspClient::spawn`.
     pub fn make_emit(&self) -> Box<dyn Fn(LspEvent) + Send + 'static> {
         let tx = self.event_tx.clone();
         Box::new(move |ev| {
@@ -222,46 +270,56 @@ impl LspCoordinator {
         &self.startup_cwd
     }
 
-    /// Send `didOpen` for `path` against the client for `lang_name`.
-    /// Sets the document as the current one on success. No-op when the
-    /// client is missing.
-    pub fn did_open(&mut self, lang_name: &str, path: &Path, text: &str) -> Result<()> {
+    /// Send `didOpen` for `path` against `client_key`. Sets the document
+    /// as the current one and records the client as active. No-op when
+    /// the client is missing.
+    pub fn did_open(
+        &mut self,
+        client_key: &str,
+        lang_name: &str,
+        path: &Path,
+        text: &str,
+    ) -> Result<()> {
         let uri = lsp::path_to_uri(path);
-        if let Some(client) = self.clients.get_mut(lang_name) {
+        if let Some(client) = self.clients.get_mut(client_key) {
             client.did_open(&uri, text)?;
         }
         self.current_uri = Some(uri);
         self.current_language = Some(lang_name.to_string());
+        self.add_current_client(client_key);
         Ok(())
     }
 
-    /// Send `didChange` for the current document. No-op when no
-    /// document or client is active.
+    /// Fan out `didChange` to every client attached to the current
+    /// document. No-op when nothing is attached.
     pub fn did_change(&mut self, text: &str) -> Result<()> {
-        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
+        let Some(uri) = self.current_uri.clone() else {
             return Ok(());
         };
-        let Some(client) = self.clients.get_mut(lang) else {
-            return Ok(());
-        };
-        client.did_change(uri, text)
+        let keys = self.current_clients.clone();
+        for key in &keys {
+            if let Some(client) = self.clients.get_mut(key) {
+                client.did_change(&uri, text)?;
+            }
+        }
+        Ok(())
     }
 
-    /// Send `didSave` for the current document. No-op when no
-    /// document or client is active.
+    /// Fan out `didSave` to every client attached to the current
+    /// document.
     pub fn did_save(&mut self, text: &str) -> Result<()> {
-        let (Some(uri), Some(lang)) = (&self.current_uri, &self.current_language) else {
+        let Some(uri) = self.current_uri.clone() else {
             return Ok(());
         };
-        let Some(client) = self.clients.get_mut(lang) else {
-            return Ok(());
-        };
-        client.did_save(uri, text)
+        let keys = self.current_clients.clone();
+        for key in &keys {
+            if let Some(client) = self.clients.get_mut(key) {
+                client.did_save(&uri, text)?;
+            }
+        }
+        Ok(())
     }
 
-    /// `textDocument/definition`-style request. `method` is the
-    /// concrete LSP method; `label` is the user-visible noun for
-    /// status messages.
     pub fn request_jump(
         &mut self,
         method: &str,
@@ -269,7 +327,15 @@ impl LspCoordinator {
         cursor: Cursor,
     ) -> Result<()> {
         let params = self.text_document_position_params(cursor);
-        self.send_request(method, params, LspRequestKind::Jump { label })
+        self.fan_out_request(
+            method,
+            params,
+            LspRequestKind::Jump,
+            GroupAccum::Jump {
+                label,
+                locations: Vec::new(),
+            },
+        )
     }
 
     pub fn request_references(&mut self, cursor: Cursor) -> Result<()> {
@@ -280,19 +346,14 @@ impl LspCoordinator {
                 serde_json::json!({ "includeDeclaration": true }),
             );
         }
-        self.send_request(
+        self.fan_out_request(
             "textDocument/references",
             params,
             LspRequestKind::References,
+            GroupAccum::References(Vec::new()),
         )
     }
 
-    /// `textDocument/codeAction` for the cursor position. The range is
-    /// a zero-width span at the cursor — sufficient for the common
-    /// "actions that apply at a point" case (quickfixes for the
-    /// diagnostic on this line, refactors for the symbol under the
-    /// cursor). `diagnostics` are forwarded so quickfix actions are
-    /// tagged correctly.
     pub fn request_code_action(
         &mut self,
         cursor: Cursor,
@@ -319,56 +380,67 @@ impl LspCoordinator {
             },
             "context": { "diagnostics": diagnostics_json },
         });
-        self.send_request("textDocument/codeAction", params, LspRequestKind::CodeAction)
+        self.fan_out_request(
+            "textDocument/codeAction",
+            params,
+            LspRequestKind::CodeAction,
+            GroupAccum::CodeAction(Vec::new()),
+        )
     }
 
-    /// `textDocument/hover` — fetch type / doc / signature info for the
-    /// symbol under the cursor.
     pub fn request_hover(&mut self, cursor: Cursor) -> Result<()> {
         let params = self.text_document_position_params(cursor);
-        self.send_request("textDocument/hover", params, LspRequestKind::Hover)
+        self.fan_out_request(
+            "textDocument/hover",
+            params,
+            LspRequestKind::Hover,
+            GroupAccum::Hover(Vec::new()),
+        )
     }
 
-    /// `textDocument/completion` — fetch completion candidates at the
-    /// cursor. `prefix_start` is where the identifier under the cursor
-    /// begins (cursor itself when there's nothing typed yet) and is
-    /// carried through to the response so a stale reply (user moved
-    /// row or backspaced past the start) can be discarded.
     pub fn request_completion(&mut self, cursor: Cursor, prefix_start: Cursor) -> Result<()> {
         let params = self.text_document_position_params(cursor);
-        self.send_request(
+        self.fan_out_request(
             "textDocument/completion",
             params,
-            LspRequestKind::Completion { prefix_start },
+            LspRequestKind::Completion,
+            GroupAccum::Completion {
+                prefix_start,
+                items: Vec::new(),
+            },
         )
     }
 
-    /// `completionItem/resolve` — round-trip the accepted `CompletionItem`
-    /// JSON back to the server so it can fill in lazily-computed fields
-    /// (notably `additionalTextEdits` for auto-import). The current URI
-    /// is captured so a response arriving after the user has switched
-    /// buffers can be ignored.
-    pub fn request_completion_resolve(&mut self, raw: Value) -> Result<()> {
+    /// `completionItem/resolve` — single-client. `source` is the
+    /// `client_key` that originally produced the item; resolving via a
+    /// different server would lose the opaque `data` context.
+    pub fn request_completion_resolve(&mut self, raw: Value, source: &str) -> Result<()> {
         let uri = self.current_uri.clone().unwrap_or_default();
-        self.send_request(
+        self.send_single(
+            source,
             "completionItem/resolve",
             raw,
-            LspRequestKind::CompletionResolve { uri },
+            LspRequestKind::CompletionResolve,
+            GroupAccum::CompletionResolve {
+                uri,
+                edits: Vec::new(),
+            },
         )
     }
 
-    /// URI of the currently-open document, if any.
     pub fn current_uri(&self) -> Option<&str> {
         self.current_uri.as_deref()
     }
 
-    /// `codeAction/resolve` — fill in `edit` (and any other lazily-
-    /// computed fields) for an action returned without one.
-    pub fn request_code_action_resolve(&mut self, action: Value) -> Result<()> {
-        self.send_request(
+    /// `codeAction/resolve` — single-client. `source` is the `client_key`
+    /// that originally produced the action.
+    pub fn request_code_action_resolve(&mut self, action: Value, source: &str) -> Result<()> {
+        self.send_single(
+            source,
             "codeAction/resolve",
             action,
             LspRequestKind::CodeActionResolve,
+            GroupAccum::CodeActionResolve { action: None },
         )
     }
 
@@ -377,10 +449,15 @@ impl LspCoordinator {
         if let Some(obj) = params.as_object_mut() {
             obj.insert("newName".to_string(), Value::String(new_name.clone()));
         }
-        self.send_request(
+        let kind_new_name = new_name.clone();
+        self.fan_out_request(
             "textDocument/rename",
             params,
-            LspRequestKind::Rename { new_name },
+            LspRequestKind::Rename,
+            GroupAccum::Rename {
+                new_name: kind_new_name,
+                edit: None,
+            },
         )
     }
 
@@ -395,97 +472,220 @@ impl LspCoordinator {
         })
     }
 
-    fn send_request(&mut self, method: &str, params: Value, kind: LspRequestKind) -> Result<()> {
-        let Some(lang) = self.current_language.clone() else {
+    /// Allocate a group, dispatch `params` as `method` to every current
+    /// client, register a pending entry for each, and stash the group's
+    /// accumulator. When every client has either responded or had its
+    /// `Pending` cleared on error, the accumulated state is surfaced as
+    /// an [`LspEventOutcome`].
+    fn fan_out_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        kind: LspRequestKind,
+        accum: GroupAccum,
+    ) -> Result<()> {
+        let keys = self.current_clients.clone();
+        if keys.is_empty() {
             return Ok(());
-        };
-        let Some(client) = self.clients.get_mut(&lang) else {
+        }
+        let group_id = self.alloc_group();
+        let mut sent = 0usize;
+        for key in &keys {
+            if let Some(client) = self.clients.get_mut(key) {
+                match client.request(method, params.clone()) {
+                    Ok(id) => {
+                        self.pending.insert(
+                            (key.clone(), id),
+                            Pending {
+                                group: group_id,
+                                kind,
+                            },
+                        );
+                        sent += 1;
+                    }
+                    Err(_) => {
+                        // The reader thread will surface the underlying
+                        // error separately; here we just don't count
+                        // this client toward the group.
+                    }
+                }
+            }
+        }
+        if sent == 0 {
             return Ok(());
-        };
-        let id = client.request(method, params)?;
-        self.pending.insert((lang, id), kind);
+        }
+        self.groups.insert(
+            group_id,
+            Group {
+                remaining: sent,
+                accum,
+            },
+        );
         Ok(())
     }
 
-    /// Consume an LSP event. Diagnostics / messages are absorbed
-    /// here; responses are routed back to their pending kind and
-    /// surfaced as an [`LspEventOutcome`] for the caller to act on.
+    /// Single-client dispatch (used for resolve round-trips). Falls
+    /// back to the first attached client when `source` is unknown — a
+    /// stale completion whose originating server was disabled between
+    /// the popup opening and the user pressing accept.
+    fn send_single(
+        &mut self,
+        source: &str,
+        method: &str,
+        params: Value,
+        kind: LspRequestKind,
+        accum: GroupAccum,
+    ) -> Result<()> {
+        let key = if self.clients.contains_key(source) {
+            source.to_string()
+        } else if let Some(first) = self.current_clients.first().cloned() {
+            first
+        } else {
+            return Ok(());
+        };
+        let Some(client) = self.clients.get_mut(&key) else {
+            return Ok(());
+        };
+        let id = client.request(method, params)?;
+        let group_id = self.alloc_group();
+        self.pending.insert(
+            (key, id),
+            Pending {
+                group: group_id,
+                kind,
+            },
+        );
+        self.groups.insert(
+            group_id,
+            Group {
+                remaining: 1,
+                accum,
+            },
+        );
+        Ok(())
+    }
+
+    fn alloc_group(&mut self) -> u64 {
+        let id = self.next_group_id;
+        self.next_group_id = self.next_group_id.wrapping_add(1);
+        id
+    }
+
+    /// Consume an LSP event. Diagnostics / messages are absorbed here;
+    /// responses fold into their request group and an outcome is
+    /// surfaced once every fanned-out client has reported back.
     pub fn handle_event(&mut self, ev: LspEvent) -> LspEventOutcome {
         match ev {
-            LspEvent::Diagnostics { uri, items } => {
+            LspEvent::Diagnostics {
+                client,
+                uri,
+                items,
+            } => {
+                let entry = self.diagnostics.entry(uri.clone()).or_default();
                 if items.is_empty() {
-                    self.diagnostics.remove(&uri);
+                    entry.remove(&client);
+                    if entry.is_empty() {
+                        self.diagnostics.remove(&uri);
+                    }
                 } else {
-                    self.diagnostics.insert(uri, items);
+                    entry.insert(client, items);
                 }
                 LspEventOutcome::Nothing
             }
             LspEvent::Message { level, text } => {
-                // Levels: 1 Error, 2 Warning, 3 Info, 4 Log.
                 if level == 1 {
                     LspEventOutcome::ErrorMessage(text)
                 } else {
                     LspEventOutcome::InfoMessage(text)
                 }
             }
-            LspEvent::Error(e) => LspEventOutcome::ErrorMessage(format!("lsp: {}", e)),
+            LspEvent::Error { client, message } => {
+                self.drop_client(&client);
+                LspEventOutcome::ErrorMessage(format!("lsp: {}", message))
+            }
             LspEvent::Response {
-                lang,
+                client,
                 id,
                 result,
                 error,
-            } => {
-                let Some(kind) = self.pending.remove(&(lang, id)) else {
-                    return LspEventOutcome::Nothing;
-                };
-                if let Some(msg) = error {
-                    return LspEventOutcome::ErrorMessage(format!("lsp: {}", msg));
-                }
-                let result = result.unwrap_or(Value::Null);
-                match kind {
-                    LspRequestKind::Jump { label } => LspEventOutcome::Jump {
-                        label,
-                        locations: lsp::parse_locations(&result),
-                    },
-                    LspRequestKind::References => {
-                        LspEventOutcome::References(lsp::parse_locations(&result))
-                    }
-                    LspRequestKind::Rename { new_name } => LspEventOutcome::Rename {
-                        new_name,
-                        edit: lsp::parse_workspace_edit(&result),
-                    },
-                    LspRequestKind::CodeAction => {
-                        LspEventOutcome::CodeActions(lsp::parse_code_actions(&result))
-                    }
-                    LspRequestKind::CodeActionResolve => {
-                        LspEventOutcome::CodeActionResolved(lsp::parse_code_action(&result))
-                    }
-                    LspRequestKind::Hover => {
-                        LspEventOutcome::Hover(lsp::parse_hover(&result))
-                    }
-                    LspRequestKind::Completion { prefix_start } => {
-                        LspEventOutcome::Completion {
-                            prefix_start,
-                            items: lsp::parse_completion(&result),
-                        }
-                    }
-                    LspRequestKind::CompletionResolve { uri } => {
-                        // Servers that don't support resolve typically
-                        // echo the item back unchanged (or return null);
-                        // both shapes collapse to "no extra edits".
-                        let edits = lsp::parse_completion_resolve(&result)
-                            .map(|it| it.additional_text_edits)
-                            .unwrap_or_default();
-                        LspEventOutcome::CompletionResolved { uri, edits }
-                    }
-                }
-            }
+            } => self.handle_response(client, id, result, error),
         }
     }
 
-    /// Apply a [`WorkspaceEdit`]: write other-file edits to disk,
-    /// return the edits that target the active buffer so the caller
-    /// can apply them through its own buffer machinery.
+    /// Route a `Response` back to its `Group` and, if every client in
+    /// that group has now reported, emit the merged outcome.
+    fn handle_response(
+        &mut self,
+        client: String,
+        id: u64,
+        result: Option<Value>,
+        error: Option<String>,
+    ) -> LspEventOutcome {
+        let Some(pending) = self.pending.remove(&(client.clone(), id)) else {
+            return LspEventOutcome::Nothing;
+        };
+        let group_id = pending.group;
+        let result = result.unwrap_or(Value::Null);
+
+        // Errors collapse to "empty result" — we still count this
+        // client toward the group so the merge eventually completes,
+        // but the user shouldn't see a per-server error for each
+        // server in the fan-out. Genuine failures (every server
+        // errored) leave the merged outcome empty, which downstream
+        // handlers already report as "no results".
+        let had_error = error.is_some();
+
+        if let Some(group) = self.groups.get_mut(&group_id) {
+            if !had_error {
+                accumulate(&mut group.accum, &client, &result, &pending.kind);
+            }
+            group.remaining = group.remaining.saturating_sub(1);
+            if group.remaining == 0 {
+                let group = self.groups.remove(&group_id).unwrap();
+                return finalize(group.accum);
+            }
+        }
+        LspEventOutcome::Nothing
+    }
+
+    /// Drop a client whose reader thread is dead. Pending requests
+    /// against it count as already-responded (empty); groups that
+    /// finalise as a result of this are surfaced via the event channel
+    /// so the caller sees the merged outcome without a follow-up
+    /// response event.
+    fn drop_client(&mut self, client_key: &str) {
+        self.clients.remove(client_key);
+        self.current_clients.retain(|k| k != client_key);
+        // Decrement remaining counts for every pending request against
+        // this client. Groups that hit zero are dropped on the floor —
+        // the user already sees an `ErrorMessage` for the reader-thread
+        // failure that triggered us, which is informative enough; the
+        // alternative (a second outcome for the merged-but-incomplete
+        // result) would need a new AppEvent variant.
+        let dead_keys: Vec<(String, u64)> = self
+            .pending
+            .keys()
+            .filter(|(k, _)| k == client_key)
+            .cloned()
+            .collect();
+        for k in dead_keys {
+            if let Some(pending) = self.pending.remove(&k)
+                && let Some(group) = self.groups.get_mut(&pending.group)
+            {
+                group.remaining = group.remaining.saturating_sub(1);
+                if group.remaining == 0 {
+                    self.groups.remove(&pending.group);
+                }
+            }
+        }
+        // Drop diagnostics this client owned across all URIs so the
+        // status bar doesn't show stale entries from a dead server.
+        for slices in self.diagnostics.values_mut() {
+            slices.remove(client_key);
+        }
+        self.diagnostics.retain(|_, slices| !slices.is_empty());
+    }
+
     pub fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> Result<WorkspaceEditResult> {
         let mut current_buffer_edits = Vec::new();
         let files_touched = edit.changes.len();
@@ -518,9 +718,112 @@ impl LspCoordinator {
     }
 }
 
-/// Re-encode a `Diagnostic` as the JSON shape `textDocument/codeAction`
-/// expects in its `context.diagnostics`. Only the fields servers
-/// actually consult are populated (range, severity, message, source).
+/// Fold a single client's response into the group's accumulator.
+fn accumulate(accum: &mut GroupAccum, source: &str, result: &Value, kind: &LspRequestKind) {
+    match (accum, kind) {
+        (GroupAccum::Jump { locations, .. }, LspRequestKind::Jump) => {
+            locations.extend(lsp::parse_locations(result));
+        }
+        (GroupAccum::References(locations), LspRequestKind::References) => {
+            locations.extend(lsp::parse_locations(result));
+        }
+        (GroupAccum::Rename { edit, .. }, LspRequestKind::Rename) if edit.is_none() => {
+            *edit = lsp::parse_workspace_edit(result);
+        }
+        (GroupAccum::CodeAction(actions), LspRequestKind::CodeAction) => {
+            let mut parsed = lsp::parse_code_actions(result);
+            for a in &mut parsed {
+                a.source = source.to_string();
+            }
+            actions.extend(parsed);
+        }
+        (GroupAccum::Hover(parts), LspRequestKind::Hover) => {
+            if let Some(h) = lsp::parse_hover(result) {
+                parts.push(h.contents);
+            }
+        }
+        (GroupAccum::Completion { items, .. }, LspRequestKind::Completion) => {
+            let mut parsed = lsp::parse_completion(result);
+            for it in &mut parsed {
+                it.source = source.to_string();
+            }
+            items.extend(parsed);
+        }
+        (GroupAccum::CompletionResolve { edits, .. }, LspRequestKind::CompletionResolve) => {
+            // Servers that don't support resolve typically echo the
+            // item back unchanged (or return null); both shapes
+            // collapse to "no extra edits" via `parse_completion_resolve`.
+            if let Some(item) = lsp::parse_completion_resolve(result) {
+                *edits = item.additional_text_edits;
+            }
+        }
+        (GroupAccum::CodeActionResolve { action }, LspRequestKind::CodeActionResolve) => {
+            let mut parsed = lsp::parse_code_action(result);
+            if let Some(a) = parsed.as_mut() {
+                a.source = source.to_string();
+            }
+            *action = parsed;
+        }
+        _ => {}
+    }
+}
+
+/// Emit the merged outcome once every fanned-out client has reported.
+fn finalize(accum: GroupAccum) -> LspEventOutcome {
+    match accum {
+        GroupAccum::Jump { label, locations } => LspEventOutcome::Jump { label, locations },
+        GroupAccum::References(locations) => LspEventOutcome::References(locations),
+        GroupAccum::Rename { new_name, edit } => LspEventOutcome::Rename { new_name, edit },
+        GroupAccum::CodeAction(actions) => LspEventOutcome::CodeActions(actions),
+        GroupAccum::Hover(parts) => {
+            if parts.is_empty() {
+                LspEventOutcome::Hover(None)
+            } else {
+                LspEventOutcome::Hover(Some(Hover {
+                    contents: parts.join("\n\n---\n\n"),
+                }))
+            }
+        }
+        GroupAccum::Completion {
+            prefix_start,
+            items,
+        } => {
+            let items = dedup_completion(items);
+            LspEventOutcome::Completion {
+                prefix_start,
+                items,
+            }
+        }
+        GroupAccum::CompletionResolve { uri, edits } => {
+            LspEventOutcome::CompletionResolved { uri, edits }
+        }
+        GroupAccum::CodeActionResolve { action } => LspEventOutcome::CodeActionResolved(action),
+    }
+}
+
+/// Strip duplicate completion items that bubbled up from multiple
+/// servers offering the same symbol. Keys on `(label, kind,
+/// insert_text-or-newText)` so legitimately-distinct items (same name,
+/// different signatures) survive.
+fn dedup_completion(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<(String, u8, String)> = HashSet::new();
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        let text_key = it
+            .text_edit
+            .as_ref()
+            .map(|te| te.new_text.clone())
+            .or_else(|| it.insert_text.clone())
+            .unwrap_or_else(|| it.label.clone());
+        let key = (it.label.clone(), it.kind, text_key);
+        if seen.insert(key) {
+            out.push(it);
+        }
+    }
+    out
+}
+
 fn diagnostic_to_json(d: &Diagnostic) -> Value {
     serde_json::json!({
         "range": {

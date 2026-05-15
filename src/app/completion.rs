@@ -164,6 +164,7 @@ mod tests {
             detail: None,
             additional_text_edits: Vec::new(),
             raw: serde_json::Value::Null,
+            source: String::new(),
         }
     }
 

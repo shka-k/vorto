@@ -225,8 +225,9 @@ impl App {
     }
 
     /// Diagnostics for the current buffer's URI, if any. Convenience for
-    /// the UI layer.
-    pub fn current_diagnostics(&self) -> Option<&[Diagnostic]> {
+    /// the UI layer. Merged across every attached LSP server, so the
+    /// status bar / gutter show findings from all of them at once.
+    pub fn current_diagnostics(&self) -> Option<Vec<Diagnostic>> {
         self.lsp.current_diagnostics()
     }
 }

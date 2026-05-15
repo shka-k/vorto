@@ -16,6 +16,7 @@ use crate::finder::PreviewEntry;
 use crate::lsp::{self, LspClient};
 use crate::syntax::Highlighter;
 
+use super::lsp_coordinator::client_key;
 use super::{App, Status, is_command_not_found, root_cause};
 
 impl App {
@@ -54,10 +55,11 @@ impl App {
         });
     }
 
-    /// Spawn the LSP server + run its `initialize` handshake off the
-    /// main thread. When the same language already has a client, just
-    /// fire `didOpen` inline (cheap — no process spawn). Otherwise the
-    /// finished client arrives via [`AppEvent::LspReady`].
+    /// Spawn one LSP server per `[[languages.<lang>.lsp]]` entry off
+    /// the main thread. Servers that are already running for this
+    /// language get an inline `didOpen` (cheap — no process spawn);
+    /// new ones fire `initialize` on a worker thread and arrive back
+    /// via [`AppEvent::LspReady`].
     pub(super) fn spawn_lsp_worker(&mut self, path: &Path) {
         let Some(ext) = path
             .extension()
@@ -69,36 +71,50 @@ impl App {
         let Some(spec) = self.config.languages.by_extension(&ext).cloned() else {
             return;
         };
-        let Some(lsp_cfg) = spec.lsp else { return };
-        let lang_name = spec.name;
-
-        if self.lsp.has_client(&lang_name) {
-            let text = self.buffer.lines.join("\n");
-            if let Err(e) = self.lsp.did_open(&lang_name, path, &text) {
-                self.status =
-                    Status::error(format!("lsp didOpen ({}): {}", lang_name, root_cause(&e)));
-            }
+        if spec.lsp.is_empty() {
             return;
         }
+        let lang_name = spec.name.clone();
 
-        let tx = self.event_tx.clone();
-        let emit = self.lsp.make_emit();
-        let startup_cwd = self.lsp.startup_cwd().to_path_buf();
-        let generation = self.open_gen;
-        let path_buf = path.to_path_buf();
+        for lsp_cfg in spec.lsp {
+            let key = client_key(&lang_name, &lsp_cfg.name);
 
-        thread::spawn(move || {
-            let root_dir =
-                lsp::discover_root(&startup_cwd, Some(&path_buf), &lsp_cfg.root_markers);
-            let root_uri = lsp::path_to_uri(&root_dir);
-            let result = LspClient::spawn(&lang_name, &lsp_cfg, &root_uri, emit);
-            let _ = tx.send(AppEvent::LspReady {
-                generation,
-                lang: lang_name,
-                path: path_buf,
-                result,
+            if self.lsp.has_client(&key) {
+                let text = self.buffer.lines.join("\n");
+                if let Err(e) = self.lsp.did_open(&key, &lang_name, path, &text) {
+                    self.status = Status::error(format!(
+                        "lsp didOpen ({}): {}",
+                        key,
+                        root_cause(&e)
+                    ));
+                }
+                continue;
+            }
+
+            let tx = self.event_tx.clone();
+            let emit = self.lsp.make_emit();
+            let startup_cwd = self.lsp.startup_cwd().to_path_buf();
+            let generation = self.open_gen;
+            let path_buf = path.to_path_buf();
+            let lang_for_thread = lang_name.clone();
+            let key_for_thread = key.clone();
+            let cfg = lsp_cfg;
+
+            thread::spawn(move || {
+                let root_dir =
+                    lsp::discover_root(&startup_cwd, Some(&path_buf), &cfg.root_markers);
+                let root_uri = lsp::path_to_uri(&root_dir);
+                let result =
+                    LspClient::spawn(&key_for_thread, &lang_for_thread, &cfg, &root_uri, emit);
+                let _ = tx.send(AppEvent::LspReady {
+                    generation,
+                    client_key: key_for_thread,
+                    lang: lang_for_thread,
+                    path: path_buf,
+                    result,
+                });
             });
-        });
+        }
     }
 
     /// Install a freshly-built highlighter on the active buffer. Dropped
@@ -132,10 +148,14 @@ impl App {
     /// Adopt a freshly-spawned LSP client and send the deferred
     /// `didOpen`. Dropped when `generation` doesn't match — the freshly
     /// spawned client gets dropped here, which closes its stdin and
-    /// shuts the server down.
+    /// shuts the server down. `client_key` is the unique identifier
+    /// the coordinator stores the client under (typically
+    /// `"<lang>::<server-name>"`); a single `<lang>` may produce
+    /// multiple `LspReady` events when several servers are configured.
     pub fn handle_lsp_ready(
         &mut self,
         generation: u64,
+        client_key: String,
         lang: String,
         path: PathBuf,
         result: Result<LspClient>,
@@ -151,23 +171,26 @@ impl App {
                 // PATH; surface every other failure.
                 if !is_command_not_found(&e) {
                     self.status =
-                        Status::error(format!("lsp ({}): {}", lang, root_cause(&e)));
+                        Status::error(format!("lsp ({}): {}", client_key, root_cause(&e)));
                 }
                 return;
             }
         };
-        if !self.lsp.attach_client(&lang, client) {
-            // A client for this language was attached between spawn
-            // and now (parallel open of another file with the same
+        if !self.lsp.attach_client(&client_key, client) {
+            // A client for this key was attached between spawn and
+            // now (parallel open of another file with the same
             // language). The freshly-spawned one is dropped here.
             return;
         }
         // Re-snapshot the buffer — the user may have edited while the
         // server was initializing.
         let text = self.buffer.lines.join("\n");
-        if let Err(e) = self.lsp.did_open(&lang, &path, &text) {
-            self.status =
-                Status::error(format!("lsp didOpen ({}): {}", lang, root_cause(&e)));
+        if let Err(e) = self.lsp.did_open(&client_key, &lang, &path, &text) {
+            self.status = Status::error(format!(
+                "lsp didOpen ({}): {}",
+                client_key,
+                root_cause(&e)
+            ));
         }
         self.lsp.set_last_synced_version(self.buffer.version);
     }

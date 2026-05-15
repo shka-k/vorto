@@ -42,7 +42,7 @@ pub use keymap::{
     GOTO_BINDINGS, KeySig, Keymap, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
     Z_BINDINGS,
 };
-pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig};
+pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig, LspToml};
 
 use cursor::{CursorConfig, resolve_cursor_shapes};
 use keymap::LEADER;
@@ -82,7 +82,7 @@ impl Config {
 
         let cursor_shapes = resolve_cursor_shapes(&toml.cursor)?;
         let editor = EditorConfig::default().overlay(&toml.editor);
-        let languages = LanguageRegistry::build(toml.languages);
+        let languages = LanguageRegistry::build(toml.languages, toml.lsp)?;
         let grammar_dir = toml
             .grammar_dir
             .map(PathBuf::from)
@@ -121,6 +121,11 @@ struct Toml {
     /// by [`LanguageRegistry::build`].
     #[serde(default)]
     languages: std::collections::HashMap<String, LanguageConfig>,
+    /// `[lsp.<server-name>]` blocks. Built-in servers can be partially
+    /// overlaid (e.g. just `args`); entirely new servers must include
+    /// `command`. Referenced from `[languages.<lang>].lsp = ["<name>"]`.
+    #[serde(default)]
+    lsp: std::collections::HashMap<String, LspToml>,
     /// Directory holding `<grammar>.{so,dylib,dll}`. Defaults to
     /// `<config>/grammars`.
     grammar_dir: Option<String>,

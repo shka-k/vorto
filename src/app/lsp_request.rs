@@ -126,6 +126,7 @@ impl App {
         };
         let needs_resolve = item.additional_text_edits.is_empty();
         let raw = item.raw.clone();
+        let source = item.source.clone();
         let base = item
             .text_edit
             .as_ref()
@@ -215,7 +216,7 @@ impl App {
         // coordinator drops both into an empty-edit outcome, so the user
         // sees the primary insertion regardless.
         if needs_resolve && self.lsp.has_lsp() {
-            let _ = self.lsp.request_completion_resolve(raw);
+            let _ = self.lsp.request_completion_resolve(raw, &source);
         }
     }
 
@@ -242,11 +243,7 @@ impl App {
         // Diagnostics borrow ends before the mutable `request_code_action`
         // call, but the borrow checker can't prove that across `self`, so
         // collect into an owned Vec first.
-        let diagnostics: Vec<Diagnostic> = self
-            .lsp
-            .current_diagnostics()
-            .map(|d| d.to_vec())
-            .unwrap_or_default();
+        let diagnostics: Vec<Diagnostic> = self.lsp.current_diagnostics().unwrap_or_default();
         if let Err(e) = self.lsp.request_code_action(cursor, &diagnostics) {
             self.status = Status::error(format!("lsp codeAction: {}", root_cause(&e)));
         }
@@ -264,7 +261,8 @@ impl App {
             self.status = Status::error("no LSP for this buffer");
             return;
         }
-        if let Err(e) = self.lsp.request_code_action_resolve(action.raw) {
+        let source = action.source.clone();
+        if let Err(e) = self.lsp.request_code_action_resolve(action.raw, &source) {
             self.status = Status::error(format!("lsp codeAction/resolve: {}", root_cause(&e)));
         }
     }

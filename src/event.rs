@@ -27,8 +27,13 @@ pub enum AppEvent {
     /// A worker thread finished spawning an LSP client and running its
     /// `initialize` handshake. The main loop adopts the client and
     /// fires `didOpen` with a fresh snapshot of the current buffer.
+    /// `client_key` is the per-server identifier (`"<lang>::<server>"`)
+    /// the coordinator stores the client under; one of these events is
+    /// emitted per `[[languages.<lang>.lsp]]` entry configured for the
+    /// opened file.
     LspReady {
         generation: u64,
+        client_key: String,
         lang: String,
         path: PathBuf,
         result: anyhow::Result<LspClient>,

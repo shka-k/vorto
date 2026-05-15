@@ -125,6 +125,9 @@ pub fn parse_code_actions(v: &Value) -> Vec<CodeAction> {
             title: title.to_string(),
             edit,
             raw: item.clone(),
+            // Filled in by the coordinator (which knows the originating
+            // client). Parse stage is source-agnostic.
+            source: String::new(),
         });
     };
     if let Some(arr) = v.as_array() {
@@ -147,6 +150,7 @@ pub fn parse_code_action(v: &Value) -> Option<CodeAction> {
         title,
         edit,
         raw: v.clone(),
+        source: String::new(),
     })
 }
 
@@ -273,6 +277,7 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         detail,
         additional_text_edits,
         raw: v.clone(),
+        source: String::new(),
     })
 }
 

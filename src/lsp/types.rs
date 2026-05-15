@@ -14,25 +14,33 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub enum LspEvent {
     /// Server replaced the diagnostics for a document. An empty `items`
-    /// vector means "clear".
-    Diagnostics { uri: String, items: Vec<Diagnostic> },
+    /// vector means "clear" — but only for this `client`'s slice; other
+    /// servers' diagnostics for the same URI survive.
+    Diagnostics {
+        client: String,
+        uri: String,
+        items: Vec<Diagnostic>,
+    },
     /// `window/showMessage` — surface in the status bar.
     Message { level: u8, text: String },
     /// Response to an earlier request we sent. `id` matches what
-    /// [`super::LspClient::request`] returned; the App keeps a `(lang, id) →
-    /// kind` map so it knows how to interpret `result`. `lang` is
-    /// stamped by the reader thread so the App can disambiguate
-    /// responses arriving from multiple servers on the same channel.
+    /// [`super::LspClient::request`] returned; the App keeps a
+    /// `(client, id) → kind` map so it knows how to interpret `result`.
+    /// `client` is the per-server identifier (typically
+    /// `"<lang>::<server_name>"`) stamped by the reader thread so the
+    /// App can disambiguate responses arriving from multiple servers on
+    /// the same channel.
     Response {
-        lang: String,
+        client: String,
         id: u64,
         /// `None` when the server returned an error or a null result.
         result: Option<Value>,
         /// Server error message, if any.
         error: Option<String>,
     },
-    /// Reader hit a fatal error and is exiting.
-    Error(String),
+    /// Reader hit a fatal error and is exiting. `client` identifies the
+    /// dead reader so the coordinator can drop its state.
+    Error { client: String, message: String },
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +133,10 @@ pub struct CompletionItem {
     /// notably rust-analyzer) use opaque `data` fields here to carry
     /// context they need to compute the deferred `additionalTextEdits`.
     pub raw: Value,
+    /// Identifier of the client the item came from. Required so
+    /// `completionItem/resolve` round-trips back to the same server —
+    /// other servers don't have the opaque `data` context.
+    pub source: String,
 }
 
 /// Simplified LSP `WorkspaceEdit` — a flat map from document URI to the
@@ -148,6 +160,9 @@ pub struct CodeAction {
     /// `codeAction/resolve`, which the spec defines as round-tripping
     /// the whole CodeAction object back.
     pub raw: Value,
+    /// Identifier of the client the action came from. `codeAction/resolve`
+    /// must go back to the same server.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

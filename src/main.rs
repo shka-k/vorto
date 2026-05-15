@@ -159,11 +159,12 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
         }
         event::AppEvent::LspReady {
             generation,
+            client_key,
             lang,
             path,
             result,
         } => {
-            app.handle_lsp_ready(generation, lang, path, result);
+            app.handle_lsp_ready(generation, client_key, lang, path, result);
         }
         event::AppEvent::PreviewReady(entry) => app.handle_preview_ready(entry),
     }
