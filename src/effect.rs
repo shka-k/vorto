@@ -109,4 +109,9 @@ pub enum Cmd {
     /// The runtime computes targets (depends on the viewport metrics
     /// that `App::buffer` carries) and seeds `App::jump_state`.
     StartJumpLabel,
+
+    // ── Selection ────────────────────────────────────────────
+    /// `gA` — select the whole buffer. Pins the visual anchor at
+    /// (0, 0), enters Visual-line, lands the cursor on the last row.
+    SelectWholeBuffer,
 }

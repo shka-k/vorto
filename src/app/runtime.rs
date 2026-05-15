@@ -50,8 +50,21 @@ impl App {
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
             Cmd::Quit => self.should_quit = true,
             Cmd::StartJumpLabel => self.start_jump_label(),
+            Cmd::SelectWholeBuffer => self.run_select_whole_buffer(),
         }
         Ok(())
+    }
+
+    /// `gA` — select every line in the buffer. Sets the visual anchor
+    /// at (0, 0) directly rather than going through `enter_mode`, since
+    /// the latter only pins the anchor on a Normal→Visual transition
+    /// and we want a fresh selection even if we're already in some
+    /// visual mode.
+    fn run_select_whole_buffer(&mut self) {
+        let last = self.buffer.lines.len().saturating_sub(1);
+        self.visual_anchor = Some(crate::editor::Cursor { row: 0, col: 0 });
+        self.mode = crate::mode::Mode::VisualLine;
+        self.buffer.cursor = crate::editor::Cursor { row: last, col: 0 };
     }
 
     fn run_jump_search(&mut self, forward: bool) {

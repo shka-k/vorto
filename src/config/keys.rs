@@ -116,6 +116,7 @@ pub fn action_to_token(name: &str) -> Option<Token> {
         "search-backward" => Direct(D::OpenPrompt(PromptKind::Search { forward: false })),
         "fuzzy-files" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Files))),
         "fuzzy-lines" => Direct(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
+        "select-whole-buffer" => Direct(D::SelectWholeBuffer),
 
         // ── operators (when bound at top level) ────────────────────────
         "delete-operator" => Op(Operator::Delete),

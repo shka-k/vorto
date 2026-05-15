@@ -236,6 +236,7 @@ impl App {
                 }
             }
             D::JumpLabel => cmds.push(Cmd::StartJumpLabel),
+            D::SelectWholeBuffer => cmds.push(Cmd::SelectWholeBuffer),
             D::ToggleComment => match buffer_comment_token(self) {
                 Some(token) => {
                     let start_row = self.buffer.cursor.row;

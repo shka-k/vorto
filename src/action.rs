@@ -265,6 +265,10 @@ pub enum DirectKind {
     /// second char); a unique first-char prefix jumps immediately. Esc
     /// or any non-label key cancels.
     JumpLabel,
+    /// `gA` — select the whole buffer (alias for `ggVG`). Drops anchor
+    /// at (0, 0), enters Visual-line mode, parks the cursor on the last
+    /// line so operators apply to every line.
+    SelectWholeBuffer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

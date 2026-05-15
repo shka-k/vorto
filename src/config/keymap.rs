@@ -312,6 +312,12 @@ pub const GOTO_BINDINGS: &[Binding] = {
             token: Dir(D::SearchSelectNext { reverse: true }),
             label: "select prev match",
         },
+        Binding {
+            key: KeyCode::Char('A'),
+            aliases: &[],
+            token: Dir(D::SelectWholeBuffer),
+            label: "select whole buffer (= ggVG)",
+        },
     ]
 };
 
