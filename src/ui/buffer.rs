@@ -35,6 +35,11 @@ const EXTRA_CURSOR_BG: Color = Color::Rgb(160, 110, 60);
 const JUMP_LABEL_FG: Color = Color::Rgb(255, 100, 200);
 const JUMP_LABEL_BG: Color = Color::Rgb(40, 0, 40);
 
+/// Foreground used for the whitespace marker glyphs (middle-dot and
+/// tab arrow) when `show_whitespace` is enabled. Dim enough to fade
+/// into the background but still legible.
+const WHITESPACE_FG: Color = Color::DarkGray;
+
 /// Width of the gutter prefix (severity sign + space). Kept in sync with
 /// [`place_cursor`] so the cursor lands on the right column.
 const GUTTER_SIGN_WIDTH: u16 = 1;
@@ -63,7 +68,9 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
-    let tab_width = app.effective_editor().tab_width.max(1);
+    let eff = app.effective_editor();
+    let tab_width = eff.tab_width.max(1);
+    let show_whitespace = eff.show_whitespace;
 
     // Interleave one virtual diagnostic line below each source row that
     // has any diagnostics. Stop accumulating once we've consumed
@@ -118,6 +125,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             tab_width,
             col_scroll,
             inner_text_width,
+            show_whitespace,
         ));
         visible.push(Line::from(spans));
         visual_y += 1;
@@ -244,6 +252,7 @@ fn render_line(
     tab_width: usize,
     col_scroll: usize,
     viewport_width: usize,
+    show_whitespace: bool,
 ) -> Vec<Span<'static>> {
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
@@ -338,18 +347,29 @@ fn render_line(
 
     // Per-col character + style. A `gw` jump label overlays its char on
     // top of the underlying buffer char with `JUMP_LABEL_*` styling.
+    // When `show_whitespace` is on, plain spaces become `·` and the
+    // leading cell of a tab becomes `→`, both painted in `WHITESPACE_FG`
+    // so they sit visibly above (but quietly with) the surrounding text.
     let cell_at = |col: usize| -> (char, Style) {
         if let Some(label) = jump_label_at(col) {
-            (
+            return (
                 label,
                 Style::default()
                     .fg(JUMP_LABEL_FG)
                     .bg(JUMP_LABEL_BG)
                     .add_modifier(ratatui::style::Modifier::BOLD),
-            )
-        } else {
-            (chars[col], style_at(col))
+            );
         }
+        let original = chars[col];
+        let style = style_at(col);
+        if show_whitespace {
+            match original {
+                ' ' => return ('·', style.fg(WHITESPACE_FG)),
+                '\t' => return ('→', style.fg(WHITESPACE_FG)),
+                _ => {}
+            }
+        }
+        (original, style)
     };
 
     // Each char takes one visible cell except `\t`, which jumps to the

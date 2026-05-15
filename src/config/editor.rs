@@ -28,6 +28,10 @@ pub struct EditorToml {
     /// spaces. Falls back to `false`. Per-language override is the usual
     /// way to flip this on (e.g. Go).
     pub use_tabs: Option<bool>,
+    /// When `true`, spaces and tabs in the buffer are rendered with
+    /// visible marker glyphs (middle-dot / arrow) drawn in a dim
+    /// foreground. Falls back to `false`.
+    pub show_whitespace: Option<bool>,
 }
 
 /// Fully-resolved editor settings — what the runtime actually reads
@@ -37,6 +41,7 @@ pub struct EditorConfig {
     pub indent_width: usize,
     pub tab_width: usize,
     pub use_tabs: bool,
+    pub show_whitespace: bool,
 }
 
 impl Default for EditorConfig {
@@ -45,6 +50,7 @@ impl Default for EditorConfig {
             indent_width: DEFAULT_INDENT_WIDTH,
             tab_width: DEFAULT_TAB_WIDTH,
             use_tabs: false,
+            show_whitespace: false,
         }
     }
 }
@@ -58,6 +64,7 @@ impl EditorConfig {
             indent_width: user.indent_width.unwrap_or(self.indent_width),
             tab_width: user.tab_width.unwrap_or(self.tab_width),
             use_tabs: user.use_tabs.unwrap_or(self.use_tabs),
+            show_whitespace: user.show_whitespace.unwrap_or(self.show_whitespace),
         }
     }
 }
@@ -79,6 +86,7 @@ mod tests {
             indent_width: 4,
             tab_width: 4,
             use_tabs: false,
+            show_whitespace: false,
         };
         let eff = base.overlay(&EditorToml {
             tab_width: Some(8),
