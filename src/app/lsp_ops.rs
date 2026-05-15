@@ -8,7 +8,8 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 
 use crate::lsp::{
-    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, WorkspaceEdit,
+    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, Position, Range,
+    TextEdit, WorkspaceEdit,
 };
 
 use super::LspEventOutcome;
@@ -127,8 +128,8 @@ impl App {
         }
     }
 
-    /// Apply the currently-selected completion. The replacement target
-    /// is always `[prefix_start..cursor]` (in column terms on the
+    /// Apply the currently-selected completion. The primary replacement
+    /// target is always `[prefix_start..cursor]` (in column terms on the
     /// prefix-start row), regardless of what range the server attached
     /// to its `textEdit` — the server's range was computed against the
     /// buffer state at request time, and the user may have kept typing
@@ -136,6 +137,11 @@ impl App {
     /// the server's range would leave the post-request keystrokes
     /// stranded after the inserted completion. The text to insert is
     /// picked in spec order: `textEdit.newText` → `insertText` → `label`.
+    ///
+    /// `additionalTextEdits` (auto-import / `use` insertions) are
+    /// applied in the same batch via `apply_text_edits`. The post-edit
+    /// cursor position is adjusted for any line-count shift caused by
+    /// additional edits that sit above the cursor row.
     pub(super) fn accept_completion(&mut self) {
         let Some(state) = self.completion.take() else {
             return;
@@ -151,34 +157,58 @@ impl App {
             .unwrap_or_else(|| item.label.clone());
 
         self.buffer.snapshot();
-        let row = state.prefix_start.row;
-        let line = &mut self.buffer.lines[row];
-        let chars: Vec<char> = line.chars().collect();
-        let cursor_col = self.buffer.cursor.col.min(chars.len());
-        let start_col = state.prefix_start.col.min(cursor_col);
-        let head: String = chars.iter().take(start_col).collect();
-        let tail: String = chars.iter().skip(cursor_col).collect();
-        // Single-line replacement is the common case; only the textEdit
-        // path can carry newlines (and we've disabled snippet support,
-        // so multi-line replacements are rare). Handle both shapes here
-        // rather than in two diverging branches.
-        if !replacement.contains('\n') {
-            *line = format!("{}{}{}", head, replacement, tail);
-            self.buffer.cursor.col = start_col + replacement.chars().count();
+
+        let prefix_start = state.prefix_start;
+        let cursor = self.buffer.cursor;
+        let primary = TextEdit {
+            range: Range {
+                start: Position {
+                    line: prefix_start.row as u32,
+                    character: prefix_start.col as u32,
+                },
+                end: Position {
+                    line: cursor.row as u32,
+                    character: cursor.col as u32,
+                },
+            },
+            new_text: replacement.clone(),
+        };
+
+        // Row shift contributed by auto-import edits that sit above the
+        // cursor row — those move the primary edit's landing row down
+        // (or up, on deletion). Same-row additional edits are vanishingly
+        // rare for imports and would also require column tracking, so
+        // we ignore them for the cursor-placement math.
+        let row_shift: i64 = item
+            .additional_text_edits
+            .iter()
+            .filter(|e| (e.range.start.line as usize) < prefix_start.row)
+            .map(|e| {
+                let added = e.new_text.matches('\n').count() as i64;
+                let removed = (e.range.end.line - e.range.start.line) as i64;
+                added - removed
+            })
+            .sum();
+
+        let mut all_edits = item.additional_text_edits.clone();
+        all_edits.push(primary);
+        let mut lines = std::mem::take(&mut self.buffer.lines);
+        lsp::apply_text_edits(&mut lines, all_edits);
+        self.buffer.lines = lines;
+
+        let replacement_newlines = replacement.matches('\n').count();
+        let final_row =
+            (prefix_start.row as i64 + row_shift + replacement_newlines as i64).max(0) as usize;
+        let final_col = if replacement_newlines == 0 {
+            prefix_start.col + replacement.chars().count()
         } else {
-            let parts: Vec<&str> = replacement.split('\n').collect();
-            let first = parts[0];
-            let last = parts[parts.len() - 1];
-            let mut new_lines: Vec<String> = Vec::with_capacity(parts.len());
-            new_lines.push(format!("{}{}", head, first));
-            for mid in &parts[1..parts.len() - 1] {
-                new_lines.push((*mid).to_string());
-            }
-            new_lines.push(format!("{}{}", last, tail));
-            self.buffer.lines.splice(row..=row, new_lines);
-            self.buffer.cursor.row = row + parts.len() - 1;
-            self.buffer.cursor.col = last.chars().count();
-        }
+            // Multi-line replacement: cursor lands at the end of the
+            // last inserted line.
+            replacement.rsplit('\n').next().unwrap_or("").chars().count()
+        };
+        let last = self.buffer.lines.len().saturating_sub(1);
+        self.buffer.cursor.row = final_row.min(last);
+        self.buffer.cursor.col = final_col;
         self.buffer.bump_version();
         self.buffer.dirty = true;
     }

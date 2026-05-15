@@ -162,6 +162,7 @@ mod tests {
             filter_text: None,
             sort_text: None,
             detail: None,
+            additional_text_edits: Vec::new(),
         }
     }
 

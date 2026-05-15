@@ -113,6 +113,12 @@ pub struct CompletionItem {
     /// Free-form details — usually a short type signature ("fn(u32) -> u32")
     /// shown beside the label. May be empty.
     pub detail: Option<String>,
+    /// Extra edits applied alongside the main replacement when the user
+    /// accepts. Auto-import lands here: the server returns an `import …`
+    /// / `use …` insertion targeting the top of the file in this list,
+    /// and the popup applies it transparently so the user doesn't have
+    /// to scroll up and add it themselves.
+    pub additional_text_edits: Vec<TextEdit>,
 }
 
 /// Simplified LSP `WorkspaceEdit` — a flat map from document URI to the

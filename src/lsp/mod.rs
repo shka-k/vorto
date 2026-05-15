@@ -50,8 +50,8 @@ pub use parse::{
 };
 pub use root::discover_root;
 pub use types::{
-    CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, Severity, TextEdit,
-    WorkspaceEdit,
+    CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, Position, Range, Severity,
+    TextEdit, WorkspaceEdit,
 };
 pub use uri::{path_to_uri, uri_to_path};
 

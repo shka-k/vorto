@@ -258,6 +258,11 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         .get("detail")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
+    let additional_text_edits = v
+        .get("additionalTextEdits")
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().filter_map(parse_text_edit).collect())
+        .unwrap_or_default();
     Some(CompletionItem {
         label,
         kind,
@@ -266,6 +271,7 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         filter_text,
         sort_text,
         detail,
+        additional_text_edits,
     })
 }
 
@@ -393,6 +399,28 @@ mod tests {
         assert_eq!(te.new_text, "foo()");
         // We pick `replace`, not `insert`.
         assert_eq!(te.range.end.character, 5);
+    }
+
+    #[test]
+    fn parse_completion_picks_up_additional_text_edits() {
+        // Auto-import shape: the primary insertion is the symbol name
+        // and the `additionalTextEdits` carry the `use …;` line.
+        let v = json!([{
+            "label": "HashMap",
+            "additionalTextEdits": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end":   { "line": 0, "character": 0 }
+                },
+                "newText": "use std::collections::HashMap;\n"
+            }]
+        }]);
+        let items = parse_completion(&v);
+        assert_eq!(items[0].additional_text_edits.len(), 1);
+        assert_eq!(
+            items[0].additional_text_edits[0].new_text,
+            "use std::collections::HashMap;\n"
+        );
     }
 
     #[test]
