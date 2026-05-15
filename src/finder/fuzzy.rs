@@ -249,7 +249,7 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> Option<(i32, Vec<usize>)> {
             score += 20;
         }
         score += exact_case * 2;
-        if best.map_or(true, |(b, _)| score > b) {
+        if best.is_none_or(|(b, _)| score > b) {
             best = Some((score, start));
         }
     }
