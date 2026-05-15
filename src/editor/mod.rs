@@ -300,18 +300,66 @@ impl Buffer {
         self.touch();
     }
 
-    /// Insert `c` at the cursor, applying a one-step dedent first
-    /// when `c` is a closing bracket (`}` / `)` / `]`) and the line
-    /// up to the cursor is pure whitespace. This is the "type a
-    /// brace, watch it snap back to the matching column" behaviour
-    /// from every other modern editor.
+    /// Insert `c` at the cursor with three modern-editor behaviours
+    /// layered on top of [`insert_char`]:
     ///
-    /// Identical to [`insert_char`] for any other character.
+    /// 1. **Skip-over** — if `c` is a paired closer (`)` / `]` / `}` /
+    ///    quote) and the next character on the line is already the same
+    ///    closer, we just advance the cursor. This is what makes
+    ///    `()`-then-type-`)` land outside the pair instead of producing
+    ///    `())`.
+    /// 2. **Dedent on close** — `}` / `)` / `]` typed on a line that's
+    ///    pure whitespace before the cursor pulls the line back one
+    ///    indent level first.
+    /// 3. **Auto-pair** — opener (`(` `[` `{` quote) inserts its closer
+    ///    right after, leaving the cursor between. Suppressed when
+    ///    grabbing the closer would capture an existing identifier
+    ///    (next char is alphanumeric / `_`), and additionally for
+    ///    quotes when the previous char looks like word context (an
+    ///    apostrophe in `it's`) or is the same quote (cursor inside an
+    ///    empty `""`).
+    ///
+    /// Single-cursor only: the multi-cursor fan-out path goes through
+    /// raw [`insert_char`] to keep cursor-shift bookkeeping simple.
     pub fn insert_char_smart(&mut self, c: char, indent: IndentSettings) {
+        let next = self.char_at_cursor();
+        let prev = self.char_before_cursor();
+
+        if is_auto_pair_closer(c) && next == Some(c) {
+            self.cursor.col += 1;
+            return;
+        }
+
         if matches!(c, '}' | ')' | ']') && self.line_is_blank_before_cursor() {
             self.dedent_current_line(indent);
         }
+
         self.insert_char(c);
+
+        if let Some(closer) = auto_pair_closer(c)
+            && should_auto_pair(c, prev, next)
+        {
+            self.insert_char(closer);
+            self.cursor.col -= 1;
+        }
+    }
+
+    /// Char at the cursor's logical position, or `None` past end-of-line.
+    pub fn char_at_cursor(&self) -> Option<char> {
+        self.lines
+            .get(self.cursor.row)
+            .and_then(|line| line.chars().nth(self.cursor.col))
+    }
+
+    /// Char immediately before the cursor on the current row, or `None`
+    /// at column 0.
+    pub fn char_before_cursor(&self) -> Option<char> {
+        if self.cursor.col == 0 {
+            return None;
+        }
+        self.lines
+            .get(self.cursor.row)
+            .and_then(|line| line.chars().nth(self.cursor.col - 1))
     }
 
     /// True when every character on the cursor row strictly *before*
@@ -356,13 +404,42 @@ impl Buffer {
         let byte_idx = char_to_byte(&line, self.cursor.col);
         let (left, right) = line.split_at(byte_idx);
         let left_owned = left.to_string();
+        let right_owned = right.to_string();
         // Compute indent against the *left* half — that's what the
         // line at `cursor.row` will hold once the split lands. Using
         // a temporary line slice keeps the lookup self-contained.
-        let new_indent = compute_new_line_indent(&left_owned, self.cursor.row, &self.highlighter, indent);
+        let new_indent =
+            compute_new_line_indent(&left_owned, self.cursor.row, &self.highlighter, indent);
+
+        // Empty-pair split: pressing Enter between an opener and its
+        // matching closer (auto-paired or hand-typed) drops the closer
+        // onto its own row at the original line's *base* indent, with
+        // a blank +1-indented row between for the cursor. Without this
+        // the closer would ride the inner indent and look like
+        // `    }` inside `fn foo() {`, which the user expects to snap
+        // back to column 0.
+        let prev = left_owned.chars().last();
+        let next_ch = right_owned.chars().next();
+        let is_empty_pair = match (prev, next_ch) {
+            (Some(p), Some(n)) => auto_pair_closer(p) == Some(n),
+            _ => false,
+        };
+        if is_empty_pair {
+            let base_indent = copy_leading_indent(&left_owned, indent);
+            let mut closer_line = base_indent;
+            closer_line.push_str(&right_owned);
+            self.lines[self.cursor.row] = left_owned;
+            self.lines.insert(self.cursor.row + 1, new_indent.clone());
+            self.lines.insert(self.cursor.row + 2, closer_line);
+            self.cursor.row += 1;
+            self.cursor.col = new_indent.chars().count();
+            self.touch();
+            return;
+        }
+
         self.lines[self.cursor.row] = left_owned;
         let mut next = new_indent.clone();
-        next.push_str(right);
+        next.push_str(&right_owned);
         self.lines.insert(self.cursor.row + 1, next);
         self.cursor.row += 1;
         self.cursor.col = new_indent.chars().count();
@@ -505,6 +582,28 @@ impl Buffer {
             self.lines[self.cursor.row].push_str(&line);
             self.touch();
         }
+    }
+
+    /// Backspace with auto-pair awareness: when the char being deleted
+    /// is an opener and the next char is its matching closer, both go.
+    /// Otherwise falls through to [`delete_char_before`]. Single-cursor
+    /// only — the multi-cursor fan-out keeps using the dumb version so
+    /// the per-cursor `col -= 1` shift stays valid.
+    pub fn delete_char_before_smart(&mut self) {
+        let prev = self.char_before_cursor();
+        let next = self.char_at_cursor();
+        if let (Some(p), Some(n)) = (prev, next)
+            && auto_pair_closer(p) == Some(n)
+        {
+            let line = &mut self.lines[self.cursor.row];
+            let start_byte = char_to_byte(line, self.cursor.col - 1);
+            let end_byte = char_to_byte(line, self.cursor.col + 1);
+            line.replace_range(start_byte..end_byte, "");
+            self.cursor.col -= 1;
+            self.touch();
+            return;
+        }
+        self.delete_char_before();
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -650,6 +749,46 @@ fn classify(c: char) -> CharClass {
 
 fn is_blank_line(line: &str) -> bool {
     line.chars().all(|c| c.is_whitespace())
+}
+
+/// Maps an auto-pair opener to its closer. Quotes are self-paired
+/// (closer == opener). Returns `None` for any non-opener.
+fn auto_pair_closer(c: char) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+/// True when `c` is a closer that participates in skip-over (typing it
+/// where the same char already sits just advances the cursor).
+fn is_auto_pair_closer(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
+/// Decide whether typing `opener` should also insert its closer, given
+/// the chars to either side of the cursor. Brackets only check the
+/// right side (don't capture an existing identifier); quotes also gate
+/// on the left side to dodge apostrophes inside words and the inner
+/// edge of an existing quoted region.
+fn should_auto_pair(opener: char, prev: Option<char>, next: Option<char>) -> bool {
+    if let Some(n) = next
+        && (n.is_alphanumeric() || n == '_')
+    {
+        return false;
+    }
+    if matches!(opener, '"' | '\'' | '`')
+        && let Some(p) = prev
+        && (p.is_alphanumeric() || p == '_' || p == opener)
+    {
+        return false;
+    }
+    true
 }
 
 /// Leading-whitespace prefix of `line`, copied verbatim so the new
@@ -827,17 +966,126 @@ mod tests {
     }
 
     #[test]
-    fn newline_inside_empty_braces_adds_level() {
-        // Mid-line Enter between `{` and `}` should indent the new
-        // line one level deeper — the trailing-opener fallback fires
-        // even when the tree hasn't seen the split yet.
+    fn auto_pair_inserts_matching_closer_and_keeps_cursor_between() {
+        let mut b = Buffer::new();
+        b.lines = vec!["foo".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 3;
+        b.insert_char_smart('(', settings());
+        assert_eq!(b.lines[0], "foo()");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn auto_pair_skip_over_closer_when_next_char_matches() {
+        let mut b = Buffer::new();
+        b.lines = vec!["()".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 1; // between '(' and ')'
+        b.insert_char_smart(')', settings());
+        assert_eq!(b.lines[0], "()");
+        assert_eq!(b.cursor.col, 2);
+    }
+
+    #[test]
+    fn auto_pair_suppressed_when_next_char_is_word() {
+        let mut b = Buffer::new();
+        b.lines = vec!["foo".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 0; // about to type `(` before the `f`
+        b.insert_char_smart('(', settings());
+        assert_eq!(b.lines[0], "(foo");
+        assert_eq!(b.cursor.col, 1);
+    }
+
+    #[test]
+    fn auto_pair_quote_suppressed_after_word_char() {
+        // Apostrophe in `it's` shouldn't grow into `it''`.
+        let mut b = Buffer::new();
+        b.lines = vec!["it".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 2;
+        b.insert_char_smart('\'', settings());
+        assert_eq!(b.lines[0], "it'");
+        assert_eq!(b.cursor.col, 3);
+    }
+
+    #[test]
+    fn auto_pair_quote_pairs_after_punctuation() {
+        let mut b = Buffer::new();
+        b.lines = vec!["print(".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 6;
+        b.insert_char_smart('"', settings());
+        assert_eq!(b.lines[0], "print(\"\"");
+        assert_eq!(b.cursor.col, 7);
+    }
+
+    #[test]
+    fn delete_char_before_smart_removes_empty_pair() {
+        let mut b = Buffer::new();
+        b.lines = vec!["foo()".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4; // between '(' and ')'
+        b.delete_char_before_smart();
+        assert_eq!(b.lines[0], "foo");
+        assert_eq!(b.cursor.col, 3);
+    }
+
+    #[test]
+    fn delete_char_before_smart_falls_through_when_not_empty_pair() {
+        // Backspace inside `(x)` between `(` and `x` only removes `(`.
+        let mut b = Buffer::new();
+        b.lines = vec!["(x)".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 1;
+        b.delete_char_before_smart();
+        assert_eq!(b.lines[0], "x)");
+        assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn newline_inside_empty_braces_spreads_three_lines() {
+        // Mid-line Enter between `{` and `}` (auto-paired or hand-typed)
+        // drops the closer onto its own row at the base indent, with a
+        // blank +1-indented row between for the cursor. Without the
+        // 3-line spread the closer rides the inner indent.
         let mut b = Buffer::new();
         b.lines = vec!["fn foo() {}".into()];
         b.cursor.row = 0;
         b.cursor.col = 10; // between '{' and '}'
         b.insert_newline(settings());
         assert_eq!(b.lines[0], "fn foo() {");
-        assert_eq!(b.lines[1], "    }");
+        assert_eq!(b.lines[1], "    ");
+        assert_eq!(b.lines[2], "}");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn newline_inside_empty_braces_preserves_outer_indent() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    if cond {}".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 13; // between '{' and '}'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "    if cond {");
+        assert_eq!(b.lines[1], "        ");
+        assert_eq!(b.lines[2], "    }");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 8);
+    }
+
+    #[test]
+    fn newline_inside_empty_parens_also_spreads() {
+        let mut b = Buffer::new();
+        b.lines = vec!["foo()".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4; // between '(' and ')'
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "foo(");
+        assert_eq!(b.lines[1], "    ");
+        assert_eq!(b.lines[2], ")");
         assert_eq!(b.cursor.col, 4);
     }
 }
