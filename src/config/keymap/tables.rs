@@ -1,43 +1,14 @@
-//! Binding data: `Keymap` (the runtime-mutable Initial/Leader tables)
-//! plus the static `OP_PENDING_BINDINGS` / `OBJECT_BINDINGS` reference
-//! tables used both by the input parser and by the which-key hint
-//! renderer.
-//!
-//! The actual parser (tokenize/classify/build_expr) lives in
-//! [`app/eval.rs`](crate::app::eval).
+//! Static binding tables (the single source of truth for both the
+//! parser and the which-key hint renderer) plus the bulk vim-default
+//! initializer that copies them — and the inline Initial-context
+//! defaults — into a fresh `Keymap`.
 
-use std::collections::HashMap;
-
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::action::{DirectKind, MotionKind, Operator, PromptKind, Token};
 use crate::mode::Mode;
 
-pub const LEADER: char = ' ';
-
-// ────────────────────────────────────────────────────────────────────────
-// Binding tables — single source of truth for keys + which-key hints
-// ────────────────────────────────────────────────────────────────────────
-
-/// One entry in the OpPending / ObjectExpected binding tables.
-///
-/// Lives in this module so the keymap and the which-key hint renderer
-/// can read the same definitions. `key` is the primary key (the one
-/// shown in hint panels); `aliases` are extra `KeyCode`s that resolve
-/// to the same token but don't get their own hint row (e.g. arrow
-/// keys mirroring `hjkl`).
-pub struct Binding {
-    pub key: KeyCode,
-    pub aliases: &'static [KeyCode],
-    pub token: Token,
-    pub label: &'static str,
-}
-
-impl Binding {
-    pub(crate) fn matches(&self, code: KeyCode) -> bool {
-        self.key == code || self.aliases.contains(&code)
-    }
-}
+use super::{Binding, KeySig, Keymap, LEADER};
 
 /// Keys valid in the OpPending context (right after `d`/`y`/`c`,
 /// possibly with an inner count). Operator-repeat (`dd`/`yy`/`cc`) is
@@ -502,76 +473,8 @@ pub const OBJECT_BINDINGS: &[Binding] = {
     ]
 };
 
-// ────────────────────────────────────────────────────────────────────────
-// Keymap — runtime-mutable binding table per context
-// ────────────────────────────────────────────────────────────────────────
-
-/// Canonical key signature used for hash-table lookup. SHIFT is stripped
-/// for Char keys (since 'G' vs 'g' is already encoded in the character)
-/// so terminals that report it explicitly behave the same as ones that
-/// don't.
-#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-pub struct KeySig {
-    pub code: KeyCode,
-    pub modifiers: KeyModifiers,
-}
-
-impl KeySig {
-    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-        let modifiers = if matches!(code, KeyCode::Char(_)) {
-            modifiers - KeyModifiers::SHIFT
-        } else {
-            modifiers
-        };
-        Self { code, modifiers }
-    }
-
-    pub fn from_event(key: KeyEvent) -> Self {
-        Self::new(key.code, key.modifiers)
-    }
-}
-
-/// User-customisable binding tables, one per tokenization context that
-/// the parser can be in. Each context is a `KeySig → Token` map.
-///
-/// `Initial` and `Leader` are the two everyday-customisable contexts —
-/// they're the ones the TOML config writes into. `OpPending`,
-/// `ObjectExpected`, and `GotoPending` use fixed match arms (their
-/// grammar is part of the parser, not "user shortcuts"), so they're
-/// intentionally absent here.
-pub struct Keymap {
-    pub initial: HashMap<KeySig, Token>,
-    pub leader: HashMap<KeySig, Token>,
-}
-
 impl Keymap {
-    /// Empty Keymap with no bindings; useful only as a builder base.
-    pub fn empty() -> Self {
-        Self {
-            initial: HashMap::new(),
-            leader: HashMap::new(),
-        }
-    }
-
-    /// All of vim's default Normal-mode bindings.
-    pub fn vim_default() -> Self {
-        let mut m = Self::empty();
-        m.install_vim_defaults();
-        m
-    }
-
-    /// Insert a binding into the Initial context.
-    pub fn bind_initial(&mut self, sig: KeySig, token: Token) {
-        self.initial.insert(sig, token);
-    }
-
-    /// Insert a binding into the Leader-pending context (keys that fire
-    /// after `<space>` has been pressed).
-    pub fn bind_leader(&mut self, sig: KeySig, token: Token) {
-        self.leader.insert(sig, token);
-    }
-
-    fn install_vim_defaults(&mut self) {
+    pub(super) fn install_vim_defaults(&mut self) {
         use DirectKind as D;
         use MotionKind as M;
         use Token::*;
