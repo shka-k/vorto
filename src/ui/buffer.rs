@@ -74,6 +74,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let inner_text_width = area
         .width
         .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
+    let col_scroll = compute_col_scroll(app, inner_text_width, tab_width);
     for (i, line) in app.buffer.lines.iter().enumerate().skip(scroll) {
         if visual_y as usize >= height {
             break;
@@ -115,6 +116,8 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             &hits,
             &row_jumps,
             tab_width,
+            col_scroll,
+            inner_text_width,
         ));
         visible.push(Line::from(spans));
         visual_y += 1;
@@ -139,7 +142,13 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let tab_width = app.effective_editor().tab_width.max(1);
     let line = &app.buffer.lines[app.buffer.cursor.row];
     let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
-    let x = buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + GUTTER_VCS_WIDTH + visual_col as u16;
+    let col_scroll = app.buffer.col_scroll.get();
+    let on_screen_col = visual_col.saturating_sub(col_scroll);
+    let x = buf_area.x
+        + GUTTER_SIGN_WIDTH
+        + line_no_width
+        + GUTTER_VCS_WIDTH
+        + on_screen_col as u16;
     // `draw_buffer` ran first this frame and published the cursor's
     // visual y, accounting for any virtual diagnostic lines pushing it
     // down. Use it directly so the terminal cursor stays glued to the
@@ -233,6 +242,8 @@ fn render_line(
     search_hits: &[(usize, usize)],
     jump_labels: &[(usize, char)],
     tab_width: usize,
+    col_scroll: usize,
+    viewport_width: usize,
 ) -> Vec<Span<'static>> {
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
@@ -260,7 +271,13 @@ fn render_line(
     };
 
     let chars: Vec<char> = line.chars().collect();
+    let viewport_right = col_scroll.saturating_add(viewport_width);
     if chars.is_empty() {
+        // The empty-line cursor/selection cell lives at visual col 0;
+        // if we've scrolled past it, there's nothing to paint.
+        if col_scroll > 0 {
+            return Vec::new();
+        }
         let mut style = Style::default();
         if is_selected(0) {
             style = style.bg(SEL_BG);
@@ -352,6 +369,23 @@ fn render_line(
         } else {
             1
         };
+        let cell_start = visual_col;
+        let cell_end = visual_col + width;
+        visual_col = cell_end;
+
+        // Stop once we've passed the right edge: ratatui's Paragraph
+        // would truncate anyway, but bailing early keeps very long
+        // lines from materializing megabytes of spans per draw.
+        if viewport_width > 0 && cell_start >= viewport_right {
+            break;
+        }
+        // Skip cells entirely to the left of the horizontal scroll.
+        if cell_end <= col_scroll {
+            continue;
+        }
+        let left_skip = col_scroll.saturating_sub(cell_start);
+        let emit_width = width - left_skip;
+
         if !started {
             buf_style = style;
             started = true;
@@ -362,31 +396,33 @@ fn render_line(
             buf_style = style;
         }
         if original == '\t' {
-            // If a jump label overlays the tab, show the label letter in
-            // the leading cell and pad the rest of the stop with spaces.
-            // Otherwise just emit `width` blank cells.
-            if ch != '\t' {
+            // A jump label can overlay the tab at its leading cell. If
+            // the left clip ate that cell, only spaces survive.
+            if ch != '\t' && left_skip == 0 {
                 buf.push(ch);
-                for _ in 1..width {
+                for _ in 1..emit_width {
                     buf.push(' ');
                 }
             } else {
-                for _ in 0..width {
+                for _ in 0..emit_width {
                     buf.push(' ');
                 }
             }
         } else {
             buf.push(ch);
         }
-        visual_col += width;
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));
     }
     // Past-end extra cursor — paint one extra cell so a cursor sitting
     // one column past the last char (the natural Insert-mode position
-    // after typing) stays visible.
-    if is_extra_cursor(chars.len()) {
+    // after typing) stays visible. Only when it falls inside the
+    // horizontal viewport.
+    if is_extra_cursor(chars.len())
+        && visual_col >= col_scroll
+        && (viewport_width == 0 || visual_col < viewport_right)
+    {
         spans.push(Span::styled(
             " ".to_string(),
             extra_cursor_style(Style::default()),
@@ -514,6 +550,27 @@ fn compute_scroll(
     // (handled in the input thread) can read what's currently visible.
     app.buffer.viewport_height.set(height);
     scroll
+}
+
+/// Update and return the horizontal scroll offset. Sticky like
+/// [`compute_scroll`]: shifts the visible window only when the cursor's
+/// visual column would otherwise fall outside `[col_scroll, col_scroll
+/// + width)`. `width == 0` collapses to no scroll (degenerate frame).
+fn compute_col_scroll(app: &App, width: usize, tab_width: usize) -> usize {
+    if width == 0 {
+        app.buffer.col_scroll.set(0);
+        return 0;
+    }
+    let line = &app.buffer.lines[app.buffer.cursor.row];
+    let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
+    let mut col_scroll = app.buffer.col_scroll.get();
+    if visual_col < col_scroll {
+        col_scroll = visual_col;
+    } else if visual_col >= col_scroll + width {
+        col_scroll = visual_col + 1 - width;
+    }
+    app.buffer.col_scroll.set(col_scroll);
+    col_scroll
 }
 
 /// Per-source-row diagnostic summary used for inline rendering. We

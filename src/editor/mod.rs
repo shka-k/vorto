@@ -53,6 +53,10 @@ pub struct Buffer {
     /// UI layer updates it during `draw_buffer`, so it's wrapped in
     /// `Cell` to stay reachable through a shared `&Buffer`).
     pub scroll: Cell<usize>,
+    /// Leftmost visual column currently visible. Sticky like `scroll`:
+    /// the UI shifts it during `draw_buffer` only when the cursor would
+    /// otherwise leave the horizontal viewport.
+    pub col_scroll: Cell<usize>,
     /// Height (in rows) of the buffer viewport at the last draw. The
     /// UI writes this during `compute_scroll`; motion code reads it
     /// for `H`/`M`/`L` and `<C-d>`/`<C-u>`/`<C-f>`/`<C-b>`. `0` until
@@ -149,6 +153,7 @@ impl Buffer {
             version: 0,
             highlighter: None,
             scroll: Cell::new(0),
+            col_scroll: Cell::new(0),
             viewport_height: Cell::new(0),
             cursor_visual_y: Cell::new(0),
             undo_stack: Vec::new(),

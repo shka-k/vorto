@@ -95,6 +95,7 @@ pub struct SleepingBuffer {
     yank: String,
     version: u64,
     scroll: usize,
+    col_scroll: usize,
     undo: Vec<FrozenSnapshot>,
     redo: Vec<FrozenSnapshot>,
 }
@@ -148,6 +149,7 @@ impl SleepingBuffer {
             yank: b.yank,
             version: b.version,
             scroll: b.scroll.get(),
+            col_scroll: b.col_scroll.get(),
             undo,
             redo,
         }
@@ -163,6 +165,7 @@ impl SleepingBuffer {
         b.yank = self.yank;
         b.version = self.version;
         b.scroll.set(self.scroll);
+        b.col_scroll.set(self.col_scroll);
         b.undo_stack = self
             .undo
             .into_iter()
