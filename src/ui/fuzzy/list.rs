@@ -1,0 +1,137 @@
+//! Match-list pane: the query line on top and the scrollable list of
+//! fuzzy matches below, with hit-character highlighting and head-
+//! truncation for long path entries.
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{List, ListItem, Paragraph};
+
+use crate::finder::{Finder, FuzzyKind};
+
+/// Color of the directory prefix in path-like picker rows.
+const DIR_FG: Color = Color::Blue;
+/// Color of fuzzy-match hit characters.
+const HIT_FG: Color = Color::Magenta;
+
+pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
+    // Inside the pane: query line on top, separator, then matches.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(area);
+
+    let query_line = Line::from(vec![
+        Span::styled("› ", Style::default().fg(Color::Yellow)),
+        Span::raw(finder.query.clone()),
+    ]);
+    f.render_widget(Paragraph::new(query_line), chunks[0]);
+
+    let sep = "─".repeat(chunks[1].width as usize);
+    f.render_widget(
+        Paragraph::new(Span::styled(sep, Style::default().fg(Color::DarkGray))),
+        chunks[1],
+    );
+
+    let list_h = chunks[2].height as usize;
+    let list_w = chunks[2].width as usize;
+    let scroll = finder.selected.saturating_sub(list_h.saturating_sub(1));
+    let items: Vec<ListItem> = finder
+        .matches
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(list_h)
+        .map(|(i, m)| {
+            let raw = &finder.items[m.idx];
+            let line = render_match(
+                raw,
+                &m.positions,
+                i == finder.selected,
+                finder.kind,
+                list_w,
+            );
+            ListItem::new(line)
+        })
+        .collect();
+    f.render_widget(List::new(items), chunks[2]);
+}
+
+fn render_match<'a>(
+    item: &'a str,
+    positions: &[usize],
+    selected: bool,
+    kind: FuzzyKind,
+    width: usize,
+) -> Line<'a> {
+    let base = if selected {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let dir = base.fg(DIR_FG).add_modifier(Modifier::BOLD);
+    let hit = base.fg(HIT_FG).add_modifier(Modifier::BOLD);
+    let ellipsis = base.fg(Color::DarkGray);
+
+    // Compute dir_end as a char index. For path-like kinds it's the
+    // index just past the last `/`; for Locations we stop searching at
+    // the `:line:col` suffix so `:` doesn't get colored as directory.
+    let chars: Vec<char> = item.chars().collect();
+    let dir_end_char: Option<usize> = match kind {
+        FuzzyKind::Files { .. } | FuzzyKind::Buffers => {
+            chars.iter().rposition(|c| *c == '/').map(|i| i + 1)
+        }
+        FuzzyKind::Locations => {
+            let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
+            chars[..path_end].iter().rposition(|c| *c == '/').map(|i| i + 1)
+        }
+        FuzzyKind::Lines => None,
+    };
+
+    // Head-truncate when the item is longer than the available width so
+    // the filename (right side of the path) stays visible. One column is
+    // reserved for the leading ellipsis.
+    let mut spans = Vec::new();
+    let start = if width >= 2 && chars.len() > width {
+        spans.push(Span::styled("…", ellipsis));
+        chars.len() - (width - 1)
+    } else {
+        0
+    };
+    // When truncation lands inside the directory portion, the remaining
+    // dir prefix still gets the dir color up to dir_end. When the cut
+    // falls past dir_end, dir_end - start <= 0 and the whole tail is
+    // filename-colored — exactly what we want.
+    let dir_end_visible = dir_end_char.map(|e| e.saturating_sub(start));
+
+    let mut buf = String::new();
+    let mut buf_style = base;
+    for (offset, &c) in chars[start..].iter().enumerate() {
+        let orig_i = start + offset;
+        let is_hit = positions.binary_search(&orig_i).is_ok();
+        let in_dir = dir_end_visible.map(|e| offset < e).unwrap_or(false);
+        let style = if is_hit {
+            hit
+        } else if in_dir {
+            dir
+        } else {
+            base
+        };
+        if style != buf_style && !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+        }
+        buf_style = style;
+        buf.push(c);
+    }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, buf_style));
+    }
+    Line::from(spans)
+}
