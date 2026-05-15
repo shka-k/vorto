@@ -1,8 +1,8 @@
-//! Range-level edits and the yank register.
+//! Range-level and line-level edits, plus the yank register.
 //!
 //! Buffer mutations that operate on a span (line, char range, column
 //! block) and stash the deleted/copied text into `Buffer.yank`. Single-
-//! character edits live in [`super`] alongside the buffer state itself.
+//! character edits sit in [`super::insert`].
 
 use super::{Buffer, Cursor, char_to_byte};
 
@@ -254,5 +254,122 @@ fn order(a: Cursor, b: Cursor) -> (Cursor, Cursor) {
         (a, b)
     } else {
         (b, a)
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Line-level edits.
+// ────────────────────────────────────────────────────────────────────────
+
+impl Buffer {
+    /// Join the next line into the current one with a single space
+    /// separator (vim's `J`). Strips leading whitespace on the joined
+    /// line; if the current line ends in whitespace or is empty, no
+    /// space is inserted. Cursor lands on the join boundary.
+    pub fn join_next_line(&mut self) {
+        if self.cursor.row + 1 >= self.lines.len() {
+            return;
+        }
+        let next = self.lines.remove(self.cursor.row + 1);
+        let next_trimmed = next.trim_start();
+        let cur = &mut self.lines[self.cursor.row];
+        let needs_space = !cur.is_empty()
+            && !cur
+                .chars()
+                .last()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+            && !next_trimmed.is_empty();
+        let join_col = cur.chars().count();
+        if needs_space {
+            cur.push(' ');
+        }
+        cur.push_str(next_trimmed);
+        self.cursor.col = join_col;
+        self.touch();
+    }
+
+    /// Toggle the case of the character under the cursor, then advance
+    /// one column (vim's `~`). No-op on an empty line.
+    pub fn toggle_case_under_cursor(&mut self) {
+        let line = &mut self.lines[self.cursor.row];
+        if self.cursor.col >= line.chars().count() {
+            return;
+        }
+        let byte_idx = char_to_byte(line, self.cursor.col);
+        let ch = line[byte_idx..].chars().next().unwrap();
+        let replacement: String = if ch.is_uppercase() {
+            ch.to_lowercase().collect()
+        } else if ch.is_lowercase() {
+            ch.to_uppercase().collect()
+        } else {
+            return; // not a cased letter — leave it and don't advance
+        };
+        line.replace_range(byte_idx..byte_idx + ch.len_utf8(), &replacement);
+        self.touch();
+        // Advance, allowing past-end only inside Insert (we're in Normal
+        // here, so clamp to last col).
+        let max = self.current_line_len().saturating_sub(1);
+        if self.cursor.col < max {
+            self.cursor.col += 1;
+        }
+    }
+
+    /// Delete from `cursor` to the end of the current line (vim's `D`).
+    /// The deleted text goes into the yank register.
+    pub fn delete_to_eol(&mut self) {
+        let line = self.lines[self.cursor.row].clone();
+        let byte_idx = char_to_byte(&line, self.cursor.col);
+        self.yank = line[byte_idx..].to_string();
+        self.lines[self.cursor.row].truncate(byte_idx);
+        self.touch();
+        self.clamp_col(false);
+    }
+
+    /// Replace the entire current line with an empty string (vim's
+    /// `S`). The full line content goes into the yank register.
+    pub fn clear_current_line(&mut self) {
+        self.yank = self.lines[self.cursor.row].clone();
+        self.lines[self.cursor.row].clear();
+        self.cursor.col = 0;
+        self.touch();
+    }
+
+    /// Toggle a single-line comment on the current line using `token`
+    /// as the prefix (e.g. `"//"`, `"#"`). If the first non-blank run
+    /// of the line already starts with `token`, the prefix (and a
+    /// single trailing space, when present) is stripped; otherwise
+    /// `token + " "` is inserted at the first non-blank column. Blank
+    /// lines are skipped — vim-commentary semantics.
+    pub fn toggle_line_comment(&mut self, token: &str) {
+        let row = self.cursor.row;
+        let line = &self.lines[row];
+        let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
+        let indent_bytes = char_to_byte(line, indent_chars);
+        let rest = &line[indent_bytes..];
+        if rest.is_empty() {
+            return;
+        }
+        if let Some(after_token) = rest.strip_prefix(token) {
+            let trim_len = if after_token.starts_with(' ') {
+                token.len() + 1
+            } else {
+                token.len()
+            };
+            self.lines[row].replace_range(indent_bytes..indent_bytes + trim_len, "");
+            let removed_chars = token.chars().count() + (trim_len - token.len());
+            if self.cursor.col > indent_chars {
+                self.cursor.col = self.cursor.col.saturating_sub(removed_chars);
+            }
+        } else {
+            let insert = format!("{} ", token);
+            self.lines[row].insert_str(indent_bytes, &insert);
+            let added_chars = insert.chars().count();
+            if self.cursor.col >= indent_chars {
+                self.cursor.col += added_chars;
+            }
+        }
+        self.clamp_col(false);
+        self.touch();
     }
 }

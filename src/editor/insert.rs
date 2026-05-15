@@ -263,6 +263,41 @@ impl Buffer {
         self.touch();
     }
 
+    /// Delete the character under the cursor (vim's `x`). No-op past
+    /// end of line. Cursor follows via `clamp_col` so it doesn't end up
+    /// past-the-end after deleting the last char.
+    pub fn delete_char_under_cursor(&mut self) {
+        let line = &mut self.lines[self.cursor.row];
+        if self.cursor.col < line.chars().count() {
+            let byte_idx = char_to_byte(line, self.cursor.col);
+            let ch = line[byte_idx..].chars().next().unwrap();
+            line.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
+            self.touch();
+            self.clamp_col(false);
+        }
+    }
+
+    /// Backspace primitive: delete the char before the cursor, or join
+    /// with the previous line at column 0. The auto-pair / smart-indent
+    /// behaviour wraps this in [`delete_char_before_smart`].
+    pub fn delete_char_before(&mut self) {
+        if self.cursor.col > 0 {
+            let line = &mut self.lines[self.cursor.row];
+            let byte_idx = char_to_byte(line, self.cursor.col - 1);
+            let ch = line[byte_idx..].chars().next().unwrap();
+            line.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
+            self.cursor.col -= 1;
+            self.touch();
+        } else if self.cursor.row > 0 {
+            // Join with the previous line.
+            let line = self.lines.remove(self.cursor.row);
+            self.cursor.row -= 1;
+            self.cursor.col = self.lines[self.cursor.row].chars().count();
+            self.lines[self.cursor.row].push_str(&line);
+            self.touch();
+        }
+    }
+
     /// Replace the character under the cursor with `ch`. No-op on an
     /// empty line — vim's `r` errors there; we silently skip.
     pub fn replace_char(&mut self, ch: char) {
