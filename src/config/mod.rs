@@ -161,9 +161,16 @@ struct BindEntry {
 // Path resolution
 // ────────────────────────────────────────────────────────────────────────
 
-/// Resolve the config-file path. Honors `$XDG_CONFIG_HOME` if set,
-/// otherwise falls back to `$HOME/.config/vorto/config.toml`.
+/// Resolve the config-file path. Workspace-local `.vorto/config.toml`
+/// (or a plain `.vorto` file) in the current directory wins; otherwise
+/// honors `$XDG_CONFIG_HOME` if set, then falls back to
+/// `$HOME/.config/vorto/config.toml`.
 pub fn default_path() -> Option<PathBuf> {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(p) = workspace_path(&cwd) {
+            return Some(p);
+        }
+    }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let p = PathBuf::from(xdg).join("vorto/config.toml");
         if p.exists() {
@@ -173,6 +180,23 @@ pub fn default_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let p = PathBuf::from(home).join(".config/vorto/config.toml");
     Some(p)
+}
+
+/// Look for a workspace-local config rooted at `cwd`. Supports two
+/// layouts: `<cwd>/.vorto/config.toml` (directory form, mirroring the
+/// global `~/.config/vorto/` layout) and `<cwd>/.vorto` (single TOML
+/// file). Returns `None` if neither exists.
+fn workspace_path(cwd: &Path) -> Option<PathBuf> {
+    let vorto = cwd.join(".vorto");
+    let meta = std::fs::metadata(&vorto).ok()?;
+    if meta.is_dir() {
+        let p = vorto.join("config.toml");
+        return p.exists().then_some(p);
+    }
+    if meta.is_file() {
+        return Some(vorto);
+    }
+    None
 }
 
 fn default_subdir(name: &str) -> PathBuf {
@@ -301,6 +325,59 @@ grammar = "fish-shell"
             toml.languages["fish"].grammar.as_deref(),
             Some("fish-shell")
         );
+    }
+
+    #[test]
+    fn workspace_path_prefers_directory_config() {
+        let root = std::env::temp_dir().join(format!(
+            "vorto-test-ws-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let dot_vorto = root.join(".vorto");
+        std::fs::create_dir_all(&dot_vorto).unwrap();
+        let cfg = dot_vorto.join("config.toml");
+        std::fs::write(&cfg, "").unwrap();
+
+        assert_eq!(workspace_path(&root), Some(cfg));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn workspace_path_accepts_single_file() {
+        let root = std::env::temp_dir().join(format!(
+            "vorto-test-ws-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let dot_vorto = root.join(".vorto");
+        std::fs::write(&dot_vorto, "").unwrap();
+
+        assert_eq!(workspace_path(&root), Some(dot_vorto));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn workspace_path_absent_returns_none() {
+        let root = std::env::temp_dir().join(format!(
+            "vorto-test-ws-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(workspace_path(&root), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
