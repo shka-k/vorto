@@ -104,7 +104,7 @@ impl App {
         self.mode = mode;
     }
 
-    pub(in crate::app) fn open_prompt(&mut self, kind: PromptKind) {
+    pub fn open_prompt(&mut self, kind: PromptKind) {
         match kind {
             PromptKind::Command => self.prompt.open_command(),
             PromptKind::Search { forward } => self.prompt.open_search(forward),

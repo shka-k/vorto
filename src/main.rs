@@ -28,8 +28,10 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::action::PromptKind;
 use crate::app::App;
 use crate::config::CursorShape;
+use crate::finder::{FuzzyKind, IgnoreOpts};
 
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().collect();
@@ -57,7 +59,34 @@ fn main() -> Result<()> {
     // Anchor for LSP workspace root discovery — captured once here so the
     // value can't shift mid-session if anything changes the process's
     // cwd. Every later `:e` resolves against the same directory.
-    let startup_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut startup_cwd =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // `vorto <dir>` (e.g. `vorto .`) means "open this directory as the
+    // workspace root" — not "load the directory as a file" (which would
+    // EISDIR out of `read_to_string`). Treat the arg as a workspace
+    // anchor and open the fuzzy file picker instead.
+    let (file_arg, dir_arg) = match path {
+        Some(p) => {
+            let pb = std::path::PathBuf::from(&p);
+            if pb.is_dir() {
+                let abs = if pb.is_absolute() {
+                    pb.clone()
+                } else {
+                    startup_cwd.join(&pb)
+                };
+                let canon = abs.canonicalize().unwrap_or(abs);
+                // chdir so child processes spawned by LSP / git inherit
+                // the workspace root, matching what a user `cd` would do.
+                let _ = std::env::set_current_dir(&canon);
+                startup_cwd = canon;
+                (None, true)
+            } else {
+                (Some(p), false)
+            }
+        }
+        None => (None, false),
+    };
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -86,8 +115,12 @@ fn main() -> Result<()> {
     });
 
     let mut app = App::new(cfg, loader, event_tx, startup_cwd);
-    if let Some(p) = path {
+    if let Some(p) = file_arg {
         app.open_path(std::path::Path::new(&p))?;
+    } else if dir_arg {
+        app.open_prompt(PromptKind::Fuzzy(FuzzyKind::Files {
+            ignore: IgnoreOpts::DEFAULT,
+        }));
     }
 
     let result = run(&mut terminal, &mut app, &event_rx);
@@ -178,7 +211,7 @@ fn print_usage() {
         "{name} {version}
 
 Usage:
-    vorto [FILE]
+    vorto [FILE|DIR]
     vorto grammar <list|install|remove> [args]
     vorto -h | --help
     vorto -V | --version",
