@@ -73,6 +73,14 @@ pub struct Buffer {
     /// for `H`/`M`/`L` and `<C-d>`/`<C-u>`/`<C-f>`/`<C-b>`. `0` until
     /// the first frame is drawn — motions guard against that.
     pub viewport_height: Cell<usize>,
+    /// Set by `run_scroll(Center)` when the viewport height isn't known
+    /// yet (e.g. right after switching to a sleeping buffer whose
+    /// `viewport_height` thawed back to 0). The next `compute_scroll`
+    /// in `draw_buffer` reads-and-clears this and centers the cursor
+    /// instead of running the sticky scroll logic — so the user always
+    /// lands mid-viewport on a picker-driven jump, even when the
+    /// height-aware path couldn't fire yet.
+    pub pending_center: Cell<bool>,
     /// Visual y (within the buffer viewport) of the row the cursor sits
     /// on at the last draw. Differs from `cursor.row - scroll` when
     /// inline diagnostics push subsequent rows down. The UI writes this
@@ -203,6 +211,7 @@ impl Buffer {
             scroll: Cell::new(0),
             col_scroll: Cell::new(0),
             viewport_height: Cell::new(0),
+            pending_center: Cell::new(false),
             cursor_visual_y: Cell::new(0),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),

@@ -533,6 +533,17 @@ fn find_matches_in_line(line: &str, query: &str) -> Vec<(usize, usize)> {
 fn compute_scroll(app: &App, height: usize, row_diag: &HashMap<usize, RowDiag>) -> usize {
     let cur = app.buffer.cursor.row;
     let mut scroll = app.buffer.scroll.get();
+    // Deferred centering from a picker-driven jump that fired before
+    // the viewport size was known. Take-and-clear so it's a one-shot
+    // override, then fall through to publishing the new scroll/height.
+    if app.buffer.pending_center.replace(false) && height > 0 {
+        let last = app.buffer.lines.len().saturating_sub(1);
+        let max_scroll = last.saturating_sub(height.saturating_sub(1));
+        scroll = cur.saturating_sub(height / 2).min(max_scroll);
+        app.buffer.scroll.set(scroll);
+        app.buffer.viewport_height.set(height);
+        return scroll;
+    }
     if cur < scroll {
         scroll = cur;
     } else if height > 0 {

@@ -148,9 +148,17 @@ impl App {
         self.run_jump_search(forward);
     }
 
-    fn run_scroll(&mut self, anchor: ScrollAnchor) {
+    pub(super) fn run_scroll(&mut self, anchor: ScrollAnchor) {
         let height = self.buffer.viewport_height.get();
         if height == 0 {
+            // Viewport size isn't known yet (most often: we just thawed
+            // a sleeping buffer, which resets `viewport_height` to 0 by
+            // design — see `SleepingBuffer::thaw`). Defer to the next
+            // draw via `pending_center`; the sticky scroll path in
+            // `compute_scroll` reads and clears it.
+            if matches!(anchor, ScrollAnchor::Center) {
+                self.buffer.pending_center.set(true);
+            }
             return;
         }
         let cur = self.buffer.cursor.row;

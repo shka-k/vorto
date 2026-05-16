@@ -31,12 +31,15 @@ impl App {
                 // anchor against `startup_cwd` so the resulting buffer
                 // path doesn't depend on whatever `current_dir()` is now.
                 let path = self.startup_cwd.join(rel);
-                if let Err(e) = self.open_path(&path) {
+                match self.open_path(&path) {
+                    Ok(()) => self.run_scroll(crate::effect::ScrollAnchor::Center),
                     // Bubbling this up would terminate the event loop —
                     // a picker entry that fails to load (e.g. a stray
                     // symlink to a directory) should leave the user in
                     // their current buffer with a visible error.
-                    self.push_toast(Toast::error(format!("open: {}", root_cause(&e))));
+                    Err(e) => {
+                        self.push_toast(Toast::error(format!("open: {}", root_cause(&e))))
+                    }
                 }
                 Ok(())
             }
@@ -47,8 +50,16 @@ impl App {
                 Ok(())
             }
             PromptOutcome::JumpToLocation(loc) => {
-                if let Err(e) = self.jump_to_location(&loc) {
-                    self.push_toast(Toast::error(format!("jump: {}", root_cause(&e))));
+                match self.jump_to_location(&loc) {
+                    Ok(()) => {
+                        // Picker-driven jump — the user explicitly chose
+                        // this match, so park it in the middle of the
+                        // viewport instead of just bringing it into view.
+                        self.run_scroll(crate::effect::ScrollAnchor::Center);
+                    }
+                    Err(e) => {
+                        self.push_toast(Toast::error(format!("jump: {}", root_cause(&e))));
+                    }
                 }
                 Ok(())
             }
@@ -56,7 +67,15 @@ impl App {
                 self.submit_rename(new_name);
                 Ok(())
             }
-            PromptOutcome::OpenBuffer(r) => self.switch_to_buffer(r),
+            PromptOutcome::OpenBuffer(r) => {
+                self.switch_to_buffer(r)?;
+                // Picker-driven buffer switch — center the restored
+                // cursor in the viewport so the user lands on a
+                // recognizable context rather than wherever the saved
+                // scroll position happened to leave it.
+                self.run_scroll(crate::effect::ScrollAnchor::Center);
+                Ok(())
+            }
             PromptOutcome::SelectCodeAction(action) => {
                 self.submit_code_action(action);
                 Ok(())
