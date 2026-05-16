@@ -166,10 +166,10 @@ struct BindEntry {
 /// honors `$XDG_CONFIG_HOME` if set, then falls back to
 /// `$HOME/.config/vorto/config.toml`.
 pub fn default_path() -> Option<PathBuf> {
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(p) = workspace_path(&cwd) {
-            return Some(p);
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(p) = workspace_path(&cwd)
+    {
+        return Some(p);
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let p = PathBuf::from(xdg).join("vorto/config.toml");
