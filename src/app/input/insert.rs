@@ -69,8 +69,26 @@ impl App {
                 self.update_completion_filter();
             }
             KeyCode::Tab => {
-                self.fan_out_insert_char('\t');
-                self.record_insert_key(InsertKey::Char('\t'));
+                // Honor the buffer's indent settings: `use_tabs` mode
+                // inserts a literal `\t`, soft-tab mode inserts enough
+                // spaces to reach the next tab stop at column-multiple
+                // `width`. Soft-tab uses char column for the stop math;
+                // there shouldn't be `\t` characters in leading
+                // whitespace when `use_tabs` is false, so visual vs.
+                // char column converge in practice.
+                let indent = self.indent_settings();
+                if indent.use_tabs {
+                    self.fan_out_insert_char('\t');
+                    self.record_insert_key(InsertKey::Char('\t'));
+                } else {
+                    let stop = indent.width.max(1);
+                    let col = self.buffer.cursor.col;
+                    let n = stop - (col % stop);
+                    for _ in 0..n {
+                        self.fan_out_insert_char(' ');
+                        self.record_insert_key(InsertKey::Char(' '));
+                    }
+                }
                 self.update_completion_filter();
             }
             // Arrow keys break vim's `.` recording — drop the in-flight
