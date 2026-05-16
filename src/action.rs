@@ -206,6 +206,10 @@ pub enum DirectKind {
     BufferList,
     SaveAndQuit,
     Save,
+    /// `:w!` — save, creating any missing parent directories. Useful
+    /// when the buffer's path points into a directory that doesn't
+    /// exist yet (a plain `:w` errors out in that case).
+    SaveForce,
     Open,
     GotoLine,
     /// `gd` — `textDocument/definition` for the symbol under the cursor.

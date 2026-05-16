@@ -54,6 +54,12 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         kind: DirectKind::Save,
     },
     CommandBind {
+        name: "w!",
+        aliases: &["write!"],
+        description: "save, creating dirs",
+        kind: DirectKind::SaveForce,
+    },
+    CommandBind {
         name: "wq",
         aliases: &["x"],
         description: "save & quit",

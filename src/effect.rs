@@ -71,10 +71,13 @@ pub enum Cmd {
     /// `:w` / `:w <path>` — persist the buffer to disk. When
     /// `then_quit` is set, the runtime quits after a successful
     /// write (`:wq` / `:x`); a failed save (e.g. no file name)
-    /// surfaces the error and the editor stays open.
+    /// surfaces the error as a toast and the editor stays open.
+    /// `force` is `:w!` semantics: create missing parent directories
+    /// before writing instead of erroring out.
     Save {
         path: Option<PathBuf>,
         then_quit: bool,
+        force: bool,
     },
     /// `:e <path>` — switch the active buffer to a file.
     OpenPath(PathBuf),

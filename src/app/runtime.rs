@@ -48,7 +48,11 @@ impl App {
             }
             Cmd::SetLastFind(lf) => self.last_find = Some(lf),
             Cmd::Scroll(anchor) => self.run_scroll(anchor),
-            Cmd::Save { path, then_quit } => self.run_save(path.as_deref(), then_quit)?,
+            Cmd::Save {
+                path,
+                then_quit,
+                force,
+            } => self.run_save(path.as_deref(), then_quit, force),
             Cmd::OpenPath(path) => self.open_path(&path)?,
             Cmd::LspJump { method, label } => self.lsp_jump(method, label),
             Cmd::LspFindReferences => self.lsp_find_references(),
@@ -150,10 +154,14 @@ impl App {
     }
 
     /// Persist the active buffer to disk and, when `then_quit`, set
-    /// `should_quit` only if the write succeeded. Mirrors the old
-    /// `do_save` semantics: a failed save (e.g. `:wq` on a no-name
-    /// buffer) surfaces the error and the editor stays open.
-    fn run_save(&mut self, path: Option<&Path>, then_quit: bool) -> Result<()> {
+    /// `should_quit` only if the write succeeded. A failed save
+    /// (no file name, missing parent dir, permission denied, …)
+    /// surfaces as a toast and the editor stays open — propagating
+    /// the error would tear down the run loop, which is the wrong
+    /// response to a fat-fingered path. `force` enables `:w!`
+    /// semantics: missing parent directories are created instead of
+    /// reported as an error.
+    fn run_save(&mut self, path: Option<&Path>, then_quit: bool, force: bool) {
         // Format-on-save runs only for in-place saves (not `:w <path>`):
         // for a save-as, the buffer's current language is ambiguous
         // with respect to the new path, and we'd rather avoid surprising
@@ -165,17 +173,55 @@ impl App {
             self.run_format_on_save();
         }
 
-        let wrote = if let Some(p) = path {
-            self.buffer.save_as(p)?;
-            self.push_toast(Toast::info(format!("written to {}", p.display())));
-            true
-        } else if self.buffer.path.is_some() {
-            self.buffer.save()?;
-            self.push_toast(Toast::info("written"));
-            true
-        } else {
+        let target = path
+            .map(|p| p.to_path_buf())
+            .or_else(|| self.buffer.path.clone());
+        let Some(target) = target else {
             self.push_toast(Toast::error("no file name (use :w <path>)"));
-            false
+            return;
+        };
+
+        let parent_missing = target
+            .parent()
+            .map(|p| !p.as_os_str().is_empty() && !p.exists())
+            .unwrap_or(false);
+        if parent_missing {
+            if !force {
+                self.push_toast(Toast::error(format!(
+                    "no such directory: {} (use :w!)",
+                    target.parent().unwrap().display()
+                )));
+                return;
+            }
+            if let Err(e) = std::fs::create_dir_all(target.parent().unwrap()) {
+                self.push_toast(Toast::error(format!(
+                    "mkdir {}: {}",
+                    target.parent().unwrap().display(),
+                    e
+                )));
+                return;
+            }
+        }
+
+        let result = if path.is_some() {
+            self.buffer.save_as(&target)
+        } else {
+            self.buffer.save()
+        };
+        let wrote = match result {
+            Ok(()) => {
+                let msg = if path.is_some() {
+                    format!("written to {}", target.display())
+                } else {
+                    "written".to_string()
+                };
+                self.push_toast(Toast::info(msg));
+                true
+            }
+            Err(e) => {
+                self.push_toast(Toast::error(format!("save: {}", root_cause(&e))));
+                false
+            }
         };
         if wrote {
             // Many servers (rust-analyzer in particular) only re-run
@@ -186,7 +232,6 @@ impl App {
                 self.should_quit = true;
             }
         }
-        Ok(())
     }
 
     /// External formatter > LSP `textDocument/formatting` > no-op.

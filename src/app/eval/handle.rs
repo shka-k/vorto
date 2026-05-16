@@ -173,10 +173,17 @@ impl App {
             D::SaveAndQuit => cmds.push(Cmd::Save {
                 path: parse_save_path(ctx.rest),
                 then_quit: true,
+                force: false,
             }),
             D::Save => cmds.push(Cmd::Save {
                 path: parse_save_path(ctx.rest),
                 then_quit: false,
+                force: false,
+            }),
+            D::SaveForce => cmds.push(Cmd::Save {
+                path: parse_save_path(ctx.rest),
+                then_quit: false,
+                force: true,
             }),
             D::Open => {
                 if ctx.rest.is_empty() {
