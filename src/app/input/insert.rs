@@ -38,12 +38,18 @@ impl App {
             self.record_insert_key(InsertKey::Char(c));
             self.update_completion_filter();
             // Auto-trigger completion when the user starts typing an
-            // identifier and no popup is open. Identifier-continue chars
-            // only — punctuation, whitespace, and operators don't fire
-            // a request on their own. If the popup is already open, the
-            // re-filter above is enough; we don't refire because items
-            // are stable for the same prefix-start.
-            if self.completion.is_none() && self.lsp.has_lsp() && is_ident_continue(c) {
+            // identifier and no popup is open. Identifier-continue
+            // chars plus `.` (the near-universal member-access trigger
+            // — server-declared triggerCharacters aren't read yet, but
+            // `.` covers the common case). Other punctuation,
+            // whitespace, and operators don't fire a request on their
+            // own. If the popup is already open, the re-filter above
+            // is enough; we don't refire because items are stable for
+            // the same prefix-start.
+            if self.completion.is_none()
+                && self.lsp.has_lsp()
+                && (is_ident_continue(c) || c == '.')
+            {
                 self.lsp_completion();
             }
             return Ok(());

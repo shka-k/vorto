@@ -9,12 +9,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding};
 
 use crate::app::App;
 
-const MAX_WIDTH: u16 = 60;
-const MAX_HEIGHT: u16 = 10;
+const MAX_WIDTH: u16 = 120;
+const MAX_HEIGHT: u16 = 24;
 
 pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     let Some(state) = app.completion.as_ref() else {
@@ -34,17 +34,37 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     let anchor_x = buf_area.x + gutter_width + state.prefix_start.col as u16;
     let anchor_y = buf_area.y + rel_y;
 
-    // Width: longest visible label (capped) + space + kind badge.
+    // Width: enough to fit the longest visible label and (if any) its
+    // detail side-by-side with a small gap between them, capped at
+    // MAX_WIDTH. The badge column was dropped in favor of the detail
+    // text which already carries the kind information.
     let label_w = state
         .filtered
         .iter()
         .map(|i| state.items[*i].label.chars().count() as u16)
         .max()
-        .unwrap_or(0)
-        .min(MAX_WIDTH.saturating_sub(6));
-    // 3 chars for kind badge ("Fn ", "Var", …) + 1 space.
-    let inner_w = (label_w + 4).min(MAX_WIDTH);
-    let popup_w = (inner_w + 2).min(buf_area.width);
+        .unwrap_or(0);
+    let detail_w = state
+        .filtered
+        .iter()
+        .map(|i| {
+            state.items[*i]
+                .detail
+                .as_deref()
+                .map(|s| s.chars().count() as u16)
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0);
+    let inner_w = if detail_w == 0 {
+        label_w
+    } else {
+        // 2-col gap between label and detail so the right edge breathes.
+        label_w.saturating_add(2).saturating_add(detail_w)
+    }
+    .min(MAX_WIDTH);
+    // popup width = inner text + 2 border cols + 2 horizontal padding cols.
+    let popup_w = (inner_w + 4).min(buf_area.width);
     let visible = state.filtered.len() as u16;
     let popup_h = (visible + 2).min(MAX_HEIGHT + 2);
 
@@ -75,6 +95,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(Color::Rgb(30, 30, 40)));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -94,22 +115,19 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         .map(|(i, item_idx)| {
             let item = &state.items[*item_idx];
             let is_sel = i == state.selected;
-            let badge = kind_badge(item.kind);
-            // Layout: "Fn  label    detail" — badge takes 3, then a
-            // single space, then label, then (when there's room and a
-            // detail exists) a space-padded detail right-aligned.
-            let badge_w = 3 + 1;
+            // Layout: "label    detail" — label on the left, detail
+            // right-aligned with at least a 2-col gap when both fit;
+            // detail elides with `…` only when the popup actually
+            // can't fit it (popup_w is sized to make that rare).
             let label_chars = item.label.chars().count();
             let detail = item.detail.as_deref().unwrap_or("");
             let detail_chars = detail.chars().count();
 
-            let usable = inner_w.saturating_sub(badge_w);
-            let (label_room, detail_room) = if detail_chars == 0 || label_chars >= usable {
-                (usable, 0)
+            let (label_room, detail_room) = if detail_chars == 0 || label_chars >= inner_w {
+                (inner_w, 0)
             } else {
-                // Reserve at least 1 column gap between label and detail.
-                let max_detail = usable.saturating_sub(label_chars).saturating_sub(1);
-                (label_chars.min(usable), detail_chars.min(max_detail))
+                let max_detail = inner_w.saturating_sub(label_chars).saturating_sub(2);
+                (label_chars.min(inner_w), detail_chars.min(max_detail))
             };
             let label = truncate(&item.label, label_room);
             let detail_text = truncate(detail, detail_room);
@@ -120,11 +138,6 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             } else {
                 Style::default()
             };
-            let badge_style = if is_sel {
-                row_style
-            } else {
-                Style::default().fg(Color::Rgb(140, 160, 200))
-            };
             let detail_style = if is_sel {
                 row_style
             } else {
@@ -132,13 +145,9 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             };
             // Pad between label and detail so detail right-aligns.
             let gap = inner_w
-                .saturating_sub(badge_w)
                 .saturating_sub(label.chars().count())
                 .saturating_sub(detail_text.chars().count());
-            let mut spans = vec![
-                Span::styled(format!("{:<3}", badge), badge_style),
-                Span::styled(format!(" {}", label), row_style),
-            ];
+            let mut spans = vec![Span::styled(label, row_style)];
             if !detail_text.is_empty() {
                 spans.push(Span::styled(" ".repeat(gap), row_style));
                 spans.push(Span::styled(detail_text, detail_style));
@@ -147,39 +156,6 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         })
         .collect();
     f.render_widget(List::new(items), inner);
-}
-
-/// 3-character abbreviation for the LSP `CompletionItemKind` enum. Keeps
-/// the popup readable at a glance without pulling in icon fonts.
-fn kind_badge(kind: u8) -> &'static str {
-    match kind {
-        1 => "Txt",
-        2 => "Fn",
-        3 => "Fn",
-        4 => "Ctr", // constructor
-        5 => "Fld", // field
-        6 => "Var",
-        7 => "Cls", // class
-        8 => "Itf", // interface
-        9 => "Mod",
-        10 => "Prp", // property
-        11 => "Uni", // unit
-        12 => "Val", // value
-        13 => "Enu", // enum
-        14 => "Kw",
-        15 => "Sni", // snippet
-        16 => "Col", // color
-        17 => "Fil", // file
-        18 => "Ref",
-        19 => "Dir", // folder
-        20 => "EnM", // enum member
-        21 => "Cst", // constant
-        22 => "Str", // struct
-        23 => "Evt", // event
-        24 => "Op",
-        25 => "Tpr", // type parameter
-        _ => "·",
-    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
