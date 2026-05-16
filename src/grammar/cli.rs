@@ -36,6 +36,7 @@ pub fn run(args: &[String]) -> Result<()> {
         Some((cmd, rest)) => match cmd.as_str() {
             "list" | "ls" => list(grammar_dir, query_dir),
             "install" | "add" => install(rest, grammar_dir, query_dir),
+            "install-queries" | "refresh-queries" => install_queries(rest, query_dir),
             "remove" | "rm" | "uninstall" => remove(rest, grammar_dir),
             "help" | "-h" | "--help" => {
                 print_usage();
@@ -53,13 +54,16 @@ fn print_usage() {
     eprintln!("usage: vorto grammar <command> [args]");
     eprintln!();
     eprintln!("commands:");
-    eprintln!("  list                       show built-in recipes and install status");
-    eprintln!("  install <name>... | --all  build and install one or more grammars");
-    eprintln!("  remove <name>...           delete installed grammar libraries");
+    eprintln!("  list                              show built-in recipes and install status");
+    eprintln!("  install <name>... | --all         build and install one or more grammars");
+    eprintln!("  install-queries <name>... | --all overwrite installed .scm files from the");
+    eprintln!("                                    vendored bundle (no library rebuild)");
+    eprintln!("  remove <name>...                  delete installed grammar libraries");
     eprintln!();
     eprintln!("examples:");
     eprintln!("  vorto grammar install rust python");
     eprintln!("  vorto grammar install --all");
+    eprintln!("  vorto grammar install-queries python");
     eprintln!("  vorto grammar list");
 }
 
@@ -144,6 +148,63 @@ fn install(args: &[String], grammar_dir: &Path, query_dir: &Path) -> Result<()> 
     }
     if !failures.is_empty() {
         bail!("failed to install: {}", failures.join(", "));
+    }
+    Ok(())
+}
+
+/// Queries-only refresh. Rewrites `<query_dir>/<name>/*.scm` from the
+/// compile-time-embedded bundle for each named grammar (or every
+/// built-in recipe under `--all`), without touching the loaded `.so`.
+/// `install` skips when a grammar is already fully installed, so this
+/// is the way to pick up an in-repo edit to `assets/queries/*.scm`
+/// without uninstalling and rebuilding the grammar.
+fn install_queries(args: &[String], query_dir: &Path) -> Result<()> {
+    let recipes = match args.first().map(String::as_str) {
+        None => {
+            bail!("install-queries: need at least one grammar name (or `--all`)");
+        }
+        Some("--all") => builtin_recipes(),
+        _ => {
+            let mut out = Vec::new();
+            for name in args {
+                match find_recipe(name) {
+                    Some(r) => out.push(r),
+                    None => bail!(
+                        "unknown grammar `{}`. Try `vorto grammar list` to see built-ins.",
+                        name
+                    ),
+                }
+            }
+            out
+        }
+    };
+
+    let mut failures = Vec::new();
+    for r in &recipes {
+        eprintln!("==> refreshing queries for {}", r.name);
+        match build::write_vendored_queries(query_dir, r.name) {
+            Ok(written) if written.is_empty() => {
+                eprintln!("    queries: none bundled for `{}`", r.name);
+            }
+            Ok(written) => {
+                let names: Vec<String> = written
+                    .iter()
+                    .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .collect();
+                eprintln!(
+                    "    queries: {} ({} files)",
+                    names.join(", "),
+                    written.len()
+                );
+            }
+            Err(e) => {
+                eprintln!("    failed: {:#}", e);
+                failures.push(r.name);
+            }
+        }
+    }
+    if !failures.is_empty() {
+        bail!("failed to refresh: {}", failures.join(", "));
     }
     Ok(())
 }
