@@ -458,6 +458,11 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         LanguageConfig {
             extensions: Some(vec!["ts".into(), "tsx".into()]),
             comment_token: Some("//".into()),
+            editor: EditorToml {
+                indent_width: Some(2),
+                tab_width: Some(2),
+                ..Default::default()
+            },
             lsp: lsp(&["vtsls", "typescript-language-server"]),
             ..Default::default()
         },
