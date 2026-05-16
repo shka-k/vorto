@@ -18,6 +18,10 @@ pub struct CommandBind {
     pub aliases: &'static [&'static str],
     pub description: &'static str,
     pub kind: DirectKind,
+    /// True when the command accepts a filesystem path as its
+    /// argument. Read by the `:` prompt so Tab completes paths after
+    /// `:e ` / `:w `, mirroring shell-style argument completion.
+    pub takes_path: bool,
 }
 
 impl CommandBind {
@@ -40,77 +44,90 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         aliases: &["quit"],
         description: "quit",
         kind: DirectKind::Quit,
+        takes_path: false,
     },
     CommandBind {
         name: "q!",
         aliases: &["quit!"],
         description: "force quit",
         kind: DirectKind::QuitForce,
+        takes_path: false,
     },
     CommandBind {
         name: "w",
         aliases: &["write"],
         description: "save (or :w <path>)",
         kind: DirectKind::Save,
+        takes_path: true,
     },
     CommandBind {
         name: "w!",
         aliases: &["write!"],
         description: "save, creating dirs",
         kind: DirectKind::SaveForce,
+        takes_path: true,
     },
     CommandBind {
         name: "wq",
         aliases: &["x"],
         description: "save & quit",
         kind: DirectKind::SaveAndQuit,
+        takes_path: true,
     },
     CommandBind {
         name: "e",
         aliases: &["edit"],
         description: "open <path>",
         kind: DirectKind::Open,
+        takes_path: true,
     },
     CommandBind {
         name: "bn",
         aliases: &["bnext"],
         description: "next buffer",
         kind: DirectKind::BufferNext,
+        takes_path: false,
     },
     CommandBind {
         name: "bp",
         aliases: &["bprev"],
         description: "previous buffer",
         kind: DirectKind::BufferPrev,
+        takes_path: false,
     },
     CommandBind {
         name: "bd",
         aliases: &["bdelete", "bc"],
         description: "delete buffer",
         kind: DirectKind::BufferDelete,
+        takes_path: false,
     },
     CommandBind {
         name: "bd!",
         aliases: &["bdelete!", "bc!"],
         description: "force delete buffer",
         kind: DirectKind::BufferDeleteForce,
+        takes_path: false,
     },
     CommandBind {
         name: "bls",
         aliases: &["buffers"],
         description: "buffer picker",
         kind: DirectKind::BufferList,
+        takes_path: false,
     },
     CommandBind {
         name: "goto",
         aliases: &[],
         description: "go to line <n>",
         kind: DirectKind::GotoLine,
+        takes_path: false,
     },
     CommandBind {
         name: "noh",
         aliases: &["nohl", "nohlsearch"],
         description: "clear search highlight",
         kind: DirectKind::ClearSearch,
+        takes_path: false,
     },
 ];

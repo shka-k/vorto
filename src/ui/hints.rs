@@ -13,7 +13,7 @@ use crate::config::COMMAND_BINDS;
 use crate::config::{
     GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
 };
-use crate::prompt::CommandPrompt;
+use crate::prompt::{CommandPrompt, CompletionKind};
 
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
@@ -25,43 +25,48 @@ const PENDING_HINT_WIDTH: u16 = 32;
 const PENDING_HINT_ROWS_MAX: u16 = 12;
 
 pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Rect) {
-    // When the user is Tab-cycling, the visible input has been replaced
-    // with a candidate name — keep filtering against the original
-    // prefix the user typed, otherwise the list would collapse to one
-    // entry the moment Tab is pressed.
-    let query = cp
-        .completion
-        .as_ref()
-        .map(|c| c.prefix.as_str())
-        .unwrap_or(cp.input.as_str());
-    // Once the user types a space they're entering an argument — hints
-    // about the command name no longer help.
-    if query.contains(' ') {
+    // Resolve "what list should the panel show right now?" and which
+    // entry (if any) is selected. Tab-cycling pins the panel to the
+    // candidate list captured at first Tab; otherwise we filter live
+    // from what the user has typed so far.
+    let (title, items, selected_idx): (&str, Vec<(String, String)>, Option<usize>) =
+        match &cp.completion {
+            Some(c) if c.kind == CompletionKind::Path => {
+                let items = c
+                    .matches
+                    .iter()
+                    .take(HINT_MAX)
+                    .map(|p| (p.clone(), String::new()))
+                    .collect();
+                (" files ", items, Some(c.selected))
+            }
+            Some(c) => {
+                // Command-name cycling. The visible input has been
+                // replaced with a candidate, so filter against the
+                // captured prefix instead.
+                let items = command_items(&c.prefix);
+                let sel = c
+                    .matches
+                    .get(c.selected)
+                    .and_then(|name| items.iter().position(|(n, _)| n == name));
+                (" commands ", items, sel)
+            }
+            None => {
+                // No cycle in progress — show live command-name
+                // candidates filtered by current input. Suppress once
+                // the user has moved past the command name itself.
+                let input = cp.input.as_str();
+                if input.contains(' ') {
+                    return;
+                }
+                (" commands ", command_items(input), None)
+            }
+        };
+    if items.is_empty() {
         return;
     }
 
-    // Flatten each CommandBind into one row per typeable name —
-    // primary then aliases — so the panel shows every form the user
-    // can submit. Filter on the row name itself (not the bind), so
-    // typing `:bd` shows the `bd` row but not `bdelete` (which
-    // wouldn't have matched anyway since `bdelete` doesn't start
-    // with `bd`... wait, it does. Both still appear). The point is
-    // the row label matches what the user is typing.
-    let hints: Vec<(&'static str, &'static str)> = COMMAND_BINDS
-        .iter()
-        .flat_map(|b| b.all_names().map(move |n| (n, b.description)))
-        .filter(|(name, _)| name.starts_with(query))
-        .take(HINT_MAX)
-        .collect();
-    if hints.is_empty() {
-        return;
-    }
-    let selected_name = cp
-        .completion
-        .as_ref()
-        .map(|c| c.matches[c.selected]);
-
-    let rows = hints.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
+    let rows = items.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
     let height = rows as u16 + 2 * HINT_PAD_Y + 2;
 
     let screen = f.area();
@@ -76,12 +81,11 @@ pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Re
     }
 
     let bg = Style::default().bg(super::PANEL_BG);
-    let title = " commands ";
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(bg.fg(Color::DarkGray))
         .title(Span::styled(
-            title,
+            title.to_string(),
             bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ))
         .style(bg)
@@ -91,7 +95,7 @@ pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Re
     f.render_widget(block, area);
 
     // Split the inner area into two equal columns. Hints flow column-major
-    // (column 0 takes hints[0..rows], column 1 takes hints[rows..2*rows]).
+    // (column 0 takes items[0..rows], column 1 takes items[rows..2*rows]).
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -100,20 +104,20 @@ pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Re
     // Width the longest name in the matched set, so all rows align
     // in their column. Cap at 10 to keep things tidy if someone adds
     // a comically long command name later.
-    let name_w = hints
+    let name_w = items
         .iter()
-        .map(|(n, _)| n.len())
+        .map(|(n, _)| n.chars().count())
         .max()
         .unwrap_or(5)
-        .min(10);
+        .min(20);
     let render_column = |start: usize| -> Vec<Line<'static>> {
-        hints
+        items
             .iter()
+            .enumerate()
             .skip(start)
             .take(rows)
-            .map(|(name, description)| {
-                let is_selected = selected_name == Some(*name);
-                let row_bg = if is_selected {
+            .map(|(i, (name, description))| {
+                let row_bg = if selected_idx == Some(i) {
                     Style::default().bg(Color::DarkGray)
                 } else {
                     bg
@@ -130,6 +134,19 @@ pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Re
     };
     f.render_widget(Paragraph::new(render_column(0)).style(bg), columns[0]);
     f.render_widget(Paragraph::new(render_column(rows)).style(bg), columns[1]);
+}
+
+/// Live-filtered command-name candidates for a given prefix, formatted
+/// for the hint panel. Each row is one typeable form (primary name or
+/// alias) paired with its description.
+fn command_items(prefix: &str) -> Vec<(String, String)> {
+    COMMAND_BINDS
+        .iter()
+        .flat_map(|b| b.all_names().map(move |n| (n, b.description)))
+        .filter(|(name, _)| name.starts_with(prefix))
+        .take(HINT_MAX)
+        .map(|(n, d)| (n.to_string(), d.to_string()))
+        .collect()
 }
 
 /// Which-key-style panel that lists valid continuations when the token

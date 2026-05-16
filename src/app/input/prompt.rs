@@ -9,7 +9,7 @@ use crate::prompt::PromptOutcome;
 
 impl App {
     pub(super) fn handle_prompt_key(&mut self, key: KeyEvent) -> Result<()> {
-        let outcome = self.prompt.handle_key(key);
+        let outcome = self.prompt.handle_key(key, &self.startup_cwd);
         self.apply_prompt_outcome(outcome)
     }
 
