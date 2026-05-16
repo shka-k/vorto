@@ -295,6 +295,19 @@ fn parse_text_edit(v: &Value) -> Option<TextEdit> {
     Some(TextEdit { range, new_text })
 }
 
+/// Parse a `textDocument/formatting` (or `rangeFormatting`) response.
+/// The result is `TextEdit[]` or `null`; both collapse to a flat vector.
+/// Empty when the server returned nothing or every entry was malformed.
+pub fn parse_text_edits(v: &Value) -> Vec<TextEdit> {
+    if v.is_null() {
+        return Vec::new();
+    }
+    let Some(arr) = v.as_array() else {
+        return Vec::new();
+    };
+    arr.iter().filter_map(parse_text_edit).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

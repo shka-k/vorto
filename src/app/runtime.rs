@@ -7,12 +7,20 @@
 //! …); this module is the dispatcher, not the implementer.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 
 use super::eval::word_under_cursor;
 use super::{App, Toast, root_cause};
 use crate::effect::{Cmd, ScrollAnchor};
+use crate::lsp;
+
+/// Upper bound on how long save waits for `textDocument/formatting`
+/// before giving up and writing the un-formatted buffer. Generous
+/// enough for rust-analyzer's first-format-after-startup; short enough
+/// that a wedged server doesn't strand the user.
+const LSP_FORMAT_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl App {
     pub(super) fn run_cmds(&mut self, cmds: Vec<Cmd>) -> Result<()> {
@@ -146,6 +154,17 @@ impl App {
     /// `do_save` semantics: a failed save (e.g. `:wq` on a no-name
     /// buffer) surfaces the error and the editor stays open.
     fn run_save(&mut self, path: Option<&Path>, then_quit: bool) -> Result<()> {
+        // Format-on-save runs only for in-place saves (not `:w <path>`):
+        // for a save-as, the buffer's current language is ambiguous
+        // with respect to the new path, and we'd rather avoid surprising
+        // the user by rewriting their text right before changing where
+        // it lives. In-place saves go through the formatter step,
+        // which is no-op when no formatter is configured and no LSP
+        // is attached.
+        if path.is_none() && self.buffer.path.is_some() {
+            self.run_format_on_save();
+        }
+
         let wrote = if let Some(p) = path {
             self.buffer.save_as(p)?;
             self.toast = Toast::info(format!("written to {}", p.display()));
@@ -168,6 +187,145 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// External formatter > LSP `textDocument/formatting` > no-op.
+    /// Errors surface as toasts but never abort the save: the user
+    /// asked to save and we'd rather write the un-formatted bytes
+    /// than refuse the action. Format failures during save (e.g.
+    /// rustfmt rejecting a syntax error) are common enough that
+    /// blocking the save would be hostile.
+    fn run_format_on_save(&mut self) {
+        let eff = self.effective_editor();
+        if !eff.format_on_save {
+            return;
+        }
+        let language = self
+            .buffer
+            .path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .and_then(|ext| self.config.languages.by_extension(ext));
+
+        // External formatter wins when configured: it's the user's
+        // explicit choice, and the LSP would typically just shell out
+        // to the same tool anyway (gopls → gofmt, rust-analyzer →
+        // rustfmt).
+        if let Some(lang) = language
+            && let Some(formatter) = lang.formatter.clone()
+        {
+            let cwd = self
+                .buffer
+                .path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.lsp.startup_cwd().to_path_buf());
+            let text = self.buffer.lines.join("\n");
+            match crate::format::run_external(&formatter, &text, &cwd) {
+                Ok(formatted) => self.apply_formatted_text(formatted),
+                Err(e) => {
+                    self.toast =
+                        Toast::error(format!("format `{}`: {}", formatter.command, root_cause(&e)));
+                }
+            }
+            return;
+        }
+
+        // Fall through to LSP. `format_first_client` returns Ok(None)
+        // when no client is attached — quietly do nothing in that
+        // case so saves on plain-text buffers don't surface noise.
+        let options = self.formatting_options();
+        match self.lsp.format_first_client(options, LSP_FORMAT_TIMEOUT) {
+            Ok(Some(edits)) if !edits.is_empty() => self.apply_format_edits(edits),
+            Ok(_) => {}
+            Err(e) => {
+                self.toast =
+                    Toast::error(format!("lsp format: {}", root_cause(&e)));
+            }
+        }
+    }
+
+    /// Replace the buffer's text wholesale with the external
+    /// formatter's stdout. Snapshots first so undo lands on the
+    /// pre-format state. Cursor is clamped — the formatter typically
+    /// only adds/removes whitespace so the row is usually still valid,
+    /// but a wholesale rewrite is allowed to break that.
+    fn apply_formatted_text(&mut self, formatted: String) {
+        let new_lines: Vec<String> = formatted.split('\n').map(|s| s.to_string()).collect();
+        let new_lines = if new_lines.is_empty() {
+            vec![String::new()]
+        } else {
+            // External formatters typically end output with a trailing
+            // newline, which `split('\n')` turns into a stray empty
+            // last element. Drop it so the buffer doesn't grow an
+            // extra blank line on every save.
+            let mut v = new_lines;
+            if v.len() > 1 && v.last().map(|s| s.is_empty()).unwrap_or(false) {
+                v.pop();
+            }
+            v
+        };
+        if new_lines == self.buffer.lines {
+            return;
+        }
+        self.buffer.snapshot();
+        self.buffer.lines = new_lines;
+        self.buffer.bump_version();
+        self.buffer.dirty = true;
+        self.clamp_cursor_to_buffer();
+    }
+
+    /// Apply a list of LSP `TextEdit`s to the buffer. Snapshots first
+    /// so undo lands on the pre-format state; bumps the version so
+    /// the highlighter re-runs against the rewritten text.
+    fn apply_format_edits(&mut self, edits: Vec<lsp::TextEdit>) {
+        self.buffer.snapshot();
+        let mut lines = std::mem::take(&mut self.buffer.lines);
+        lsp::apply_text_edits(&mut lines, edits);
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        self.buffer.lines = lines;
+        self.buffer.bump_version();
+        self.buffer.dirty = true;
+        self.clamp_cursor_to_buffer();
+    }
+
+    /// Pin the cursor inside the (possibly shrunken) buffer after a
+    /// format rewrite. Conservative: just clamps row/col without
+    /// trying to track the cursor's logical position through the
+    /// edit — formatters mostly preserve structure, and the user
+    /// can scroll back if the cursor lands somewhere unexpected.
+    fn clamp_cursor_to_buffer(&mut self) {
+        let last_row = self.buffer.lines.len().saturating_sub(1);
+        if self.buffer.cursor.row > last_row {
+            self.buffer.cursor.row = last_row;
+        }
+        let row_len = self
+            .buffer
+            .lines
+            .get(self.buffer.cursor.row)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
+        if self.buffer.cursor.col > row_len {
+            self.buffer.cursor.col = row_len;
+        }
+    }
+
+    /// LSP `FormattingOptions` derived from the buffer's effective
+    /// editor settings. Servers honour these to pick tab vs. space
+    /// (gopls in particular needs `insertSpaces: false`).
+    fn formatting_options(&self) -> serde_json::Value {
+        let eff = self.effective_editor();
+        serde_json::json!({
+            "tabSize": eff.indent_width,
+            "insertSpaces": !eff.use_tabs,
+            "trimTrailingWhitespace": true,
+            "insertFinalNewline": true,
+            "trimFinalNewlines": true,
+        })
     }
 
     fn run_notify_lsp_save(&mut self) {

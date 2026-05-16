@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -303,6 +304,35 @@ impl LspCoordinator {
             }
         }
         Ok(())
+    }
+
+    /// Synchronously request `textDocument/formatting` from the first
+    /// attached client. Returns the parsed edits on success, `Ok(None)`
+    /// when no client is attached (so the caller can fall through to
+    /// an external formatter / no-op without inventing a sentinel
+    /// error). `timeout` caps how long save will block before giving
+    /// up — past that, the save proceeds un-formatted.
+    ///
+    /// We try only the first client rather than fanning out: format
+    /// responses from two servers would need a merge strategy we
+    /// haven't designed (and `vtsls` + `typescript-language-server`
+    /// formatting the same file twice would just clobber each other).
+    pub fn format_first_client(
+        &mut self,
+        options: Value,
+        timeout: Duration,
+    ) -> Result<Option<Vec<lsp::TextEdit>>> {
+        let Some(uri) = self.current_uri.clone() else {
+            return Ok(None);
+        };
+        let Some(key) = self.current_clients.first().cloned() else {
+            return Ok(None);
+        };
+        let Some(client) = self.clients.get_mut(&key) else {
+            return Ok(None);
+        };
+        let edits = client.formatting(&uri, options, timeout)?;
+        Ok(Some(edits))
     }
 
     /// Fan out `didSave` to every client attached to the current

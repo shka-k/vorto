@@ -42,7 +42,9 @@ pub use keymap::{
     GOTO_BINDINGS, KeySig, Keymap, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
     Z_BINDINGS,
 };
-pub use languages::{Language, LanguageConfig, LanguageRegistry, LspConfig, LspToml};
+pub use languages::{
+    FormatterConfig, Language, LanguageConfig, LanguageRegistry, LspConfig, LspToml,
+};
 
 use cursor::{CursorConfig, resolve_cursor_shapes};
 use keymap::LEADER;

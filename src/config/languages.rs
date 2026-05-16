@@ -106,6 +106,30 @@ impl LspConfig {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// Formatter schema
+// ────────────────────────────────────────────────────────────────────────
+
+/// Raw `[languages.<name>.formatter]` entry as it appears in TOML.
+/// `command` is required when the user defines a new entry; both fields
+/// land here as `Option` so a missing `formatter` table on the language
+/// can be distinguished from an explicitly-cleared one.
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct FormatterToml {
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+}
+
+/// Fully-resolved external formatter. The buffer's text is piped on
+/// stdin; stdout becomes the new text. A missing `formatter` on the
+/// resolved `Language` means "fall back to `textDocument/formatting`
+/// against the first attached LSP".
+#[derive(Debug, Clone)]
+pub struct FormatterConfig {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Language schema
 // ────────────────────────────────────────────────────────────────────────
 
@@ -137,6 +161,12 @@ pub struct LanguageConfig {
     /// Server names (keys from the `[lsp]` table) to attach to buffers
     /// of this language. Replaced whole on overlay, not merged.
     pub lsp: Option<Vec<String>>,
+    /// External formatter invoked on save. The buffer's text is piped
+    /// on stdin and stdout becomes the new buffer text. Unset means
+    /// "fall back to `textDocument/formatting` against the attached
+    /// LSP". Replaced whole on overlay, not merged — `command` and
+    /// `args` go together, partial overrides don't pay rent here.
+    pub formatter: Option<FormatterToml>,
 }
 
 impl LanguageConfig {
@@ -176,6 +206,9 @@ impl LanguageConfig {
         if user.lsp.is_some() {
             self.lsp = user.lsp;
         }
+        if user.formatter.is_some() {
+            self.formatter = user.formatter;
+        }
     }
 }
 
@@ -194,6 +227,10 @@ pub struct Language {
     /// references on `LanguageConfig.lsp`. Empty when the language has
     /// no LSP configured.
     pub lsp: Vec<LspConfig>,
+    /// External formatter, if configured. `None` means save-time
+    /// formatting falls through to `textDocument/formatting` against
+    /// the first attached LSP — or is a no-op when no LSP is attached.
+    pub formatter: Option<FormatterConfig>,
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -274,12 +311,18 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
     let mut m = HashMap::new();
     let lsp = |names: &[&str]| Some(names.iter().map(|s| s.to_string()).collect());
 
+    // rustfmt with no path argument reads stdin and writes stdout —
+    // the shape `run_external_formatter` expects.
     m.insert(
         "rust".into(),
         LanguageConfig {
             extensions: Some(vec!["rs".into()]),
             comment_token: Some("//".into()),
             lsp: lsp(&["rust-analyzer"]),
+            formatter: Some(FormatterToml {
+                command: Some("rustfmt".into()),
+                args: None,
+            }),
             ..Default::default()
         },
     );
@@ -334,8 +377,13 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
                 tab_width: Some(4),
                 use_tabs: Some(true),
                 show_whitespace: None,
+                format_on_save: None,
             },
             lsp: lsp(&["gopls"]),
+            formatter: Some(FormatterToml {
+                command: Some("gofmt".into()),
+                args: None,
+            }),
             ..Default::default()
         },
     );
@@ -464,6 +512,10 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
             extensions: Some(vec!["zig".into(), "zon".into()]),
             comment_token: Some("//".into()),
             lsp: lsp(&["zls"]),
+            formatter: Some(FormatterToml {
+                command: Some("zig".into()),
+                args: Some(vec!["fmt".into(), "--stdin".into()]),
+            }),
             ..Default::default()
         },
     );
@@ -534,6 +586,18 @@ fn build_language(
             lsp.push(entry.clone());
         }
     }
+    let formatter = match c.formatter {
+        Some(f) => Some(FormatterConfig {
+            command: f.command.ok_or_else(|| {
+                anyhow!(
+                    "[languages.{}.formatter] requires a `command` field",
+                    name
+                )
+            })?,
+            args: f.args.unwrap_or_default(),
+        }),
+        None => None,
+    };
     Ok(Language {
         name: name.to_string(),
         extensions: c.extensions.unwrap_or_default(),
@@ -543,6 +607,7 @@ fn build_language(
         comment_token: c.comment_token,
         editor: c.editor,
         lsp,
+        formatter,
     })
 }
 

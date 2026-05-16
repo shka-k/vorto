@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use super::types::{Diagnostic, LspEvent, Position, Range, Severity};
+use super::{BlockingPending, BlockingReply};
 
 pub(super) fn request(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
@@ -70,6 +71,7 @@ pub(super) fn reader_loop(
     emit: Box<dyn Fn(LspEvent) + Send>,
     stdin: Arc<Mutex<ChildStdin>>,
     client: String,
+    blocking_pending: BlockingPending,
 ) {
     loop {
         let msg = match read_message(&mut reader) {
@@ -100,6 +102,18 @@ pub(super) fn reader_loop(
                 .and_then(|e| e.get("message"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            // Blocking waiters (format-on-save) take precedence over
+            // the async event channel. We pop from the pending map
+            // under lock so a sibling timeout can't race us.
+            let blocking_waiter = blocking_pending.lock().ok().and_then(|mut g| g.remove(&id));
+            if let Some(tx) = blocking_waiter {
+                let reply = match error {
+                    Some(msg) => BlockingReply::Err(msg),
+                    None => BlockingReply::Ok(result.unwrap_or(Value::Null)),
+                };
+                let _ = tx.send(reply);
+                continue;
+            }
             emit(LspEvent::Response {
                 client: client.clone(),
                 id,

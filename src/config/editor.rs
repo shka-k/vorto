@@ -32,6 +32,12 @@ pub struct EditorToml {
     /// visible marker glyphs (middle-dot / arrow) drawn in a dim
     /// foreground. Falls back to `false`.
     pub show_whitespace: Option<bool>,
+    /// When `true`, save runs the configured formatter (external command
+    /// if `formatter = {…}` is set, otherwise `textDocument/formatting`
+    /// against the first attached LSP) before writing to disk. Falls back
+    /// to `true`. Per-language overrides flatten the same field into the
+    /// `[languages.<name>]` table.
+    pub format_on_save: Option<bool>,
 }
 
 /// Fully-resolved editor settings — what the runtime actually reads
@@ -42,6 +48,7 @@ pub struct EditorConfig {
     pub tab_width: usize,
     pub use_tabs: bool,
     pub show_whitespace: bool,
+    pub format_on_save: bool,
 }
 
 impl Default for EditorConfig {
@@ -51,6 +58,7 @@ impl Default for EditorConfig {
             tab_width: DEFAULT_TAB_WIDTH,
             use_tabs: false,
             show_whitespace: false,
+            format_on_save: true,
         }
     }
 }
@@ -65,6 +73,7 @@ impl EditorConfig {
             tab_width: user.tab_width.unwrap_or(self.tab_width),
             use_tabs: user.use_tabs.unwrap_or(self.use_tabs),
             show_whitespace: user.show_whitespace.unwrap_or(self.show_whitespace),
+            format_on_save: user.format_on_save.unwrap_or(self.format_on_save),
         }
     }
 }
@@ -87,6 +96,7 @@ mod tests {
             tab_width: 4,
             use_tabs: false,
             show_whitespace: false,
+            format_on_save: true,
         };
         let eff = base.overlay(&EditorToml {
             tab_width: Some(8),

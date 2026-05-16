@@ -28,8 +28,10 @@
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -72,7 +74,25 @@ pub struct LspClient {
     docs: HashMap<String, i32>,
     /// `languageId` to send in `didOpen`.
     language_id: String,
+    /// Side-channel for `request_blocking`. When a caller wants to block
+    /// on a specific response (format-on-save is the only consumer for
+    /// now), it registers `id → Sender` here and the reader thread
+    /// forwards the matching response through it instead of emitting
+    /// the usual async `LspEvent::Response`. Keeps blocking save flows
+    /// from racing the event loop.
+    blocking_pending: Arc<Mutex<HashMap<u64, mpsc::Sender<BlockingReply>>>>,
 }
+
+/// What the reader thread hands back to a `request_blocking` waiter.
+pub(crate) enum BlockingReply {
+    Ok(Value),
+    Err(String),
+}
+
+/// Shared state between an [`LspClient`] and its reader thread for
+/// blocking-response routing. Aliased so the type name doesn't bleed
+/// across function signatures.
+pub(crate) type BlockingPending = Arc<Mutex<HashMap<u64, mpsc::Sender<BlockingReply>>>>;
 
 impl LspClient {
     /// Spawn the server, run the initialize handshake synchronously, then
@@ -213,7 +233,11 @@ impl LspClient {
 
         let stdin_reader = Arc::clone(&stdin);
         let key_for_reader = client_key.to_string();
-        thread::spawn(move || reader_loop(reader, emit, stdin_reader, key_for_reader));
+        let blocking_pending: BlockingPending = Arc::new(Mutex::new(HashMap::new()));
+        let blocking_for_reader = Arc::clone(&blocking_pending);
+        thread::spawn(move || {
+            reader_loop(reader, emit, stdin_reader, key_for_reader, blocking_for_reader)
+        });
 
         Ok(Self {
             _child: child,
@@ -221,6 +245,7 @@ impl LspClient {
             next_id: 2,
             docs: HashMap::new(),
             language_id,
+            blocking_pending,
         })
     }
 
@@ -283,5 +308,53 @@ impl LspClient {
         }
         let params = json!({ "textDocument": { "uri": uri } });
         write_framed(&self.stdin, &notification("textDocument/didClose", params))
+    }
+
+    /// Synchronously request `textDocument/formatting`. Registers a
+    /// side-channel before sending so the reader thread routes the
+    /// response straight to us instead of into the async `LspEvent`
+    /// queue — necessary because save flows need the edits in hand
+    /// before they can write the file. `timeout` caps how long we'll
+    /// wait before giving up (e.g. on a slow rust-analyzer first-run).
+    /// On error or timeout we clean the pending entry so a late reply
+    /// can't leak.
+    pub fn formatting(
+        &mut self,
+        uri: &str,
+        options: Value,
+        timeout: Duration,
+    ) -> Result<Vec<TextEdit>> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut guard = self
+                .blocking_pending
+                .lock()
+                .map_err(|_| anyhow!("lsp blocking pending poisoned"))?;
+            guard.insert(id, tx);
+        }
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "options": options,
+        });
+        if let Err(e) = write_framed(&self.stdin, &request(id, "textDocument/formatting", params)) {
+            self.blocking_pending.lock().ok().and_then(|mut g| g.remove(&id));
+            return Err(e);
+        }
+        let reply = rx.recv_timeout(timeout);
+        // Always clean up — on timeout, otherwise the late response would
+        // leak into the map forever.
+        self.blocking_pending.lock().ok().and_then(|mut g| g.remove(&id));
+        match reply {
+            Ok(BlockingReply::Ok(v)) => Ok(parse::parse_text_edits(&v)),
+            Ok(BlockingReply::Err(msg)) => bail!("textDocument/formatting: {}", msg),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                bail!("textDocument/formatting timed out after {:?}", timeout)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("textDocument/formatting: lsp reader gone")
+            }
+        }
     }
 }

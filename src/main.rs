@@ -6,6 +6,7 @@ mod editor;
 mod effect;
 mod event;
 mod finder;
+mod format;
 mod grammar;
 mod lsp;
 mod mode;
