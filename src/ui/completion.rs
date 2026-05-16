@@ -13,8 +13,19 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding};
 
 use crate::app::App;
 
-const MAX_WIDTH: u16 = 120;
+const MAX_WIDTH: u16 = 80;
 const MAX_HEIGHT: u16 = 24;
+/// Per-row cap on the detail column. Long function signatures like
+/// `fn(a: T, b: U, c: V) -> Result<X, Y>` dominated the popup width
+/// before this; capping at 32 chars keeps the popup compact and lets
+/// the label column breathe. Detail beyond this is elided with `…`.
+const MAX_DETAIL_WIDTH: u16 = 32;
+/// Side detail popup (shown only while the popup is in selecting mode)
+/// width / height caps. The popup wraps the resolved item's `detail`
+/// across multiple lines so long signatures stay readable instead of
+/// getting `…`-truncated like in the main popup.
+const DETAIL_POPUP_WIDTH: u16 = 48;
+const DETAIL_POPUP_HEIGHT: u16 = 16;
 
 pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     let Some(state) = app.completion.as_ref() else {
@@ -55,7 +66,8 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
                 .unwrap_or(0)
         })
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(MAX_DETAIL_WIDTH);
     let inner_w = if detail_w == 0 {
         label_w
     } else {
@@ -114,7 +126,10 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         .take(body_h)
         .map(|(i, item_idx)| {
             let item = &state.items[*item_idx];
-            let is_sel = i == state.selected;
+            // In preview mode no row is "the selected one" yet — the
+            // first Tab/Up/Down flips `selecting` to true, and only
+            // then does the highlight appear.
+            let is_sel = state.selecting && i == state.selected;
             // Layout: "label    detail" — label on the left, detail
             // right-aligned with at least a 2-col gap when both fit;
             // detail elides with `…` only when the popup actually
@@ -126,7 +141,10 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             let (label_room, detail_room) = if detail_chars == 0 || label_chars >= inner_w {
                 (inner_w, 0)
             } else {
-                let max_detail = inner_w.saturating_sub(label_chars).saturating_sub(2);
+                let max_detail = inner_w
+                    .saturating_sub(label_chars)
+                    .saturating_sub(2)
+                    .min(MAX_DETAIL_WIDTH as usize);
                 (label_chars.min(inner_w), detail_chars.min(max_detail))
             };
             let label = truncate(&item.label, label_room);
@@ -156,6 +174,151 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         })
         .collect();
     f.render_widget(List::new(items), inner);
+
+    // Side detail popup. Only shown while the user is actively
+    // scrolling the completion list (selecting mode) — keeps the
+    // preview-mode popup minimal so typing doesn't get visually
+    // crowded by a documentation box for an item the user hasn't
+    // committed to.
+    if state.selecting {
+        draw_detail_side(f, state, buf_area, area);
+    }
+}
+
+/// Companion popup beside `area` showing the currently-selected
+/// completion item's `detail` text, wrapped across multiple lines so
+/// long signatures stay readable. Positioned to the right of the main
+/// popup by default; falls back to the left side, then below, when
+/// there isn't horizontal room. Bails out silently when the item has
+/// no detail at all so we don't draw an empty box.
+fn draw_detail_side(f: &mut Frame, state: &crate::app::CompletionState, buf_area: Rect, main: Rect) {
+    let Some(idx) = state.current_index() else {
+        return;
+    };
+    let Some(item) = state.items.get(idx) else {
+        return;
+    };
+    let Some(detail) = item.detail.as_deref().filter(|s| !s.is_empty()) else {
+        return;
+    };
+
+    // Wrap detail into lines that fit `DETAIL_POPUP_WIDTH - 4` chars
+    // each (popup width minus 2 borders + 2 horizontal padding).
+    let text_w = DETAIL_POPUP_WIDTH.saturating_sub(4) as usize;
+    if text_w == 0 {
+        return;
+    }
+    let wrapped = wrap_text(detail, text_w);
+    let lines_n = wrapped.len() as u16;
+    let popup_h = (lines_n + 2).min(DETAIL_POPUP_HEIGHT + 2);
+    // Don't grow the side popup taller than the main popup so the two
+    // share a baseline; users scan label → detail horizontally.
+    let popup_h = popup_h.min(main.height);
+    let popup_w = DETAIL_POPUP_WIDTH;
+
+    // Try to the right of the main popup first; flip to the left when
+    // it'd clip; fall back to below the main popup as last resort.
+    let right_x = main.right();
+    let space_right = buf_area.right().saturating_sub(right_x);
+    let (x, y) = if space_right >= popup_w {
+        (right_x, main.y)
+    } else if main.x >= popup_w {
+        (main.x - popup_w, main.y)
+    } else {
+        let below_y = main.bottom();
+        if buf_area.bottom().saturating_sub(below_y) >= popup_h {
+            (main.x, below_y)
+        } else {
+            return;
+        }
+    };
+
+    let area = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h.min(buf_area.bottom().saturating_sub(y)),
+    };
+    if area.width <= 2 || area.height <= 2 {
+        return;
+    }
+
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .style(Style::default().bg(Color::Rgb(30, 30, 40)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let body_h = inner.height as usize;
+    let lines: Vec<Line> = wrapped
+        .into_iter()
+        .take(body_h)
+        .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::Rgb(200, 200, 200)))))
+        .collect();
+    let para = ratatui::widgets::Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+/// Greedy word-wrap. Splits on whitespace; long tokens that exceed
+/// `width` get hard-broken at the char boundary instead of overflowing
+/// (rare but happens with stitched type signatures like
+/// `Result<HashMap<String,Vec<u32>>,Error>`).
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw_line in s.lines() {
+        let mut current = String::new();
+        for word in raw_line.split_whitespace() {
+            let word_len = word.chars().count();
+            if current.is_empty() {
+                if word_len <= width {
+                    current.push_str(word);
+                } else {
+                    // Hard-break the oversized token.
+                    let mut chunk = String::new();
+                    for c in word.chars() {
+                        chunk.push(c);
+                        if chunk.chars().count() == width {
+                            out.push(std::mem::take(&mut chunk));
+                        }
+                    }
+                    if !chunk.is_empty() {
+                        current = chunk;
+                    }
+                }
+            } else {
+                let needed = current.chars().count() + 1 + word_len;
+                if needed <= width {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    out.push(std::mem::take(&mut current));
+                    if word_len <= width {
+                        current.push_str(word);
+                    } else {
+                        let mut chunk = String::new();
+                        for c in word.chars() {
+                            chunk.push(c);
+                            if chunk.chars().count() == width {
+                                out.push(std::mem::take(&mut chunk));
+                            }
+                        }
+                        if !chunk.is_empty() {
+                            current = chunk;
+                        }
+                    }
+                }
+            }
+        }
+        if !current.is_empty() {
+            out.push(current);
+        }
+        if raw_line.is_empty() {
+            out.push(String::new());
+        }
+    }
+    out
 }
 
 fn truncate(s: &str, max: usize) -> String {

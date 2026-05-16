@@ -10,8 +10,7 @@ use std::path::Path;
 
 use crate::editor::Cursor;
 use crate::lsp::{
-    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, TextEdit,
-    WorkspaceEdit,
+    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, WorkspaceEdit,
 };
 
 use super::completion::{CompletionState, prefix_slice};
@@ -38,9 +37,11 @@ impl App {
                 prefix_start,
                 items,
             } => self.apply_completion_outcome(prefix_start, items),
-            LspEventOutcome::CompletionResolved { uri, edits } => {
-                self.apply_completion_resolved_outcome(uri, edits)
-            }
+            LspEventOutcome::CompletionResolved {
+                uri,
+                item_index,
+                item,
+            } => self.apply_completion_resolved_outcome(uri, item_index, item),
         }
     }
 
@@ -70,30 +71,70 @@ impl App {
             return;
         }
         self.completion = Some(state);
+        // No resolve fires here — the popup opens in preview mode with
+        // no row selected, and detail/documentation only matter once
+        // the user Tabs to commit to picking. `handle_completion_key`
+        // calls `resolve_current_completion_for_detail` after the first
+        // nav keypress flips `selecting` to true.
     }
 
-    /// Apply the `additionalTextEdits` that came back on a
-    /// `completionItem/resolve` after the user already accepted the
-    /// completion. The primary insertion has already been applied to
-    /// the buffer; these are the auto-import / `use …;` lines the
-    /// server deferred until acceptance.
+    /// Apply a `completionItem/resolve` response. Two call sites, one
+    /// handler:
     ///
-    /// Dropped silently when the user has switched buffers since the
-    /// resolve request was issued — applying imports to the wrong file
-    /// would be worse than skipping them.
-    fn apply_completion_resolved_outcome(&mut self, uri: String, edits: Vec<TextEdit>) {
-        if edits.is_empty() {
-            return;
-        }
+    /// - **Popup-display resolve** (`item_index = Some(idx)`): the user
+    ///   is still scrolling through the popup and we issued resolve to
+    ///   pull deferred `detail` / `documentation` for the row at `idx`.
+    ///   Merge the response into `CompletionState.items[idx]` so the
+    ///   right column updates in place. Validates the popup hasn't been
+    ///   replaced by checking that the slot's `label` still matches the
+    ///   resolved item.
+    /// - **Accept-time resolve** (`item_index = None`): the user already
+    ///   accepted; the primary insertion has been applied; this response
+    ///   carries the `additionalTextEdits` (auto-imports) the server
+    ///   deferred until acceptance. Same buffer-edit logic as before.
+    ///
+    /// In both paths a buffer-URI mismatch (user switched files in the
+    /// meantime) is a silent drop — applying imports or detail to the
+    /// wrong file would be worse than skipping.
+    fn apply_completion_resolved_outcome(
+        &mut self,
+        uri: String,
+        item_index: Option<usize>,
+        item: Option<CompletionItem>,
+    ) {
         let Some(current) = self.lsp.current_uri() else {
             return;
         };
         if current != uri {
             return;
         }
-        // Edits above the cursor row shift the cursor down (or up, on
-        // deletion); edits at or below leave it where it is. Compute
-        // the net shift before applying so we can adjust the cursor.
+        let Some(resolved) = item else {
+            // Parse failed or server returned null. For the popup path
+            // still mark the slot resolved so we don't keep retrying.
+            if let (Some(idx), Some(state)) = (item_index, self.completion.as_mut())
+                && let Some(flag) = state.resolved.get_mut(idx)
+            {
+                *flag = true;
+            }
+            return;
+        };
+        if let Some(idx) = item_index {
+            // Popup path. The state may have been replaced by a fresh
+            // completion response since the resolve fired; require the
+            // labels to still match before mutating.
+            if let Some(state) = self.completion.as_mut()
+                && let Some(slot) = state.items.get(idx)
+                && slot.label == resolved.label
+            {
+                state.merge_resolved(idx, &resolved);
+            }
+            return;
+        }
+        // Accept-time path: apply additional_text_edits.
+        let edits = resolved.additional_text_edits;
+        if edits.is_empty() {
+            return;
+        }
         let cursor_row = self.buffer.cursor.row;
         let row_shift: i64 = edits
             .iter()

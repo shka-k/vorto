@@ -156,11 +156,27 @@ impl App {
 
         let prefix_start = state.prefix_start;
         let cursor = self.buffer.cursor;
+        // Honor the server's `textEdit` start column when it sits
+        // before our notion of the prefix start — TypeScript and other
+        // servers triggered on `.` return items whose range covers the
+        // trigger char itself, with `newText` already including the
+        // `.`. Replacing only `[prefix_start..cursor]` (which starts
+        // *after* the dot) would leave the dot in place and prepend
+        // another from `newText`, producing `..foo`. The end is always
+        // the live cursor — the original concern about trusting the
+        // server's range was about losing post-request keystrokes
+        // typed after `range.end`, which only affects the END side.
+        let replace_start_col = item
+            .text_edit
+            .as_ref()
+            .filter(|te| te.range.start.line as usize == prefix_start.row)
+            .map(|te| (te.range.start.character as usize).min(prefix_start.col))
+            .unwrap_or(prefix_start.col);
         let primary = TextEdit {
             range: Range {
                 start: Position {
                     line: prefix_start.row as u32,
-                    character: prefix_start.col as u32,
+                    character: replace_start_col as u32,
                 },
                 end: Position {
                     line: cursor.row as u32,
@@ -196,7 +212,7 @@ impl App {
         let final_row =
             (prefix_start.row as i64 + row_shift + replacement_newlines as i64).max(0) as usize;
         let final_col = if replacement_newlines == 0 {
-            let end = prefix_start.col + replacement.chars().count();
+            let end = replace_start_col + replacement.chars().count();
             // When we auto-appended `()`, drop the cursor between the
             // parens so the user can start typing args.
             if appended_call { end - 1 } else { end }
@@ -216,12 +232,52 @@ impl App {
         // coordinator drops both into an empty-edit outcome, so the user
         // sees the primary insertion regardless.
         if needs_resolve && self.lsp.has_lsp() {
-            let _ = self.lsp.request_completion_resolve(raw, &source);
+            // `None` index: this resolve is for fetching auto-import
+            // edits after the user already accepted the item; the popup
+            // is already closed and there's no item slot to refresh.
+            let _ = self.lsp.request_completion_resolve(raw, &source, None);
         }
     }
 
     pub(super) fn cancel_completion(&mut self) {
         self.completion = None;
+    }
+
+    /// Issue `completionItem/resolve` for the currently-selected popup
+    /// row when we haven't already resolved it. Lets us pull deferred
+    /// `detail` / `documentation` into the popup while the user is
+    /// still scrolling — without this, servers that defer those fields
+    /// (typescript-language-server, pyright, rust-analyzer with
+    /// `resolveSupport`) leave the right column blank until acceptance.
+    /// No-op when the popup is closed, the item is already resolved,
+    /// or no LSP client is attached.
+    pub(super) fn resolve_current_completion_for_detail(&mut self) {
+        let Some(state) = self.completion.as_ref() else {
+            return;
+        };
+        // Preview-mode popups don't fire resolve — there's no row the
+        // user has committed to, so spending a round-trip on `selected`
+        // (which is the placeholder default, not a chosen item) would
+        // be wasted both at the server and in the side detail popup
+        // (which is hidden until selecting mode).
+        if !state.selecting {
+            return;
+        }
+        let Some(idx) = state.current_index() else {
+            return;
+        };
+        if state.resolved.get(idx).copied().unwrap_or(true) {
+            return;
+        }
+        let Some(item) = state.items.get(idx) else {
+            return;
+        };
+        if !self.lsp.has_lsp() {
+            return;
+        }
+        let raw = item.raw.clone();
+        let source = item.source.clone();
+        let _ = self.lsp.request_completion_resolve(raw, &source, Some(idx));
     }
 
     pub(super) fn lsp_hover(&mut self) {

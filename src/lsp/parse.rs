@@ -258,10 +258,37 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         .get("sortText")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string());
+    // `detail` is the canonical field. Some servers
+    // (typescript-language-server in particular) defer it to
+    // `completionItem/resolve` and instead populate `labelDetails`
+    // on the initial response — `{ detail: "(...args): T", description:
+    // "Foo.bar" }`. Fall back to that so the popup isn't blank for TS,
+    // Vue's Volar, etc. We stitch the two `labelDetails` halves with a
+    // space so the right-column shows everything the server has.
     let detail = v
         .get("detail")
         .and_then(|x| x.as_str())
-        .map(|s| s.to_string());
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            let ld = v.get("labelDetails")?;
+            let suffix = ld.get("detail").and_then(|x| x.as_str()).unwrap_or("");
+            let desc = ld.get("description").and_then(|x| x.as_str()).unwrap_or("");
+            let combined = match (suffix.is_empty(), desc.is_empty()) {
+                (true, true) => return None,
+                (false, true) => suffix.to_string(),
+                (true, false) => desc.to_string(),
+                (false, false) => format!("{} {}", suffix, desc),
+            };
+            Some(combined)
+        })
+        // Final fallback: turn the LSP `kind` enum into a Go-style
+        // short word ("func", "var", "type", …). TS / Pyright / others
+        // routinely send completion items without `detail` or
+        // `labelDetails` and only fill them on `completionItem/resolve`,
+        // which we issue lazily — without this the right column would
+        // be blank for those languages until the user accepts an item.
+        .or_else(|| kind_word(kind).map(|s| s.to_string()));
     let additional_text_edits = v
         .get("additionalTextEdits")
         .and_then(|x| x.as_array())
@@ -287,6 +314,41 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
 /// server hands back something we can't make sense of (no `label`).
 pub fn parse_completion_resolve(v: &Value) -> Option<CompletionItem> {
     parse_completion_item(v)
+}
+
+/// Short Go-style word for the LSP `CompletionItemKind` enum. Used as
+/// the last-resort fallback for `CompletionItem.detail` when the server
+/// sends neither `detail` nor `labelDetails`. Mirrors what gopls puts
+/// in its `detail` so the right column reads similarly across servers.
+fn kind_word(kind: u8) -> Option<&'static str> {
+    match kind {
+        1 => Some("text"),
+        2 => Some("method"),
+        3 => Some("func"),
+        4 => Some("constructor"),
+        5 => Some("field"),
+        6 => Some("var"),
+        7 => Some("class"),
+        8 => Some("interface"),
+        9 => Some("module"),
+        10 => Some("property"),
+        11 => Some("unit"),
+        12 => Some("value"),
+        13 => Some("enum"),
+        14 => Some("keyword"),
+        15 => Some("snippet"),
+        16 => Some("color"),
+        17 => Some("file"),
+        18 => Some("reference"),
+        19 => Some("folder"),
+        20 => Some("enum member"),
+        21 => Some("const"),
+        22 => Some("struct"),
+        23 => Some("event"),
+        24 => Some("operator"),
+        25 => Some("type param"),
+        _ => None,
+    }
 }
 
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {

@@ -132,53 +132,60 @@ impl App {
     /// backspace, etc.).
     fn handle_completion_key(&mut self, key: KeyEvent) -> Option<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
+        // Direction of the nav request, if this key is a nav key.
+        // `None` means the key isn't navigation.
+        let nav_delta: Option<isize> = match key.code {
             KeyCode::Esc => {
                 self.cancel_completion();
-                Some(())
+                return Some(());
             }
-            KeyCode::Up => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(-1);
-                }
-                Some(())
-            }
-            KeyCode::Down => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(1);
-                }
-                Some(())
-            }
-            KeyCode::Char('p') if ctrl => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(-1);
-                }
-                Some(())
-            }
-            KeyCode::Char('n') if ctrl => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(1);
-                }
-                Some(())
-            }
-            KeyCode::Tab => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(1);
-                }
-                Some(())
-            }
-            KeyCode::BackTab => {
-                if let Some(s) = self.completion.as_mut() {
-                    s.move_selection(-1);
-                }
-                Some(())
-            }
+            KeyCode::Up | KeyCode::BackTab => Some(-1),
+            KeyCode::Down | KeyCode::Tab => Some(1),
+            KeyCode::Char('p') if ctrl => Some(-1),
+            KeyCode::Char('n') if ctrl => Some(1),
             KeyCode::Enter => {
+                // Accept only when the popup is in selecting mode. In
+                // preview mode (just opened by auto-trigger, no row
+                // committed-to yet) let Enter fall through to insert a
+                // literal newline.
+                let selecting = self
+                    .completion
+                    .as_ref()
+                    .map(|s| s.selecting)
+                    .unwrap_or(false);
+                if !selecting {
+                    self.cancel_completion();
+                    return None;
+                }
                 self.accept_completion();
-                Some(())
+                return Some(());
             }
-            _ => None,
+            _ => return None,
+        };
+        if let Some(delta) = nav_delta
+            && let Some(s) = self.completion.as_mut()
+        {
+            // First nav keypress only flips into selecting mode; the
+            // initial row at `selected = 0` (or wherever refilter left
+            // it) is what gets highlighted. Subsequent presses actually
+            // step the selection.
+            if !s.selecting {
+                s.selecting = true;
+                // For backward nav, jump to the last row so BackTab /
+                // Up from preview mode lands at the bottom — matches
+                // what users expect after typing Tab to "open" and
+                // BackTab to "look at the bottom item".
+                if delta < 0 && !s.filtered.is_empty() {
+                    s.selected = s.filtered.len() - 1;
+                }
+            } else {
+                s.move_selection(delta);
+            }
         }
+        // Now in selecting mode: pull `detail` / `documentation` for
+        // the current row in case the server deferred them.
+        self.resolve_current_completion_for_detail();
+        Some(())
     }
 
     /// Apply `insert_char(c)` at the primary cursor and every extra

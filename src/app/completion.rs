@@ -28,8 +28,10 @@ pub struct CompletionState {
     /// the text from this column to the live cursor column against
     /// each item's `filter_text` / `label`.
     pub prefix_start: Cursor,
-    /// Raw items as the server returned them. Never mutated after
-    /// install; `filtered` is the view that gets re-derived.
+    /// Raw items as the server returned them. Mutated in-place when a
+    /// `completionItem/resolve` round-trip fills in the deferred
+    /// `detail` / `documentation` fields; `filtered` is the view that
+    /// gets re-derived.
     pub items: Vec<CompletionItem>,
     /// Indices into `items` that match the live prefix, in the order
     /// they should appear in the popup.
@@ -37,6 +39,21 @@ pub struct CompletionState {
     /// Selected row inside `filtered`. Clamped to `filtered.len() - 1`
     /// on every re-filter so it never points past the end.
     pub selected: usize,
+    /// Parallel to `items`: `true` once we've completed (success or
+    /// failure) a `completionItem/resolve` round-trip for that index.
+    /// Prevents re-firing resolve as the user navigates back to a row
+    /// we've already enriched.
+    pub resolved: Vec<bool>,
+    /// `false` while the popup is in "preview" mode — opened by the
+    /// auto-trigger but no row visually highlighted, Enter falls
+    /// through as a literal keystroke, and no resolve fires. Flips to
+    /// `true` on the first Tab / BackTab / Up / Down / Ctrl-n /
+    /// Ctrl-p; from then on the popup behaves like a normal picker
+    /// (highlight + side detail popup + resolve). Re-set to `false`
+    /// every time the user types and `refilter` rebuilds the list, so
+    /// continued typing never accidentally "steals" focus into the
+    /// popup.
+    pub selecting: bool,
 }
 
 impl CompletionState {
@@ -45,14 +62,43 @@ impl CompletionState {
     /// pre-filter so the popup opens already narrowed instead of
     /// flashing the full list and then collapsing on the next keystroke.
     pub fn new(prefix_start: Cursor, items: Vec<CompletionItem>, prefix: &str) -> Self {
+        let resolved = vec![false; items.len()];
         let mut s = Self {
             prefix_start,
             items,
             filtered: Vec::new(),
             selected: 0,
+            resolved,
+            selecting: false,
         };
         s.refilter(prefix);
         s
+    }
+
+    /// Item index (into `items`) of the currently-selected popup row.
+    /// `None` when the popup is empty.
+    pub fn current_index(&self) -> Option<usize> {
+        self.filtered.get(self.selected).copied()
+    }
+
+    /// Merge a server-returned resolved item into the slot at `idx`.
+    /// Updates fields that the server only fills lazily (`detail`,
+    /// `additional_text_edits`), leaves the rest as-is so client-side
+    /// fallbacks (`kind_word` → "func") aren't clobbered by a less
+    /// informative response. Always marks the slot as resolved so we
+    /// don't refire the request when the user navigates back.
+    pub fn merge_resolved(&mut self, idx: usize, resolved: &CompletionItem) {
+        if let Some(item) = self.items.get_mut(idx) {
+            if resolved.detail.as_ref().is_some_and(|s| !s.is_empty()) {
+                item.detail = resolved.detail.clone();
+            }
+            if !resolved.additional_text_edits.is_empty() {
+                item.additional_text_edits = resolved.additional_text_edits.clone();
+            }
+        }
+        if let Some(flag) = self.resolved.get_mut(idx) {
+            *flag = true;
+        }
     }
 
     /// Re-derive `filtered` against `prefix`. Empty prefix shows every
@@ -88,6 +134,10 @@ impl CompletionState {
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
         }
+        // Typing is a "narrow the list" gesture, not a "pick the row"
+        // gesture — drop back into preview mode so the user has to
+        // press Tab again to commit to picking.
+        self.selecting = false;
     }
 
     pub fn is_empty(&self) -> bool {

@@ -78,7 +78,17 @@ pub enum LspEventOutcome {
     },
     CompletionResolved {
         uri: String,
-        edits: Vec<TextEdit>,
+        /// `Some(idx)` when the resolve was fired from the open popup to
+        /// fill in detail/documentation for the item at that index in
+        /// `CompletionState.items`. `None` when the resolve was fired
+        /// from `accept_completion` to pull `additionalTextEdits` (auto-
+        /// imports) after the user already committed to an item.
+        item_index: Option<usize>,
+        /// The full resolved item (or `None` when the server returned
+        /// something we couldn't parse). The handler picks `detail` /
+        /// `documentation` off this for popup display, and
+        /// `additional_text_edits` for the accept-time path.
+        item: Option<CompletionItem>,
     },
 }
 
@@ -124,9 +134,13 @@ enum GroupAccum {
     },
     /// Resolve outcomes are inherently single-client; the group just
     /// carries the per-request context until the one response arrives.
+    /// `item_index` distinguishes a popup-display resolve (with the
+    /// item slot to update) from an accept-time resolve (`None` —
+    /// pulls auto-import edits).
     CompletionResolve {
         uri: String,
-        edits: Vec<TextEdit>,
+        item_index: Option<usize>,
+        item: Option<CompletionItem>,
     },
     CodeActionResolve {
         action: Option<CodeAction>,
@@ -444,7 +458,18 @@ impl LspCoordinator {
     /// `completionItem/resolve` — single-client. `source` is the
     /// `client_key` that originally produced the item; resolving via a
     /// different server would lose the opaque `data` context.
-    pub fn request_completion_resolve(&mut self, raw: Value, source: &str) -> Result<()> {
+    ///
+    /// `item_index` tags the call site: `Some(idx)` for popup-display
+    /// resolves (the handler updates `CompletionState.items[idx]` with
+    /// the returned detail / documentation); `None` for accept-time
+    /// resolves (the handler applies the returned `additionalTextEdits`
+    /// to the buffer).
+    pub fn request_completion_resolve(
+        &mut self,
+        raw: Value,
+        source: &str,
+        item_index: Option<usize>,
+    ) -> Result<()> {
         let uri = self.current_uri.clone().unwrap_or_default();
         self.send_single(
             source,
@@ -453,7 +478,8 @@ impl LspCoordinator {
             LspRequestKind::CompletionResolve,
             GroupAccum::CompletionResolve {
                 uri,
-                edits: Vec::new(),
+                item_index,
+                item: None,
             },
         )
     }
@@ -779,12 +805,14 @@ fn accumulate(accum: &mut GroupAccum, source: &str, result: &Value, kind: &LspRe
             }
             items.extend(parsed);
         }
-        (GroupAccum::CompletionResolve { edits, .. }, LspRequestKind::CompletionResolve) => {
+        (GroupAccum::CompletionResolve { item, .. }, LspRequestKind::CompletionResolve) => {
             // Servers that don't support resolve typically echo the
-            // item back unchanged (or return null); both shapes
-            // collapse to "no extra edits" via `parse_completion_resolve`.
-            if let Some(item) = lsp::parse_completion_resolve(result) {
-                *edits = item.additional_text_edits;
+            // item back unchanged (or return null); both shapes parse
+            // to either `None` or an item with no new fields, which
+            // the handler treats as a no-op.
+            *item = lsp::parse_completion_resolve(result);
+            if let Some(it) = item.as_mut() {
+                it.source = source.to_string();
             }
         }
         (GroupAccum::CodeActionResolve { action }, LspRequestKind::CodeActionResolve) => {
@@ -824,9 +852,15 @@ fn finalize(accum: GroupAccum) -> LspEventOutcome {
                 items,
             }
         }
-        GroupAccum::CompletionResolve { uri, edits } => {
-            LspEventOutcome::CompletionResolved { uri, edits }
-        }
+        GroupAccum::CompletionResolve {
+            uri,
+            item_index,
+            item,
+        } => LspEventOutcome::CompletionResolved {
+            uri,
+            item_index,
+            item,
+        },
         GroupAccum::CodeActionResolve { action } => LspEventOutcome::CodeActionResolved(action),
     }
 }
