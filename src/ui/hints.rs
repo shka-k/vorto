@@ -16,7 +16,7 @@ use crate::config::{
 use crate::prompt::{CommandPrompt, CompletionKind};
 
 const HINT_COLS: usize = 2;
-const HINT_ROWS_MAX: usize = 10;
+const HINT_ROWS_MAX: usize = 24;
 const HINT_MAX: usize = HINT_COLS * HINT_ROWS_MAX;
 const HINT_PAD_X: u16 = 1;
 const HINT_PAD_Y: u16 = 1;

@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 use crate::app::{App, Prompt};
 use crate::finder::FuzzyKind;
@@ -33,7 +33,8 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_bottom(Line::from(footer).right_aligned());
+        .title_bottom(Line::from(footer).right_aligned())
+        .padding(Padding::horizontal(1));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 

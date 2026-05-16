@@ -9,16 +9,18 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding};
 
 use crate::app::{App, Prompt};
 
 /// Width budget for the popup. Long titles are truncated with an
 /// ellipsis so a single absurd title can't widen the box past this.
-const MAX_WIDTH: u16 = 60;
+/// The popup is still clamped to the buffer area, so this is only the
+/// upper bound on small screens it never reaches.
+const MAX_WIDTH: u16 = 120;
 /// Maximum number of visible rows. Beyond this we scroll inside the
 /// popup so the menu still fits in a single screen.
-const MAX_HEIGHT: u16 = 10;
+const MAX_HEIGHT: u16 = 24;
 
 pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
     let Prompt::CodeActionMenu { actions, selected } = &app.prompt.state else {
@@ -45,7 +47,8 @@ pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
         .max()
         .unwrap_or(0)
         .min(MAX_WIDTH);
-    let popup_w = (inner_w + 2).min(buf_area.width); // +2 for borders
+    // popup width = inner text + 2 border cols + 2 horizontal padding cols.
+    let popup_w = (inner_w + 4).min(buf_area.width);
     let popup_h = (actions.len() as u16 + 2).min(MAX_HEIGHT + 2);
 
     // Prefer below the cursor; flip above when the popup would clip the
@@ -81,6 +84,7 @@ pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" code actions ")
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(Color::Rgb(30, 30, 40)));
     let inner = block.inner(area);
     f.render_widget(block, area);
