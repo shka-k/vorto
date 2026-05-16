@@ -214,6 +214,27 @@ impl LspCoordinator {
         self.current_uri.is_some() && !self.current_clients.is_empty()
     }
 
+    /// True when any client attached to the current document declared
+    /// `c` as a completion trigger character. Used by insert mode to
+    /// auto-fire `textDocument/completion` on language-specific
+    /// punctuation (e.g. `:` for Rust paths, `<` for TypeScript JSX)
+    /// without hardcoding it on our side.
+    pub fn is_completion_trigger_char(&self, c: char) -> bool {
+        let mut buf = [0u8; 4];
+        let needle = c.encode_utf8(&mut buf);
+        self.current_clients.iter().any(|key| {
+            self.clients
+                .get(key)
+                .map(|client| {
+                    client
+                        .completion_trigger_characters()
+                        .iter()
+                        .any(|t| t == needle)
+                })
+                .unwrap_or(false)
+        })
+    }
+
     /// Merged diagnostics across all clients for the current buffer's
     /// URI, if any. Cloned into an owned Vec because the underlying
     /// storage is per-client and we have to fold across that on read.
@@ -442,8 +463,30 @@ impl LspCoordinator {
         )
     }
 
-    pub fn request_completion(&mut self, cursor: Cursor, prefix_start: Cursor) -> Result<()> {
-        let params = self.text_document_position_params(cursor);
+    /// `trigger` is `Some(c)` when the request was fired because the
+    /// user typed `c` and the server declared it as a trigger character
+    /// (`completionProvider.triggerCharacters`). `None` covers manual
+    /// `<C-Space>` invocations and auto-fires on identifier chars. The
+    /// distinction matters: rust-analyzer's path completion (`foo::|`)
+    /// expects `triggerKind: 2 (TriggerCharacter)` with `triggerCharacter`
+    /// set, and otherwise treats the request as a plain `Invoked`.
+    pub fn request_completion(
+        &mut self,
+        cursor: Cursor,
+        prefix_start: Cursor,
+        trigger: Option<char>,
+    ) -> Result<()> {
+        let mut params = self.text_document_position_params(cursor);
+        let context = match trigger {
+            Some(c) => serde_json::json!({
+                "triggerKind": 2,
+                "triggerCharacter": c.to_string(),
+            }),
+            None => serde_json::json!({ "triggerKind": 1 }),
+        };
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("context".to_string(), context);
+        }
         self.fan_out_request(
             "textDocument/completion",
             params,

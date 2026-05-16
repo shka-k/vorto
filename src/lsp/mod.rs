@@ -74,6 +74,11 @@ pub struct LspClient {
     docs: HashMap<String, i32>,
     /// `languageId` to send in `didOpen`.
     language_id: String,
+    /// `completionProvider.triggerCharacters` from the server's
+    /// `initialize` response. Drives insert-mode auto-trigger so that
+    /// e.g. rust-analyzer's `:` (`::` paths) and TypeScript's `<` fire
+    /// the popup without us hardcoding language-specific punctuation.
+    completion_trigger_characters: Vec<String>,
     /// Side-channel for `request_blocking`. When a caller wants to block
     /// on a specific response (format-on-save is the only consumer for
     /// now), it registers `id → Sender` here and the reader thread
@@ -211,7 +216,7 @@ impl LspClient {
         // client/registerCapability, window/workDoneProgress/create)
         // before answering ours — we have to reply to those right here
         // or the handshake deadlocks.
-        loop {
+        let completion_trigger_characters: Vec<String> = loop {
             let msg = read_message(&mut reader).with_context(|| "reading initialize response")?;
             let is_init_response = msg.get("id").and_then(|v| v.as_u64()) == Some(init_id)
                 && msg.get("method").is_none();
@@ -219,10 +224,18 @@ impl LspClient {
                 if let Some(err) = msg.get("error") {
                     bail!("LSP initialize error: {}", err);
                 }
-                break;
+                break msg
+                    .pointer("/result/capabilities/completionProvider/triggerCharacters")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
             codec::handle_server_request(&stdin, &msg);
-        }
+        };
 
         write_framed(&stdin, &notification("initialized", json!({})))?;
 
@@ -245,8 +258,16 @@ impl LspClient {
             next_id: 2,
             docs: HashMap::new(),
             language_id,
+            completion_trigger_characters,
             blocking_pending,
         })
+    }
+
+    /// Trigger characters the server declared in its `initialize`
+    /// response. Empty when the server didn't expose `completionProvider`
+    /// or didn't list any characters.
+    pub fn completion_trigger_characters(&self) -> &[String] {
+        &self.completion_trigger_characters
     }
 
     /// Send an arbitrary JSON-RPC request. Returns the assigned id so the

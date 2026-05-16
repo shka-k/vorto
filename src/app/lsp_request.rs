@@ -58,6 +58,19 @@ impl App {
     /// against a stale buffer and either return nothing or the wrong
     /// items, so we flush pending edits here first.
     pub(super) fn lsp_completion(&mut self) {
+        self.lsp_completion_inner(None);
+    }
+
+    /// Like `lsp_completion`, but tags the request with the trigger
+    /// character that fired it. rust-analyzer (and others) special-case
+    /// path completions when they see `triggerKind: TriggerCharacter` +
+    /// `triggerCharacter: ":"`, so we need to forward the char that
+    /// actually caused the auto-trigger.
+    pub(super) fn lsp_completion_triggered(&mut self, trigger: char) {
+        self.lsp_completion_inner(Some(trigger));
+    }
+
+    fn lsp_completion_inner(&mut self, trigger: Option<char>) {
         if !self.lsp.has_lsp() {
             self.push_toast(Toast::error("no LSP for this buffer"));
             return;
@@ -70,7 +83,7 @@ impl App {
             row: cursor.row,
             col: start_col,
         };
-        if let Err(e) = self.lsp.request_completion(cursor, prefix_start) {
+        if let Err(e) = self.lsp.request_completion(cursor, prefix_start, trigger) {
             self.push_toast(Toast::error(format!("lsp completion: {}", root_cause(&e))));
         }
     }
