@@ -10,10 +10,12 @@ use std::path::Path;
 
 use crate::editor::Cursor;
 use crate::lsp::{
-    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, WorkspaceEdit,
+    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, SignatureHelp,
+    WorkspaceEdit,
 };
 
 use super::completion::{CompletionState, prefix_slice};
+use super::SignatureState;
 use super::{App, LspEventOutcome, Toast, root_cause};
 
 impl App {
@@ -42,6 +44,28 @@ impl App {
                 item_index,
                 item,
             } => self.apply_completion_resolved_outcome(uri, item_index, item),
+            LspEventOutcome::SignatureHelp { anchor_row, help } => {
+                self.apply_signature_help_outcome(anchor_row, help)
+            }
+        }
+    }
+
+    /// Apply a `textDocument/signatureHelp` response. Stale responses
+    /// (cursor has crossed rows since the request fired) are dropped;
+    /// `None` help means "no longer in a callable context" and closes
+    /// any open popup. Otherwise the popup is opened or refreshed in
+    /// place.
+    fn apply_signature_help_outcome(&mut self, anchor_row: usize, help: Option<SignatureHelp>) {
+        if self.buffer.cursor.row != anchor_row {
+            return;
+        }
+        match help {
+            None => {
+                self.signature = None;
+            }
+            Some(help) => {
+                self.signature = Some(SignatureState { help });
+            }
         }
     }
 

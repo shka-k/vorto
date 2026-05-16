@@ -14,8 +14,9 @@
 //! Implemented: `initialize` handshake, full-document sync
 //! (`didOpen`/`didChange`/`didSave`/`didClose`), `publishDiagnostics`,
 //! goto-definition / declaration / implementation, references, rename,
-//! code actions (+ `codeAction/resolve`), and hover. Completion,
-//! signature help, and inlay hints are intentionally out of scope.
+//! code actions (+ `codeAction/resolve`), hover, completion (+
+//! `completionItem/resolve`), and signature help. Inlay hints remain
+//! out of scope.
 //!
 //! Submodules:
 //! - [`types`] — normalised wire-protocol structs/enums.
@@ -48,12 +49,12 @@ mod uri;
 pub use edits::apply_text_edits;
 pub use parse::{
     parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve, parse_hover,
-    parse_locations, parse_workspace_edit,
+    parse_locations, parse_signature_help, parse_workspace_edit,
 };
 pub use root::discover_root;
 pub use types::{
-    CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, Position, Range, Severity,
-    TextEdit, WorkspaceEdit,
+    CodeAction, CompletionItem, Diagnostic, Hover, Location, LspEvent, ParameterLabel, Position,
+    Range, Severity, SignatureHelp, SignatureInformation, TextEdit, WorkspaceEdit,
 };
 pub use uri::{path_to_uri, uri_to_path};
 
@@ -81,6 +82,15 @@ pub struct LspClient {
     /// e.g. rust-analyzer's `:` (`::` paths) and TypeScript's `<` fire
     /// the popup without us hardcoding language-specific punctuation.
     completion_trigger_characters: Vec<String>,
+    /// `signatureHelpProvider.triggerCharacters` from the server's
+    /// `initialize` response — punctuation that should fire a
+    /// `textDocument/signatureHelp` request from a fresh state. `(` and
+    /// `,` are the common case across most servers but it's the
+    /// server's call. The matching retrigger set isn't tracked
+    /// separately: once the popup is open we re-request on every
+    /// keystroke regardless of character, so the distinction doesn't
+    /// pay rent.
+    signature_help_trigger_characters: Vec<String>,
     /// Side-channel for `request_blocking`. When a caller wants to block
     /// on a specific response (format-on-save is the only consumer for
     /// now), it registers `id → Sender` here and the reader thread
@@ -203,6 +213,22 @@ impl LspClient {
                                 ]
                             }
                         }
+                    },
+                    // `labelOffsetSupport: true` tells the server we
+                    // accept `parameters[].label` as `[start, end]`
+                    // character offsets into the parent signature's
+                    // `label`. Most servers (rust-analyzer, gopls,
+                    // pyright) prefer the offset shape when this is on
+                    // — saves us a substring search to find where to
+                    // paint the active-parameter highlight.
+                    "signatureHelp": {
+                        "dynamicRegistration": false,
+                        "signatureInformation": {
+                            "parameterInformation": {
+                                "labelOffsetSupport": true
+                            },
+                            "activeParameterSupport": true
+                        }
                     }
                 },
                 "window": {
@@ -218,7 +244,10 @@ impl LspClient {
         // client/registerCapability, window/workDoneProgress/create)
         // before answering ours — we have to reply to those right here
         // or the handshake deadlocks.
-        let completion_trigger_characters: Vec<String> = loop {
+        let (completion_trigger_characters, signature_help_trigger_characters): (
+            Vec<String>,
+            Vec<String>,
+        ) = loop {
             let msg = read_message(&mut reader).with_context(|| "reading initialize response")?;
             let is_init_response = msg.get("id").and_then(|v| v.as_u64()) == Some(init_id)
                 && msg.get("method").is_none();
@@ -226,15 +255,20 @@ impl LspClient {
                 if let Some(err) = msg.get("error") {
                     bail!("LSP initialize error: {}", err);
                 }
-                break msg
-                    .pointer("/result/capabilities/completionProvider/triggerCharacters")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let str_array = |ptr: &str| {
+                    msg.pointer(ptr)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                break (
+                    str_array("/result/capabilities/completionProvider/triggerCharacters"),
+                    str_array("/result/capabilities/signatureHelpProvider/triggerCharacters"),
+                );
             }
             codec::handle_server_request(&stdin, &msg);
         };
@@ -267,6 +301,7 @@ impl LspClient {
             docs: HashMap::new(),
             language_id,
             completion_trigger_characters,
+            signature_help_trigger_characters,
             blocking_pending,
         })
     }
@@ -276,6 +311,11 @@ impl LspClient {
     /// or didn't list any characters.
     pub fn completion_trigger_characters(&self) -> &[String] {
         &self.completion_trigger_characters
+    }
+
+    /// Open-from-scratch trigger characters for signature help.
+    pub fn signature_help_trigger_characters(&self) -> &[String] {
+        &self.signature_help_trigger_characters
     }
 
     /// Send an arbitrary JSON-RPC request. Returns the assigned id so the

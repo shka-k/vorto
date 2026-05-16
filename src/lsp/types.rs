@@ -144,6 +144,53 @@ pub struct CompletionItem {
     pub source: String,
 }
 
+/// Normalised `textDocument/signatureHelp` response. The popup uses
+/// `signatures[active_signature]` for what to draw and `active_parameter`
+/// (with per-signature override) to highlight the current argument
+/// inside that signature's label.
+#[derive(Debug, Clone)]
+pub struct SignatureHelp {
+    pub signatures: Vec<SignatureInformation>,
+    /// 0-based index into `signatures`. Clamped to a valid range at parse
+    /// time so the consumer can index unconditionally; defaults to 0 when
+    /// the server omits it.
+    pub active_signature: usize,
+    /// 0-based index into the active signature's parameters. `None` when
+    /// the server returned `null` (or omitted it) — the popup just shows
+    /// the signature without any parameter highlight in that case.
+    pub active_parameter: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignatureInformation {
+    pub label: String,
+    pub parameters: Vec<ParameterInformation>,
+    /// Per-signature override of the help-level `active_parameter`. When
+    /// `Some`, takes precedence; consumers fall back to the help-level
+    /// value when this is `None`.
+    pub active_parameter: Option<usize>,
+}
+
+/// Each parameter can label itself either as an explicit substring or as
+/// a `[start, end]` character-offset range into the parent signature's
+/// `label`. Both shapes are valid per spec; the popup needs to resolve
+/// one back to the other depending on what it wants to render.
+#[derive(Debug, Clone)]
+pub struct ParameterInformation {
+    pub label: ParameterLabel,
+}
+
+#[derive(Debug, Clone)]
+pub enum ParameterLabel {
+    /// Explicit substring that the consumer searches for inside the
+    /// signature's `label` to know where to paint the highlight.
+    Text(String),
+    /// Half-open `[start, end)` character offsets into the signature's
+    /// `label` (we declare `labelOffsetSupport: true` so servers prefer
+    /// this shape — no string search needed).
+    Offsets(u32, u32),
+}
+
 /// Simplified LSP `WorkspaceEdit` — a flat map from document URI to the
 /// edits to apply there. We accept both `changes` and `documentChanges`
 /// shapes server-side and normalise into this view.

@@ -12,6 +12,7 @@ use crate::editor::Cursor;
 use crate::lsp::{self, CodeAction, Diagnostic, Position, Range, TextEdit};
 
 use super::completion::{identifier_prefix_start, prefix_slice};
+use super::signature::SignatureTrigger;
 use super::{App, Toast, root_cause};
 
 impl App {
@@ -253,10 +254,46 @@ impl App {
             // is already closed and there's no item slot to refresh.
             let _ = self.lsp.request_completion_resolve(raw, &source, None);
         }
+
+        // When we auto-appended `()` for a callable, the cursor now
+        // sits between the parens — the natural place to start typing
+        // arguments. The `(` was inserted by us, not the user, so the
+        // trigger-character path in insert mode won't fire; we have to
+        // request signature help explicitly here.
+        if appended_call {
+            self.lsp_signature_help(SignatureTrigger::Invoked);
+        }
     }
 
     pub(super) fn cancel_completion(&mut self) {
         self.completion = None;
+    }
+
+    /// Fire `textDocument/signatureHelp` at the current cursor.
+    /// `trigger` distinguishes a fresh open (`TriggerCharacter` / first
+    /// `Invoked`) from a per-keystroke refresh (`ContentChange`) so the
+    /// server can branch its bookkeeping.
+    ///
+    /// We flush pending edits first — the cursor position the server
+    /// resolves against has to match the live buffer, same reason
+    /// `lsp_completion` does the up-front sync.
+    pub(super) fn lsp_signature_help(&mut self, trigger: SignatureTrigger) {
+        if !self.lsp.has_lsp() {
+            return;
+        }
+        self.sync_buffer_if_dirty();
+        let cursor = self.buffer.cursor;
+        let active = self.signature.as_ref().map(|s| &s.help);
+        if let Err(e) = self.lsp.request_signature_help(cursor, trigger, active) {
+            self.push_toast(Toast::error(format!(
+                "lsp signatureHelp: {}",
+                root_cause(&e)
+            )));
+        }
+    }
+
+    pub(super) fn cancel_signature_help(&mut self) {
+        self.signature = None;
     }
 
     /// Issue `completionItem/resolve` for the currently-selected popup

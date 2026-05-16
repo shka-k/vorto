@@ -17,6 +17,7 @@ mod lsp_request;
 mod open;
 mod pane;
 mod runtime;
+mod signature;
 mod sleeping;
 mod toast;
 mod types;
@@ -27,6 +28,7 @@ pub use completion::CompletionState;
 pub use jump::JumpState;
 pub use lsp_coordinator::{LspCoordinator, LspEventOutcome};
 pub use pane::{PaneId, PaneLayout, PaneRect, PaneRectMap, SplitDir};
+pub use signature::{SignatureState, SignatureTrigger};
 pub use sleeping::SleepingBuffer;
 pub use toast::{Level, Toast, ToastQueue};
 pub use types::Selection;
@@ -163,6 +165,11 @@ pub struct App {
     /// dismissing, or invalidating it (cursor row change / backspace
     /// past the prefix start).
     pub completion: Option<CompletionState>,
+    /// Active LSP signature-help popup, if any. `Some` between a
+    /// non-empty `textDocument/signatureHelp` response and either the
+    /// server returning `null` (no longer inside a call), the cursor
+    /// crossing rows, or Esc.
+    pub signature: Option<SignatureState>,
     /// System clipboard handle, initialized lazily on first yank.
     /// `None` means we haven't tried yet *or* the platform refused to
     /// give us one (Wayland without a compositor, headless CI, …); the
@@ -254,6 +261,7 @@ impl App {
             visual_g_pending: false,
             jump_state: None,
             completion: None,
+            signature: None,
             clipboard: None,
             layout: PaneLayout::Leaf(pane::INITIAL_PANE_ID),
             active_pane: pane::INITIAL_PANE_ID,

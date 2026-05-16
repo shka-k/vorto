@@ -24,6 +24,7 @@ mod completion;
 mod fuzzy;
 mod hints;
 mod hover;
+mod signature;
 mod status;
 mod toast;
 
@@ -113,6 +114,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.completion.is_some() {
         completion::draw_completion(f, app, active_rect);
+    }
+    if app.signature.is_some() {
+        signature::draw_signature(f, app, active_rect);
     }
     if !app.prompt.is_open() {
         hints::draw_pending_hints(f, app, chunks[1]);

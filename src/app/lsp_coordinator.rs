@@ -23,9 +23,11 @@ use serde_json::Value;
 use crate::editor::Cursor;
 use crate::event::AppEvent;
 use crate::lsp::{
-    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspClient, LspEvent, TextEdit,
-    WorkspaceEdit,
+    self, CodeAction, CompletionItem, Diagnostic, Hover, Location, LspClient, LspEvent,
+    SignatureHelp, TextEdit, WorkspaceEdit,
 };
+
+use super::signature::SignatureTrigger;
 
 /// Build the canonical client identifier from a language name and a
 /// server name. The same recipe runs everywhere `client_key` is needed
@@ -50,6 +52,7 @@ pub enum LspRequestKind {
     Hover,
     Completion,
     CompletionResolve,
+    SignatureHelp,
 }
 
 /// What [`LspCoordinator::handle_event`] wants the caller to do.
@@ -89,6 +92,15 @@ pub enum LspEventOutcome {
         /// `documentation` off this for popup display, and
         /// `additional_text_edits` for the accept-time path.
         item: Option<CompletionItem>,
+    },
+    SignatureHelp {
+        /// Row the request was made on. The handler closes the popup
+        /// when the cursor has crossed to a different row in the
+        /// meantime (stale response).
+        anchor_row: usize,
+        /// `None` when the server said we're no longer in a callable
+        /// context — the handler treats this as "close any open popup".
+        help: Option<SignatureHelp>,
     },
 }
 
@@ -144,6 +156,13 @@ enum GroupAccum {
     },
     CodeActionResolve {
         action: Option<CodeAction>,
+    },
+    /// Signature help is single-client; the group just carries the
+    /// anchor row for stale-response detection and accumulates the one
+    /// response.
+    SignatureHelp {
+        anchor_row: usize,
+        help: Option<SignatureHelp>,
     },
 }
 
@@ -228,6 +247,26 @@ impl LspCoordinator {
                 .map(|client| {
                     client
                         .completion_trigger_characters()
+                        .iter()
+                        .any(|t| t == needle)
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// True when any client attached to the current document declared
+    /// `c` as a signature-help trigger character (typically `(`). The
+    /// insert layer uses this to fire `textDocument/signatureHelp` on
+    /// the specific punctuation each server cares about.
+    pub fn is_signature_help_trigger_char(&self, c: char) -> bool {
+        let mut buf = [0u8; 4];
+        let needle = c.encode_utf8(&mut buf);
+        self.current_clients.iter().any(|key| {
+            self.clients
+                .get(key)
+                .map(|client| {
+                    client
+                        .signature_help_trigger_characters()
                         .iter()
                         .any(|t| t == needle)
                 })
@@ -495,6 +534,67 @@ impl LspCoordinator {
             GroupAccum::Completion {
                 prefix_start,
                 items: Vec::new(),
+            },
+        )
+    }
+
+    /// `textDocument/signatureHelp` — fans out to every attached client
+    /// and the first non-null response wins. `trigger` maps onto LSP's
+    /// `SignatureHelpContext`:
+    /// - `Invoked` (programmatic, e.g. after accept-completion's
+    ///   auto-`()`) sends `triggerKind: 1`.
+    /// - `TriggerCharacter(c)` sends `triggerKind: 2` plus the actual
+    ///   character — servers branch on this (e.g. `(` is "open from
+    ///   scratch" vs `,` would arrive as `ContentChange` retrigger).
+    /// - `ContentChange(c)` sends `triggerKind: 3` with `isRetrigger:
+    ///   true` and the typed char when known. Used for the per-keystroke
+    ///   refresh that keeps `activeParameter` aligned with the cursor.
+    ///
+    /// `active_help` is the currently-displayed help (when the popup is
+    /// open) — passed back as `activeSignatureHelp` so the server can
+    /// reconcile its view with what we're showing.
+    pub fn request_signature_help(
+        &mut self,
+        cursor: Cursor,
+        trigger: SignatureTrigger,
+        active_help: Option<&SignatureHelp>,
+    ) -> Result<()> {
+        let mut params = self.text_document_position_params(cursor);
+        let is_retrigger = matches!(trigger, SignatureTrigger::ContentChange(_));
+        let mut context = match trigger {
+            SignatureTrigger::Invoked => serde_json::json!({
+                "triggerKind": 1,
+                "isRetrigger": is_retrigger,
+            }),
+            SignatureTrigger::TriggerCharacter(c) => serde_json::json!({
+                "triggerKind": 2,
+                "triggerCharacter": c.to_string(),
+                "isRetrigger": is_retrigger,
+            }),
+            SignatureTrigger::ContentChange(c) => {
+                let mut o = serde_json::json!({
+                    "triggerKind": 3,
+                    "isRetrigger": true,
+                });
+                if let Some(c) = c {
+                    o["triggerCharacter"] = Value::String(c.to_string());
+                }
+                o
+            }
+        };
+        if let Some(help) = active_help {
+            context["activeSignatureHelp"] = signature_help_to_json(help);
+        }
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("context".to_string(), context);
+        }
+        self.fan_out_request(
+            "textDocument/signatureHelp",
+            params,
+            LspRequestKind::SignatureHelp,
+            GroupAccum::SignatureHelp {
+                anchor_row: cursor.row,
+                help: None,
             },
         )
     }
@@ -862,6 +962,14 @@ fn accumulate(accum: &mut GroupAccum, source: &str, result: &Value, kind: &LspRe
             }
             *action = parsed;
         }
+        (GroupAccum::SignatureHelp { help, .. }, LspRequestKind::SignatureHelp)
+            if help.is_none() =>
+        {
+            // First non-null response wins — fanning out to two servers
+            // would otherwise need a merge strategy we don't have, and
+            // signature help is inherently "one signature at a time".
+            *help = lsp::parse_signature_help(result);
+        }
         _ => {}
     }
 }
@@ -902,7 +1010,54 @@ fn finalize(accum: GroupAccum) -> LspEventOutcome {
             item,
         },
         GroupAccum::CodeActionResolve { action } => LspEventOutcome::CodeActionResolved(action),
+        GroupAccum::SignatureHelp { anchor_row, help } => {
+            LspEventOutcome::SignatureHelp { anchor_row, help }
+        }
     }
+}
+
+/// Round-trip our `SignatureHelp` back into the LSP wire shape so we
+/// can echo it in `activeSignatureHelp` on retriggers. The server uses
+/// this to reconcile its view against the popup the user is currently
+/// looking at — without it, retrigger context is missing the "what
+/// were we showing" half.
+///
+/// Documentation and parameter labels round-trip as plain text/offsets;
+/// any per-parameter docs are dropped (servers don't need them back).
+fn signature_help_to_json(help: &SignatureHelp) -> Value {
+    let signatures: Vec<Value> = help
+        .signatures
+        .iter()
+        .map(|s| {
+            let parameters: Vec<Value> = s
+                .parameters
+                .iter()
+                .map(|p| match &p.label {
+                    lsp::ParameterLabel::Text(t) => serde_json::json!({ "label": t }),
+                    lsp::ParameterLabel::Offsets(start, end) => {
+                        serde_json::json!({ "label": [start, end] })
+                    }
+                })
+                .collect();
+            let mut obj = serde_json::json!({
+                "label": s.label,
+                "parameters": parameters,
+            });
+            if let Some(ap) = s.active_parameter {
+                obj["activeParameter"] = Value::from(ap);
+            }
+            obj
+        })
+        .collect();
+    let mut obj = serde_json::json!({
+        "signatures": signatures,
+        "activeSignature": help.active_signature,
+    });
+    obj["activeParameter"] = match help.active_parameter {
+        Some(n) => Value::from(n),
+        None => Value::Null,
+    };
+    obj
 }
 
 /// Strip duplicate completion items that bubbled up from multiple

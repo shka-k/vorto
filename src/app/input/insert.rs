@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{InsertKey, LastChange};
 use crate::app::App;
+use crate::app::SignatureTrigger;
 use crate::app::completion::is_ident_continue;
 use crate::editor::Cursor;
 use crate::mode::Mode;
@@ -57,11 +58,13 @@ impl App {
                     self.lsp_completion();
                 }
             }
+            self.update_signature_help_on_char(c);
             return Ok(());
         }
         match key.code {
             KeyCode::Esc => {
                 self.finalize_insert_recording();
+                self.cancel_signature_help();
                 self.enter_mode(Mode::Normal);
             }
             KeyCode::Enter => {
@@ -73,11 +76,17 @@ impl App {
                 self.buffer.insert_newline(indent);
                 self.record_insert_key(InsertKey::Newline);
                 self.cancel_completion();
+                // Newline almost always ends the call argument we were
+                // helping with (function call literals don't span lines
+                // in any language the popup targets) — close rather
+                // than retrigger.
+                self.cancel_signature_help();
             }
             KeyCode::Backspace => {
                 self.fan_out_backspace();
                 self.record_insert_key(InsertKey::Backspace);
                 self.update_completion_filter();
+                self.update_signature_help_on_edit();
             }
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 // Some terminals (e.g. macOS Terminal.app) report
@@ -122,21 +131,25 @@ impl App {
                 self.recording = None;
                 self.buffer.move_left();
                 self.cancel_completion();
+                self.update_signature_help_on_edit();
             }
             KeyCode::Right => {
                 self.recording = None;
                 self.buffer.move_right(true);
                 self.cancel_completion();
+                self.update_signature_help_on_edit();
             }
             KeyCode::Up => {
                 self.recording = None;
                 self.buffer.move_up();
                 self.cancel_completion();
+                self.cancel_signature_help();
             }
             KeyCode::Down => {
                 self.recording = None;
                 self.buffer.move_down();
                 self.cancel_completion();
+                self.cancel_signature_help();
             }
             _ => {}
         }
@@ -328,6 +341,37 @@ impl App {
         if let Some(r) = self.recording.as_mut() {
             r.keys.push(k);
         }
+    }
+
+    /// Decide whether typing `c` should trigger or refresh the
+    /// signature-help popup. Three cases:
+    /// - Popup is open: refresh with a `ContentChange` retrigger so the
+    ///   server can advance `activeParameter` as the user types args.
+    ///   We don't bother distinguishing retrigger characters here — any
+    ///   keystroke can shift which parameter the cursor is in.
+    /// - Popup closed and `c` is a server-declared trigger char (`(` is
+    ///   the common case): open from scratch.
+    /// - Otherwise: nothing.
+    fn update_signature_help_on_char(&mut self, c: char) {
+        if !self.lsp.has_lsp() {
+            return;
+        }
+        if self.signature.is_some() {
+            self.lsp_signature_help(SignatureTrigger::ContentChange(Some(c)));
+        } else if self.lsp.is_signature_help_trigger_char(c) {
+            self.lsp_signature_help(SignatureTrigger::TriggerCharacter(c));
+        }
+    }
+
+    /// Refresh the signature popup after a non-character edit (backspace
+    /// or horizontal cursor move). No-op when the popup isn't open —
+    /// backspacing in code where no help is showing shouldn't poke the
+    /// server.
+    fn update_signature_help_on_edit(&mut self) {
+        if self.signature.is_none() || !self.lsp.has_lsp() {
+            return;
+        }
+        self.lsp_signature_help(SignatureTrigger::ContentChange(None));
     }
 
     /// Move the in-flight recording into `last_change`. Called on Esc

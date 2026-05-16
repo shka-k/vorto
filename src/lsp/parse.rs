@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::types::{
-    CodeAction, CompletionItem, Hover, Location, Position, Range, TextEdit, WorkspaceEdit,
+    CodeAction, CompletionItem, Hover, Location, ParameterInformation, ParameterLabel, Position,
+    Range, SignatureHelp, SignatureInformation, TextEdit, WorkspaceEdit,
 };
 
 /// Parse a `Location` (LSP shape). Returns `None` on schema mismatch.
@@ -350,6 +351,76 @@ fn kind_word(kind: u8) -> Option<&'static str> {
     }
 }
 
+/// Parse a `textDocument/signatureHelp` response. Returns `None` for
+/// `null`, an explicitly empty `signatures` array, or any shape we can't
+/// make sense of — all three collapse to "no popup". `active_signature`
+/// is clamped into the valid range so consumers can index without
+/// bounds-checking.
+pub fn parse_signature_help(v: &Value) -> Option<SignatureHelp> {
+    if v.is_null() {
+        return None;
+    }
+    let sigs_raw = v.get("signatures").and_then(|x| x.as_array())?;
+    let signatures: Vec<SignatureInformation> =
+        sigs_raw.iter().filter_map(parse_signature_info).collect();
+    if signatures.is_empty() {
+        return None;
+    }
+    let active_signature = v
+        .get("activeSignature")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0) as usize;
+    let active_signature = active_signature.min(signatures.len() - 1);
+    // `activeParameter` is `uinteger | null` per spec. A literal `null`
+    // means "no current parameter" — explicitly distinct from "missing,
+    // fall back to first". `serde_json::Value::Null.as_u64()` returns
+    // `None`, so the absence-vs-null distinction here is whether the
+    // field is present at all.
+    let active_parameter = match v.get("activeParameter") {
+        Some(Value::Null) => None,
+        Some(x) => x.as_u64().map(|n| n as usize),
+        None => Some(0),
+    };
+    Some(SignatureHelp {
+        signatures,
+        active_signature,
+        active_parameter,
+    })
+}
+
+fn parse_signature_info(v: &Value) -> Option<SignatureInformation> {
+    let label = v.get("label")?.as_str()?.to_string();
+    let parameters = v
+        .get("parameters")
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().filter_map(parse_parameter_info).collect())
+        .unwrap_or_default();
+    let active_parameter = match v.get("activeParameter") {
+        Some(Value::Null) => None,
+        Some(x) => x.as_u64().map(|n| n as usize),
+        None => None,
+    };
+    Some(SignatureInformation {
+        label,
+        parameters,
+        active_parameter,
+    })
+}
+
+fn parse_parameter_info(v: &Value) -> Option<ParameterInformation> {
+    let label_v = v.get("label")?;
+    let label = if let Some(s) = label_v.as_str() {
+        ParameterLabel::Text(s.to_string())
+    } else if let Some(arr) = label_v.as_array() {
+        let start = arr.first()?.as_u64()? as u32;
+        let end = arr.get(1)?.as_u64()? as u32;
+        ParameterLabel::Offsets(start, end)
+    } else {
+        return None;
+    };
+    Some(ParameterInformation { label })
+}
+
 fn parse_text_edit(v: &Value) -> Option<TextEdit> {
     let range = parse_range(v.get("range")?)?;
     let new_text = v.get("newText")?.as_str()?.to_string();
@@ -581,6 +652,69 @@ mod tests {
         assert!(parse_hover(&Value::Null).is_none());
         assert!(parse_hover(&json!({ "contents": "" })).is_none());
         assert!(parse_hover(&json!({ "contents": [] })).is_none());
+    }
+
+    #[test]
+    fn parse_signature_help_handles_offsets_and_text_labels() {
+        // Modern shape: parameters identified by [start, end] offsets
+        // into the signature label.
+        let v = json!({
+            "signatures": [{
+                "label": "fn push(&mut self, x: T)",
+                "parameters": [
+                    { "label": [8, 17] },   // &mut self
+                    { "label": [19, 23] }   // x: T
+                ]
+            }],
+            "activeSignature": 0,
+            "activeParameter": 1
+        });
+        let h = parse_signature_help(&v).unwrap();
+        assert_eq!(h.signatures.len(), 1);
+        assert_eq!(h.active_signature, 0);
+        assert_eq!(h.active_parameter, Some(1));
+        assert_eq!(h.signatures[0].parameters.len(), 2);
+        match &h.signatures[0].parameters[1].label {
+            ParameterLabel::Offsets(s, e) => {
+                assert_eq!((*s, *e), (19, 23));
+            }
+            _ => panic!("expected Offsets"),
+        }
+
+        // Legacy shape: parameter label is a substring.
+        let v = json!({
+            "signatures": [{
+                "label": "foo(x, y)",
+                "parameters": [{ "label": "x" }, { "label": "y" }]
+            }]
+        });
+        let h = parse_signature_help(&v).unwrap();
+        // Missing `activeParameter` defaults to first.
+        assert_eq!(h.active_parameter, Some(0));
+        match &h.signatures[0].parameters[0].label {
+            ParameterLabel::Text(s) => assert_eq!(s, "x"),
+            _ => panic!("expected Text"),
+        }
+
+        // Explicit null activeParameter — no highlight.
+        let v = json!({
+            "signatures": [{ "label": "noop()" }],
+            "activeParameter": null
+        });
+        let h = parse_signature_help(&v).unwrap();
+        assert_eq!(h.active_parameter, None);
+
+        // Out-of-range activeSignature clamps to last valid index.
+        let v = json!({
+            "signatures": [{ "label": "a()" }, { "label": "b()" }],
+            "activeSignature": 99
+        });
+        let h = parse_signature_help(&v).unwrap();
+        assert_eq!(h.active_signature, 1);
+
+        // Null / empty signatures collapse to None.
+        assert!(parse_signature_help(&Value::Null).is_none());
+        assert!(parse_signature_help(&json!({ "signatures": [] })).is_none());
     }
 
     #[test]
