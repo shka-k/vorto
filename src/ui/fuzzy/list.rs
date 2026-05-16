@@ -15,6 +15,21 @@ const DIR_FG: Color = Color::Blue;
 /// Color of fuzzy-match hit characters.
 const HIT_FG: Color = Color::Magenta;
 
+/// Map a one-letter severity badge to its fg color. Tracks
+/// [`crate::lsp::Severity::from_code`] / [`super::super::App`]'s
+/// `severity_tag` — the `E`/`W`/`I`/`H` letters the picker builder
+/// emits. Returns `None` for anything else so the caller can fall
+/// back to the base style rather than recoloring random rows.
+fn severity_color_from_badge(c: char) -> Option<Color> {
+    match c {
+        'E' => Some(Color::Red),
+        'W' => Some(Color::Yellow),
+        'I' => Some(Color::Cyan),
+        'H' => Some(Color::DarkGray),
+        _ => None,
+    }
+}
+
 pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
     // Inside the pane: query line on top, separator, then matches.
     let chunks = Layout::default()
@@ -149,6 +164,17 @@ fn render_match<'a>(
     let dir = base.fg(DIR_FG).add_modifier(Modifier::BOLD);
     let hit = base.fg(HIT_FG).add_modifier(Modifier::BOLD);
     let ellipsis = base.fg(Color::DarkGray);
+    // Severity badge color — only when the row is a diagnostic and the
+    // first four chars look like `[X] `. Mirrors the four
+    // [`crate::lsp::Severity`] variants so the badge at-a-glance tells
+    // the user whether they're looking at a real error or just a hint.
+    let sev_style: Option<Style> =
+        if matches!(kind, FuzzyKind::Diagnostics { .. }) && item.len() >= 4 {
+            severity_color_from_badge(item.as_bytes()[1] as char)
+                .map(|c| base.fg(c).add_modifier(Modifier::BOLD))
+        } else {
+            None
+        };
 
     // Compute dir_end as a char index. For path-like kinds it's the
     // index just past the last `/`; for Locations we stop searching at
@@ -158,27 +184,77 @@ fn render_match<'a>(
         FuzzyKind::Files { .. } | FuzzyKind::Buffers => {
             chars.iter().rposition(|c| *c == '/').map(|i| i + 1)
         }
-        FuzzyKind::Locations
-        | FuzzyKind::WorkspaceSearch
-        | FuzzyKind::Diagnostics { workspace: true } => {
+        FuzzyKind::Locations | FuzzyKind::WorkspaceSearch => {
             let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
             chars[..path_end]
                 .iter()
                 .rposition(|c| *c == '/')
                 .map(|i| i + 1)
         }
-        // Current-buffer diagnostics start with `line:col` — no path to
-        // color as directory.
-        FuzzyKind::Lines | FuzzyKind::Diagnostics { workspace: false } => None,
+        // Diagnostic entries are `[X] path:line  content` — skip the
+        // `[X] ` severity prefix before searching for the path's
+        // trailing `/`. Bare `[X] line` (current-buffer kind, no path)
+        // returns None so nothing gets miscolored as a directory.
+        FuzzyKind::Diagnostics { .. } => {
+            let prefix_end = chars
+                .iter()
+                .position(|c| *c == ' ')
+                .map(|i| i + 1)
+                .unwrap_or(chars.len());
+            let path_end = chars[prefix_end..]
+                .iter()
+                .position(|c| *c == ':')
+                .map(|i| i + prefix_end)
+                .unwrap_or(chars.len());
+            chars[prefix_end..path_end]
+                .iter()
+                .rposition(|c| *c == '/')
+                .map(|i| i + prefix_end + 1)
+        }
+        FuzzyKind::Lines => None,
     };
 
     // Head-truncate when the item is longer than the available width so
     // the filename (right side of the path) stays visible. One column is
     // reserved for the leading ellipsis.
+    //
+    // For Diagnostics rows, the leading `[X] ` severity badge is also
+    // pinned: when the row needs to be cut down we render the badge
+    // verbatim, then an ellipsis, then the tail. Without this the
+    // head-truncation would eat the badge first — the very thing the
+    // picker is meant to show at a glance.
     let mut spans = Vec::new();
+    let pinned_prefix = match kind {
+        FuzzyKind::Diagnostics { .. }
+            if chars.len() >= 4
+                && chars[0] == '['
+                && chars[2] == ']'
+                && chars[3] == ' ' =>
+        {
+            4
+        }
+        _ => 0,
+    };
     let start = if width >= 2 && chars.len() > width {
-        spans.push(Span::styled("…", ellipsis));
-        chars.len() - (width - 1)
+        if pinned_prefix > 0 && width > pinned_prefix + 1 {
+            // Render the badge first; honor hit highlighting so a
+            // query that landed inside the badge still glows, and
+            // tint with the severity color when one is available.
+            for (idx, c) in chars[..pinned_prefix].iter().enumerate() {
+                let is_hit = positions.binary_search(&idx).is_ok();
+                let style = if is_hit {
+                    hit
+                } else {
+                    sev_style.unwrap_or(base)
+                };
+                spans.push(Span::styled(c.to_string(), style));
+            }
+            spans.push(Span::styled("…", ellipsis));
+            chars.len() - (width - pinned_prefix - 1)
+        } else {
+            spans.push(Span::styled("…", ellipsis));
+            chars.len() - (width - 1)
+        }
     } else {
         0
     };
@@ -194,8 +270,15 @@ fn render_match<'a>(
         let orig_i = start + offset;
         let is_hit = positions.binary_search(&orig_i).is_ok();
         let in_dir = dir_end_visible.map(|e| offset < e).unwrap_or(false);
+        // Severity badge characters live in the first `pinned_prefix`
+        // slots; pick the severity color when we're inside that range
+        // and we didn't already truncate them out via the pinned-prefix
+        // path above (which would have advanced `start` past them).
+        let in_badge = sev_style.is_some() && orig_i < pinned_prefix;
         let style = if is_hit {
             hit
+        } else if in_badge {
+            sev_style.unwrap()
         } else if in_dir {
             dir
         } else {

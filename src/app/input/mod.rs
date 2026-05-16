@@ -126,26 +126,25 @@ impl App {
     /// `<space>d` / `<space>D` — build the diagnostics picker.
     ///
     /// `workspace == false` lists every diagnostic for the current
-    /// buffer (display: `line:col [sev] message`); `workspace == true`
-    /// folds in every URI the coordinator has diagnostics for and
-    /// prepends a relative path. Both go through the same `Location`
-    /// side-channel as references, so submit fires `JumpToLocation`.
+    /// buffer (`[sev] line  message`); `workspace == true` folds in
+    /// every URI the coordinator has diagnostics for and prefixes
+    /// each row with the relative path (`[sev] path:line  message`).
+    /// Both go through the same `Location` side-channel as references,
+    /// so submit fires `JumpToLocation`.
     fn open_diagnostics_picker(&mut self, workspace: bool) {
         let mut items: Vec<String> = Vec::new();
         let mut locations: Vec<Location> = Vec::new();
+        let root = self.startup_cwd.clone();
 
         if workspace {
-            let root = self.startup_cwd.clone();
             for (uri, diags) in self.all_diagnostics() {
                 let label = relative_uri_label(&uri, &root);
-                for d in diags {
+                for d in &diags {
                     items.push(format!(
-                        "{}:{}:{} [{}] {}",
+                        "[{}] {}:{}",
+                        severity_tag(d.severity),
                         label,
                         d.range.start.line + 1,
-                        d.range.start.character + 1,
-                        severity_tag(d.severity),
-                        d.message.replace('\n', " ")
                     ));
                     locations.push(Location {
                         uri: uri.clone(),
@@ -154,12 +153,7 @@ impl App {
                 }
             }
         } else {
-            let uri = match self
-                .buffer
-                .path
-                .as_ref()
-                .map(|p| path_to_uri(p))
-            {
+            let uri = match self.buffer.path.as_ref().map(|p| path_to_uri(p)) {
                 Some(u) => u,
                 None => {
                     self.push_toast(crate::app::Toast::info("no diagnostics"));
@@ -170,13 +164,11 @@ impl App {
                 self.push_toast(crate::app::Toast::info("no diagnostics"));
                 return;
             };
-            for d in diags {
+            for d in &diags {
                 items.push(format!(
-                    "{}:{} [{}] {}",
-                    d.range.start.line + 1,
-                    d.range.start.character + 1,
+                    "[{}] {}",
                     severity_tag(d.severity),
-                    d.message.replace('\n', " ")
+                    d.range.start.line + 1,
                 ));
                 locations.push(Location {
                     uri: uri.clone(),

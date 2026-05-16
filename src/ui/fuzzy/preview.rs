@@ -36,7 +36,32 @@ pub(super) fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area
             let Some(path) = crate::lsp::uri_to_path(&loc.uri) else {
                 return;
             };
-            preview_from_file(f, app, area, &path, loc.range.start.line as usize);
+            let row = loc.range.start.line as usize;
+            // Active / parked / sleeping all reach the buffer copy
+            // before falling through to disk — that way `:e new.rs`
+            // followed by a switch keeps previewing the typed-but-
+            // never-saved content, instead of "(cannot read file)".
+            if app.buffer.path.as_deref() == Some(path.as_path()) {
+                preview_from_buffer(f, app, area, row);
+                return;
+            }
+            for (key, buf) in &app.parked_buffers {
+                if let crate::buffer_ref::BufferRef::File(p) = key
+                    && p == &path
+                {
+                    preview_from_parked_buffer(f, area, buf, row);
+                    return;
+                }
+            }
+            for (key, snap) in &app.sleeping {
+                if let crate::buffer_ref::BufferRef::File(p) = key
+                    && p == &path
+                {
+                    preview_from_sleeping(f, area, snap, row);
+                    return;
+                }
+            }
+            preview_from_file(f, app, area, &path, row);
         }
         FuzzyKind::WorkspaceSearch => {
             // The base location stores line 0; the actual preview target
@@ -81,6 +106,45 @@ fn preview_from_buffer(f: &mut Frame, app: &App, area: Rect, target_row: usize) 
         .map(|h| h.captures_in_rows(scroll, end.saturating_sub(1)))
         .unwrap_or_default();
     render_preview_lines(f, area, lines, &captures, target_row, scroll, end);
+}
+
+/// Render a preview from a parked buffer (one shown by a different
+/// pane). Same shape as [`preview_from_buffer`] but operates against
+/// the passed-in [`crate::editor::Buffer`] rather than the active one.
+fn preview_from_parked_buffer(
+    f: &mut Frame,
+    area: Rect,
+    buf: &crate::editor::Buffer,
+    target_row: usize,
+) {
+    let lines = &buf.lines;
+    let height = area.height as usize;
+    let (scroll, end) = preview_scroll(lines.len(), target_row, height);
+    let captures = buf
+        .highlighter
+        .as_ref()
+        .map(|h| h.captures_in_rows(scroll, end.saturating_sub(1)))
+        .unwrap_or_default();
+    render_preview_lines(f, area, lines, &captures, target_row, scroll, end);
+}
+
+/// Render a preview from a sleeping buffer — same window/centering
+/// rules as the other preview paths, but without syntax highlighting
+/// since the highlighter is dropped on freeze. The line payload is
+/// decompressed on demand (see
+/// [`crate::app::SleepingBuffer::peek_lines`]); the preview re-renders
+/// rarely enough that one decompress per keypress is cheaper than
+/// keeping a thawed copy around just for the preview.
+fn preview_from_sleeping(
+    f: &mut Frame,
+    area: Rect,
+    snap: &crate::app::SleepingBuffer,
+    target_row: usize,
+) {
+    let lines = snap.peek_lines();
+    let height = area.height as usize;
+    let (scroll, end) = preview_scroll(lines.len(), target_row, height);
+    render_preview_lines(f, area, &lines, &[], target_row, scroll, end);
 }
 
 /// Render a Files-/Locations-kind preview. Looks up `path` in the

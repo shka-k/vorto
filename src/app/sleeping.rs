@@ -160,6 +160,29 @@ impl SleepingBuffer {
         }
     }
 
+    /// Decompress the main line payload without consuming the
+    /// snapshot. Used by the fuzzy preview pane so a diagnostic
+    /// pointing at a sleeping buffer (e.g. `:e new_file.rs` after
+    /// the user switched to a different file) renders from the
+    /// in-memory copy instead of falling through to a disk read
+    /// that may not have the buffer's unsaved edits — or, for a
+    /// `:e` of a path that doesn't exist yet, no file at all.
+    /// Allocates on every call; the preview pane re-renders rarely
+    /// enough that a tiny re-decompress is cheaper than a long-lived
+    /// thawed cache.
+    pub fn peek_lines(&self) -> Vec<String> {
+        match &self.lines {
+            Lines::Raw(v) => v.clone(),
+            Lines::Compressed(blob) => {
+                let mut dec = DeflateDecoder::new(blob.as_slice());
+                let mut s = String::new();
+                dec.read_to_string(&mut s)
+                    .expect("deflate decode of a self-produced blob cannot fail");
+                s.split('\n').map(|s| s.to_string()).collect()
+            }
+        }
+    }
+
     pub fn thaw(self) -> Buffer {
         let mut b = Buffer::new();
         b.lines = self.lines.thaw();
