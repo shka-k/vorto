@@ -93,7 +93,7 @@ fn file_label(app: &App) -> String {
 
 pub(super) fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
     let (prefix, input) = match &app.prompt.state {
-        Prompt::Command(buf) => (":", buf),
+        Prompt::Command(cp) => (":", &cp.input),
         Prompt::Search {
             forward: true,
             query,

@@ -13,6 +13,7 @@ use crate::config::COMMAND_BINDS;
 use crate::config::{
     GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
 };
+use crate::prompt::CommandPrompt;
 
 const HINT_COLS: usize = 2;
 const HINT_ROWS_MAX: usize = 10;
@@ -23,7 +24,16 @@ const HINT_PAD_Y: u16 = 1;
 const PENDING_HINT_WIDTH: u16 = 32;
 const PENDING_HINT_ROWS_MAX: u16 = 12;
 
-pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
+pub(super) fn draw_command_hints(f: &mut Frame, cp: &CommandPrompt, cmd_area: Rect) {
+    // When the user is Tab-cycling, the visible input has been replaced
+    // with a candidate name — keep filtering against the original
+    // prefix the user typed, otherwise the list would collapse to one
+    // entry the moment Tab is pressed.
+    let query = cp
+        .completion
+        .as_ref()
+        .map(|c| c.prefix.as_str())
+        .unwrap_or(cp.input.as_str());
     // Once the user types a space they're entering an argument — hints
     // about the command name no longer help.
     if query.contains(' ') {
@@ -46,6 +56,10 @@ pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
     if hints.is_empty() {
         return;
     }
+    let selected_name = cp
+        .completion
+        .as_ref()
+        .map(|c| c.matches[c.selected]);
 
     let rows = hints.len().div_ceil(HINT_COLS).min(HINT_ROWS_MAX);
     let height = rows as u16 + 2 * HINT_PAD_Y + 2;
@@ -98,12 +112,18 @@ pub(super) fn draw_command_hints(f: &mut Frame, query: &str, cmd_area: Rect) {
             .skip(start)
             .take(rows)
             .map(|(name, description)| {
+                let is_selected = selected_name == Some(*name);
+                let row_bg = if is_selected {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    bg
+                };
                 Line::from(vec![
                     Span::styled(
                         format!("{:<width$}", name, width = name_w),
-                        bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        row_bg.fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!(" {}", description), bg.fg(Color::Gray)),
+                    Span::styled(format!(" {}", description), row_bg.fg(Color::Gray)),
                 ])
             })
             .collect()

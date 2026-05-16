@@ -7,6 +7,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::buffer_ref::BufferRef;
+use crate::config::COMMAND_BINDS;
 use crate::finder::{Finder, FuzzyKind, IgnoreOpts};
 use crate::lsp::{CodeAction, Location};
 
@@ -115,12 +116,83 @@ pub(crate) fn apply_line_key(input: &mut LineInput, key: KeyEvent) {
     }
 }
 
+/// In-flight Tab completion for the `:` command line. `prefix` is the
+/// input as it stood when Tab was first pressed — kept so successive
+/// Tab presses cycle the same candidate list even after the visible
+/// input has been replaced with a candidate name. `selected` indexes
+/// into `matches`.
+pub struct CompletionState {
+    pub prefix: String,
+    pub matches: Vec<&'static str>,
+    pub selected: usize,
+}
+
+pub struct CommandPrompt {
+    pub input: LineInput,
+    /// Set while the user is Tab-cycling. Cleared as soon as any key
+    /// that isn't Tab / Shift-Tab arrives, so editing reverts to the
+    /// normal "typed text" flow.
+    pub completion: Option<CompletionState>,
+}
+
+impl CommandPrompt {
+    fn new() -> Self {
+        Self {
+            input: LineInput::new(),
+            completion: None,
+        }
+    }
+
+    /// Build (or refresh) the completion list against the current input
+    /// and step the selection by `step` (+1 for Tab, -1 for Shift-Tab).
+    /// The visible input is replaced with the chosen candidate so the
+    /// user can immediately submit it or keep typing past it.
+    fn tab(&mut self, step: i32) {
+        // First Tab: anchor the prefix at the current input so further
+        // Tabs keep cycling the same set even though we're about to
+        // overwrite the input with a candidate.
+        if self.completion.is_none() {
+            let prefix = self.input.as_str().to_string();
+            // Tab completion only makes sense for the command name
+            // itself, not its arguments. The hint panel uses the same
+            // guard so the two stay in sync.
+            if prefix.contains(' ') {
+                return;
+            }
+            let matches: Vec<&'static str> = COMMAND_BINDS
+                .iter()
+                .flat_map(|b| b.all_names())
+                .filter(|n| n.starts_with(&prefix))
+                .collect();
+            if matches.is_empty() {
+                return;
+            }
+            self.completion = Some(CompletionState {
+                prefix,
+                matches,
+                selected: 0,
+            });
+        } else if let Some(c) = self.completion.as_mut() {
+            let len = c.matches.len() as i32;
+            let next = (c.selected as i32 + step).rem_euclid(len);
+            c.selected = next as usize;
+        }
+        if let Some(c) = &self.completion {
+            let pick = c.matches[c.selected];
+            self.input = LineInput::new();
+            for ch in pick.chars() {
+                self.input.insert(ch);
+            }
+        }
+    }
+}
+
 /// Active prompt state. Mirrors the four ways the user can interact
 /// with the bottom-line input: `:` command line, `/` (or `?`) search,
 /// fuzzy pickers, and rename.
 pub enum Prompt {
     None,
-    Command(LineInput),
+    Command(CommandPrompt),
     Search {
         forward: bool,
         query: LineInput,
@@ -220,7 +292,7 @@ impl PromptController {
     }
 
     pub fn open_command(&mut self) {
-        self.state = Prompt::Command(LineInput::new());
+        self.state = Prompt::Command(CommandPrompt::new());
     }
 
     pub fn open_search(&mut self, forward: bool) {
@@ -292,7 +364,18 @@ impl PromptController {
 
         match &mut self.state {
             Prompt::None => PromptOutcome::Nothing,
-            Prompt::Command(input) | Prompt::Rename(input) => {
+            Prompt::Command(cp) => {
+                match key.code {
+                    KeyCode::Tab => cp.tab(1),
+                    KeyCode::BackTab => cp.tab(-1),
+                    _ => {
+                        cp.completion = None;
+                        apply_line_key(&mut cp.input, key);
+                    }
+                }
+                PromptOutcome::Nothing
+            }
+            Prompt::Rename(input) => {
                 apply_line_key(input, key);
                 PromptOutcome::Nothing
             }
@@ -365,8 +448,8 @@ impl PromptController {
         let prompt = std::mem::replace(&mut self.state, Prompt::None);
         match prompt {
             Prompt::None => PromptOutcome::Nothing,
-            Prompt::Command(line) => {
-                PromptOutcome::RunCommand(line.as_str().trim().to_string())
+            Prompt::Command(cp) => {
+                PromptOutcome::RunCommand(cp.input.as_str().trim().to_string())
             }
             Prompt::Search { forward, query } => PromptOutcome::Search {
                 forward,

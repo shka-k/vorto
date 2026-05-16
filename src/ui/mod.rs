@@ -55,8 +55,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     buffer::place_cursor(f, app, chunks[0]);
 
-    if let Prompt::Command(query) = &app.prompt.state {
-        hints::draw_command_hints(f, query.as_str(), chunks[2]);
+    if let Prompt::Command(cp) = &app.prompt.state {
+        hints::draw_command_hints(f, cp, chunks[2]);
     }
     if matches!(app.prompt.state, Prompt::Fuzzy(_)) {
         fuzzy::draw_fuzzy(f, app, f.area());
