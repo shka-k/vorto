@@ -51,6 +51,14 @@ const GUTTER_SIGN_WIDTH: u16 = 1;
 /// itself is single-width.
 const GUTTER_VCS_WIDTH: u16 = 1;
 
+/// Minimum rows kept above and below the cursor inside the viewport
+/// (vim's `scrolloff`). Near the end of the file this lets scroll
+/// advance past the last source row, leaving blank rows below — so the
+/// cursor isn't pinned to the bottom edge when sitting on the last few
+/// lines. Disabled automatically when the viewport is too small to
+/// give the cursor room (height ≤ 2 * SCROLL_OFF + 1).
+const SCROLL_OFF: usize = 5;
+
 pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let height = area.height as usize;
     let row_diag = build_row_diag_summary(app, app.buffer.cursor.row);
@@ -544,35 +552,46 @@ fn compute_scroll(app: &App, height: usize, row_diag: &HashMap<usize, RowDiag>) 
         app.buffer.viewport_height.set(height);
         return scroll;
     }
-    if cur < scroll {
-        scroll = cur;
+    // Shrink the scroll-off to 0 on viewports too small to give the
+    // cursor room on both sides; otherwise the padding would fight
+    // itself and lock the cursor in place.
+    let off = if height > 2 * SCROLL_OFF + 1 {
+        SCROLL_OFF
+    } else {
+        0
+    };
+
+    if cur < scroll + off {
+        scroll = cur.saturating_sub(off);
     } else if height > 0 {
         // Walk rows [scroll..cur], accumulating each row's visual
         // height (1 + 1 if it has diagnostics). Advance scroll forward
-        // until the cursor's source row fits — the cursor itself only
-        // needs a single visual row, so we just need
-        // `consumed_above_cursor < height`.
+        // until the cursor's source row fits with `off` rows of room
+        // below it — i.e. `consumed_above_cursor < height - off`. Past
+        // EOF this lets scroll exceed `last - height + 1`; the render
+        // loop just stops emitting rows when source lines run out.
+        let effective_height = height.saturating_sub(off);
         loop {
             if scroll >= cur {
                 break;
             }
             let mut consumed: usize = 0;
-            let mut fits = false;
             for row in scroll..cur {
                 consumed += 1 + row_diag.get(&row).map_or(0, |_| 1);
-                if consumed >= height {
+                if consumed >= effective_height {
                     break;
                 }
             }
-            if consumed < height {
-                fits = true;
-            }
-            if fits {
+            if consumed < effective_height {
                 break;
             }
             scroll += 1;
         }
     }
+    // Keep at least the last source line visible — don't let past-EOF
+    // padding push every real row off the top.
+    let last_row = app.buffer.lines.len().saturating_sub(1);
+    scroll = scroll.min(last_row);
     app.buffer.scroll.set(scroll);
     // Publish the height so `H`/`M`/`L` and the `<C-d>`/`<C-u>` family
     // (handled in the input thread) can read what's currently visible.
@@ -695,11 +714,18 @@ pub(super) fn draw_buffer_inactive(f: &mut Frame, buf: &Buffer, eff: &EditorConf
     let height = area.height as usize;
     let cur = buf.cursor.row;
     let mut scroll = buf.scroll.get();
-    if cur < scroll {
-        scroll = cur;
-    } else if height > 0 && cur >= scroll + height {
-        scroll = cur + 1 - height;
+    let off = if height > 2 * SCROLL_OFF + 1 {
+        SCROLL_OFF
+    } else {
+        0
+    };
+    if cur < scroll + off {
+        scroll = cur.saturating_sub(off);
+    } else if height > 0 && cur + off >= scroll + height {
+        scroll = (cur + off + 1).saturating_sub(height);
     }
+    let last_row = buf.lines.len().saturating_sub(1);
+    scroll = scroll.min(last_row);
     buf.scroll.set(scroll);
     buf.viewport_height.set(height);
     let last_visible = scroll + height;
