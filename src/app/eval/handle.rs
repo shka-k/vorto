@@ -190,6 +190,10 @@ impl App {
                     cmds.push(Cmd::OpenPath(PathBuf::from(ctx.rest)));
                 }
             }
+            D::OpenLog => match crate::log::default_path() {
+                Some(p) => cmds.push(Cmd::OpenPath(p)),
+                None => cmds.push(Cmd::ToastError("log path unresolved".into())),
+            },
             D::GotoLine => match ctx.rest.parse::<usize>() {
                 Ok(n) if n >= 1 => self.goto_line_n_pure(n),
                 _ => cmds.push(Cmd::ToastError("usage: :goto <line>".into())),

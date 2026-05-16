@@ -131,6 +131,13 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         takes_path: false,
     },
     CommandBind {
+        name: "log",
+        aliases: &[],
+        description: "open debug log file",
+        kind: DirectKind::OpenLog,
+        takes_path: false,
+    },
+    CommandBind {
         name: "noh",
         aliases: &["nohl", "nohlsearch"],
         description: "clear search highlight",

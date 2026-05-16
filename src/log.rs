@@ -32,7 +32,7 @@ pub fn init() {
     let _ = LOG_FILE.set(Mutex::new(f));
 }
 
-fn default_path() -> Option<PathBuf> {
+pub fn default_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("VORTO_LOG") {
         return Some(PathBuf::from(p));
     }

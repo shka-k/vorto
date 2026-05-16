@@ -231,6 +231,9 @@ pub enum DirectKind {
     /// exist yet (a plain `:w` errors out in that case).
     SaveForce,
     Open,
+    /// `:log` — open the debug log file (resolved the same way the
+    /// logger writes it: `$VORTO_LOG`, else `$XDG_STATE_HOME/vorto/…`).
+    OpenLog,
     GotoLine,
     /// `gd` — `textDocument/definition` for the symbol under the cursor.
     GotoDefinition,
