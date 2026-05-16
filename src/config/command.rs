@@ -139,14 +139,14 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
     },
     CommandBind {
         name: "split",
-        aliases: &["sp"],
+        aliases: &["sp", "nh"],
         description: "split pane below",
         kind: DirectKind::SplitWindowHorizontal,
         takes_path: false,
     },
     CommandBind {
         name: "vsplit",
-        aliases: &["vsp", "vs"],
+        aliases: &["vsp", "vs", "nv"],
         description: "split pane right",
         kind: DirectKind::SplitWindowVertical,
         takes_path: false,
