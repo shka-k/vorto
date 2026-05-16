@@ -54,8 +54,8 @@ impl App {
                 force,
             } => self.run_save(path.as_deref(), then_quit, force),
             Cmd::OpenPath(path) => self.open_path(&path)?,
-            Cmd::Reload { force } => self.run_reload(force),
-            Cmd::ReloadAll { force } => self.run_reload_all(force),
+            Cmd::Reload => self.run_reload(),
+            Cmd::ReloadAll => self.run_reload_all(),
             Cmd::LspJump { method, label } => self.lsp_jump(method, label),
             Cmd::LspFindReferences => self.lsp_find_references(),
             Cmd::LspCodeAction => self.lsp_code_action(),
@@ -415,23 +415,17 @@ impl App {
         })
     }
 
-    /// `:reload` / `:reload!` — re-read the active buffer's backing
-    /// file from disk. Refuses on a dirty buffer without `force` so
-    /// `:reload` is safe to fat-finger; `:reload!` discards unsaved
-    /// edits. Treated as a buffer mutation (snapshot + version bump)
-    /// so undo can recover the pre-reload state and the LSP picks up
-    /// the new content via the normal `didChange` sync.
-    fn run_reload(&mut self, force: bool) {
+    /// `:reload` — re-read the active buffer's backing file from
+    /// disk. Always reloads: `reload_from_disk` takes an undo
+    /// snapshot before the content is replaced, so unsaved edits
+    /// are recoverable with `u`. The version bump triggers the
+    /// normal `didChange` sync so the LSP picks up the new content
+    /// on the next tick.
+    fn run_reload(&mut self) {
         let Some(path) = self.buffer.path.clone() else {
             self.push_toast(Toast::error("no file name"));
             return;
         };
-        if self.buffer.dirty && !force {
-            self.push_toast(Toast::error(
-                "no write since last change (use :reload!)",
-            ));
-            return;
-        }
         match self.buffer.reload_from_disk() {
             Ok(true) => self.push_toast(Toast::info(format!("reloaded {}", path.display()))),
             Ok(false) => self.push_toast(Toast::info("reloaded (no change)")),
@@ -439,48 +433,34 @@ impl App {
         }
     }
 
-    /// `:reload-all` / `:reload-all!` — re-read every file-backed
-    /// buffer the editor currently holds, including the active one,
-    /// any parked siblings shown in other panes, and the sleeping
-    /// pool. Without `force`, dirty buffers are skipped (so the user
-    /// can't accidentally lose unsaved edits in a buffer they're not
-    /// looking at); `!` discards unsaved edits everywhere.
+    /// `:reload-all` — re-read every file-backed buffer.
     ///
-    /// Sleeping buffers are dropped rather than thawed-and-reloaded:
-    /// the next visit will fall through to `open_path_force` and read
-    /// fresh content. Cursor position and undo history for those
-    /// snapshots are lost, which is the intended trade-off — keeping
-    /// them would mean decompressing every sleeping buffer eagerly
-    /// on every `:reload-all`.
-    fn run_reload_all(&mut self, force: bool) {
+    /// - Active and parked buffers always reload: `reload_from_disk`
+    ///   snapshots first, so unsaved edits are recoverable via `u`
+    ///   in each pane.
+    /// - Clean sleeping entries are dropped so the next visit
+    ///   triggers a fresh load; cheaper than thawing them just to
+    ///   reload them back.
+    /// - Dirty sleeping entries are left alone — their unsaved
+    ///   edits live only inside the frozen snapshot, with no
+    ///   undo stack reachable from the active pane, so dropping
+    ///   would be unrecoverable data loss. They surface unchanged
+    ///   on the next visit.
+    fn run_reload_all(&mut self) {
         let mut reloaded = 0usize;
         let mut unchanged = 0usize;
-        let mut skipped = 0usize;
         let mut errors: Vec<String> = Vec::new();
 
-        // Active buffer first so its toast / cursor adjustments aren't
-        // shadowed by errors from siblings.
         if self.buffer.path.is_some() {
-            if self.buffer.dirty && !force {
-                skipped += 1;
-            } else {
-                match self.buffer.reload_from_disk() {
-                    Ok(true) => reloaded += 1,
-                    Ok(false) => unchanged += 1,
-                    Err(e) => errors.push(format!("active: {}", root_cause(&e))),
-                }
+            match self.buffer.reload_from_disk() {
+                Ok(true) => reloaded += 1,
+                Ok(false) => unchanged += 1,
+                Err(e) => errors.push(format!("active: {}", root_cause(&e))),
             }
         }
 
-        // Parked buffers — live, possibly shown in another pane right
-        // now. Mutating them in place is the only safe option; the
-        // owning pane will pick up the new content on its next draw.
         for (key, buf) in self.parked_buffers.iter_mut() {
             if buf.path.is_none() {
-                continue;
-            }
-            if buf.dirty && !force {
-                skipped += 1;
                 continue;
             }
             match buf.reload_from_disk() {
@@ -498,30 +478,25 @@ impl App {
             }
         }
 
-        // Sleeping buffers — dropping the entry forces a fresh load on
-        // next visit, which is cheaper than thawing every snapshot
-        // here just to write it back. Scratch buffers (no path) are
-        // left alone — there's no "disk" to reload them from.
-        let stale_keys: Vec<_> = self
+        let clean_keys: Vec<_> = self
             .sleeping
             .iter()
             .filter_map(|(k, s)| match k {
-                crate::buffer_ref::BufferRef::File(_) if force || !s.dirty => Some(k.clone()),
+                crate::buffer_ref::BufferRef::File(_) if !s.dirty => Some(k.clone()),
                 _ => None,
             })
             .collect();
-        let dirty_sleeping_skipped = self
+        let preserved_dirty = self
             .sleeping
             .iter()
             .filter(|(k, s)| {
-                matches!(k, crate::buffer_ref::BufferRef::File(_)) && s.dirty && !force
+                matches!(k, crate::buffer_ref::BufferRef::File(_)) && s.dirty
             })
             .count();
-        for k in &stale_keys {
+        for k in &clean_keys {
             self.sleeping.remove(k);
             reloaded += 1;
         }
-        skipped += dirty_sleeping_skipped;
 
         let mut parts = Vec::new();
         if reloaded > 0 {
@@ -530,8 +505,8 @@ impl App {
         if unchanged > 0 {
             parts.push(format!("{unchanged} unchanged"));
         }
-        if skipped > 0 {
-            parts.push(format!("{skipped} dirty skipped (use :reload-all!)"));
+        if preserved_dirty > 0 {
+            parts.push(format!("{preserved_dirty} dirty kept"));
         }
         if parts.is_empty() && errors.is_empty() {
             self.push_toast(Toast::info("no file-backed buffers"));

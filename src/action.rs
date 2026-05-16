@@ -235,17 +235,14 @@ pub enum DirectKind {
     /// logger writes it: `$VORTO_LOG`, else `$XDG_STATE_HOME/vorto/…`).
     OpenLog,
     /// `:reload` — reread the active buffer's backing file from disk.
-    /// Refuses when the buffer has unsaved edits; `:reload!` discards
-    /// them and reloads anyway.
+    /// Always reloads; the pre-reload state is recoverable via undo.
     Reload,
-    /// `:reload!` — discard unsaved edits and reread from disk.
-    ReloadForce,
     /// `:reload-all` — re-read every file-backed buffer (active,
-    /// parked, sleeping). Dirty buffers are skipped without `!`.
+    /// parked, sleeping). Active and parked entries take an undo
+    /// snapshot so their pre-reload state is recoverable; sleeping
+    /// entries with unsaved edits are left alone (those edits aren't
+    /// backed by disk and would be unrecoverable if dropped).
     ReloadAll,
-    /// `:reload-all!` — same as `ReloadAll` but discards unsaved
-    /// edits in every buffer.
-    ReloadAllForce,
     GotoLine,
     /// `gd` — `textDocument/definition` for the symbol under the cursor.
     GotoDefinition,

@@ -140,15 +140,8 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
     CommandBind {
         name: "reload",
         aliases: &["e!"],
-        description: "reload buffer from disk",
+        description: "reload buffer from disk (undo restores)",
         kind: DirectKind::Reload,
-        takes_path: false,
-    },
-    CommandBind {
-        name: "reload!",
-        aliases: &[],
-        description: "reload, discarding unsaved edits",
-        kind: DirectKind::ReloadForce,
         takes_path: false,
     },
     CommandBind {
@@ -156,13 +149,6 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         aliases: &[],
         description: "reload every file-backed buffer",
         kind: DirectKind::ReloadAll,
-        takes_path: false,
-    },
-    CommandBind {
-        name: "reload-all!",
-        aliases: &[],
-        description: "reload all, discarding unsaved edits",
-        kind: DirectKind::ReloadAllForce,
         takes_path: false,
     },
     CommandBind {
