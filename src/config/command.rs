@@ -117,6 +117,13 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         takes_path: false,
     },
     CommandBind {
+        name: "new",
+        aliases: &["enew"],
+        description: "new scratch buffer",
+        kind: DirectKind::NewScratchBuffer,
+        takes_path: false,
+    },
+    CommandBind {
         name: "goto",
         aliases: &[],
         description: "go to line <n>",

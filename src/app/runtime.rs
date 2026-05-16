@@ -60,6 +60,13 @@ impl App {
             Cmd::LspHover => self.lsp_hover(),
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
+            Cmd::NewScratchBuffer => {
+                // Always mint a fresh id: `:new` is documented as "give
+                // me a new buffer", which would feel broken if it kept
+                // reusing the single Scratch(0) slot.
+                let id = self.mint_scratch_id();
+                self.switch_to_buffer(crate::buffer_ref::BufferRef::Scratch(id))?;
+            }
             Cmd::Quit => self.should_quit = true,
             Cmd::StartJumpLabel => self.start_jump_label(),
             Cmd::SelectWholeBuffer => self.run_select_whole_buffer(),

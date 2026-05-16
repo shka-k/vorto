@@ -5,11 +5,25 @@
 
 use std::path::PathBuf;
 
-/// One entry in the buffer-picker MRU. `Scratch` is the unnamed empty
-/// buffer vorto starts with (and that the user can return to); `File`
+/// One entry in the buffer-picker MRU. `Scratch(id)` is an unnamed
+/// empty buffer: `Scratch(0)` is the one vorto starts with, and every
+/// `:new` mints a fresh id so multiple scratch buffers coexist. `File`
 /// is a previously-opened path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BufferRef {
-    Scratch,
+    Scratch(u32),
     File(PathBuf),
+}
+
+impl BufferRef {
+    /// Human-readable label for scratch buffers in pickers and status
+    /// messages. `Scratch(0)` is the original anonymous buffer (just
+    /// `[scratch]`); subsequent ones get a numeric suffix.
+    pub fn scratch_label(id: u32) -> String {
+        if id == 0 {
+            "[scratch]".to_string()
+        } else {
+            format!("[scratch {}]", id)
+        }
+    }
 }

@@ -22,8 +22,8 @@ impl App {
     /// restore it; otherwise we fall through to a fresh load.
     pub fn switch_to_buffer(&mut self, r: BufferRef) -> Result<()> {
         match r {
-            BufferRef::Scratch => {
-                if self.buffer.path.is_none() {
+            BufferRef::Scratch(id) => {
+                if self.buffer.path.is_none() && self.current_scratch_id == Some(id) {
                     return Ok(());
                 }
                 self.lsp.detach_current();
@@ -31,15 +31,16 @@ impl App {
                 // (zero lines), so we can't use `unwrap_or_default`
                 // here — the wrong default would leave the buffer
                 // with an empty `lines` Vec and crash motions.
-                let next = match self.sleeping.remove(&BufferRef::Scratch) {
+                let next = match self.sleeping.remove(&BufferRef::Scratch(id)) {
                     Some(b) => b.thaw(),
                     None => Buffer::new(),
                 };
                 self.stash_and_install(next);
+                self.current_scratch_id = Some(id);
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.lsp.set_last_synced_version(self.buffer.version);
-                self.record_opened(BufferRef::Scratch);
-                self.push_toast(Toast::info("scratch"));
+                self.record_opened(BufferRef::Scratch(id));
+                self.push_toast(Toast::info(BufferRef::scratch_label(id)));
                 Ok(())
             }
             BufferRef::File(path) => {
@@ -79,11 +80,15 @@ impl App {
         let _ = std::mem::replace(&mut self.buffer, next);
     }
 
-    /// [`BufferRef`] for the currently-active buffer.
+    /// [`BufferRef`] for the currently-active buffer. Unnamed buffers
+    /// carry the scratch id tracked on `App` so multiple scratches
+    /// stay distinguishable; falls back to `Scratch(0)` if the id is
+    /// somehow missing (shouldn't happen — the field is always set
+    /// in sync with `buffer.path`).
     pub(super) fn active_ref(&self) -> BufferRef {
         match &self.buffer.path {
             Some(p) => BufferRef::File(p.canonicalize().unwrap_or_else(|_| p.clone())),
-            None => BufferRef::Scratch,
+            None => BufferRef::Scratch(self.current_scratch_id.unwrap_or(0)),
         }
     }
 
@@ -99,6 +104,7 @@ impl App {
         if let Some(restored) = self.sleeping.remove(&key) {
             self.lsp.detach_current();
             self.stash_and_install(restored.thaw());
+            self.current_scratch_id = None;
             self.record_opened(key);
             self.open_gen = self.open_gen.wrapping_add(1);
             self.lsp.set_last_synced_version(self.buffer.version);
@@ -151,6 +157,7 @@ impl App {
         // it can drop diagnostics and stop watching it.
         self.lsp.detach_current();
         self.stash_and_install(loaded);
+        self.current_scratch_id = None;
         // Re-loading a path drops any previously-sleeping copy of it
         // — the user explicitly asked for the disk version.
         self.sleeping.remove(&BufferRef::File(canon.clone()));

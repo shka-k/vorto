@@ -177,7 +177,7 @@ pub(super) fn format_dirty_list(refs: &[&crate::buffer_ref::BufferRef]) -> Strin
         .iter()
         .take(SHOW)
         .map(|r| match r {
-            crate::buffer_ref::BufferRef::Scratch => "[scratch]".to_string(),
+            crate::buffer_ref::BufferRef::Scratch(id) => crate::buffer_ref::BufferRef::scratch_label(*id),
             crate::buffer_ref::BufferRef::File(p) => p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())

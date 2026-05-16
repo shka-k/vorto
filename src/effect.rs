@@ -100,6 +100,8 @@ pub enum Cmd {
     BufferDelete {
         force: bool,
     },
+    /// `:new` — switch to (or restore) the unnamed scratch buffer.
+    NewScratchBuffer,
     /// Tear-down — emitted by `:q` (after the dirty-buffer check has
     /// already cleared) and `:q!`. The runtime sets `should_quit`
     /// either way; the variant exists in its own right so the input

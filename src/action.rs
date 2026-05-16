@@ -204,6 +204,11 @@ pub enum DirectKind {
     BufferDeleteForce,
     /// `:ls` / `:buffers` — open the buffer picker.
     BufferList,
+    /// `:new` — switch to the unnamed scratch buffer. If a sleeping
+    /// scratch exists (previously visited and stashed) it's thawed;
+    /// otherwise a fresh empty one is installed. No-op when already
+    /// on the scratch buffer.
+    NewScratchBuffer,
     SaveAndQuit,
     Save,
     /// `:w!` — save, creating any missing parent directories. Useful

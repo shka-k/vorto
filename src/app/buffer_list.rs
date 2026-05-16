@@ -59,16 +59,17 @@ impl App {
         self.lsp.detach_current();
 
         match target {
-            Some(BufferRef::Scratch) => {
-                let restored = match self.sleeping.remove(&BufferRef::Scratch) {
+            Some(BufferRef::Scratch(id)) => {
+                let restored = match self.sleeping.remove(&BufferRef::Scratch(id)) {
                     Some(b) => b.thaw(),
                     None => Buffer::new(),
                 };
                 self.install_buffer(restored);
+                self.current_scratch_id = Some(id);
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.lsp.set_last_synced_version(self.buffer.version);
-                self.record_opened(BufferRef::Scratch);
-                self.push_toast(Toast::info("deleted, [scratch]"));
+                self.record_opened(BufferRef::Scratch(id));
+                self.push_toast(Toast::info(format!("deleted, {}", BufferRef::scratch_label(id))));
                 Ok(())
             }
             Some(BufferRef::File(path)) => {
@@ -89,9 +90,11 @@ impl App {
                     let loaded = match Buffer::load(&path) {
                         Ok(b) => b,
                         Err(e) => {
+                            let id = self.mint_scratch_id();
                             self.install_buffer(Buffer::new());
+                            self.current_scratch_id = Some(id);
                             self.open_gen = self.open_gen.wrapping_add(1);
-                            self.record_opened(BufferRef::Scratch);
+                            self.record_opened(BufferRef::Scratch(id));
                             self.push_toast(Toast::fatal(format!(
                                 "deleted; failed to open {}: {} — using scratch",
                                 path.display(),
@@ -101,6 +104,7 @@ impl App {
                         }
                     };
                     self.install_buffer(loaded);
+                    self.current_scratch_id = None;
                     self.record_opened(BufferRef::File(path.clone()));
                     self.open_gen = self.open_gen.wrapping_add(1);
                     self.lsp.set_last_synced_version(self.buffer.version);
@@ -112,12 +116,24 @@ impl App {
             }
             None => {
                 // Nothing left — start a fresh scratch.
+                let id = self.mint_scratch_id();
                 self.install_buffer(Buffer::new());
+                self.current_scratch_id = Some(id);
                 self.open_gen = self.open_gen.wrapping_add(1);
-                self.record_opened(BufferRef::Scratch);
-                self.push_toast(Toast::info("deleted, [scratch]"));
+                self.record_opened(BufferRef::Scratch(id));
+                self.push_toast(Toast::info(format!("deleted, {}", BufferRef::scratch_label(id))));
                 Ok(())
             }
         }
+    }
+
+    /// Allocate a fresh scratch id and bump the counter. Never reuses
+    /// an id even after the corresponding buffer is deleted, so a
+    /// stashed sleeping scratch can't be conflated with a brand-new
+    /// one minted by `:new` later.
+    pub(super) fn mint_scratch_id(&mut self) -> u32 {
+        let id = self.next_scratch_id;
+        self.next_scratch_id = self.next_scratch_id.saturating_add(1);
+        id
     }
 }

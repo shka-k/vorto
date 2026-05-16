@@ -114,10 +114,20 @@ pub struct App {
     /// dropped instead of clobbering the current buffer.
     pub open_gen: u64,
     /// MRU of recently-touched buffers (newest at the end). Drives the
-    /// `<space>b` buffer picker. Capped at [`MRU_CAP`] entries. The
-    /// scratch buffer is represented by `BufferRef::Scratch` so it
-    /// stays selectable even after the user opens a file over it.
+    /// `<space>b` buffer picker. Capped at [`MRU_CAP`] entries. Scratch
+    /// buffers are represented by `BufferRef::Scratch(id)`; the
+    /// initial unnamed buffer is `Scratch(0)` and each `:new` mints a
+    /// fresh id.
     pub opened_paths: Vec<BufferRef>,
+    /// Identifier of the active buffer when it is unnamed (a scratch
+    /// buffer). `None` when the active buffer is backed by a file.
+    /// Kept on `App` rather than on `Buffer` so the buffer struct
+    /// stays oblivious to MRU bookkeeping.
+    pub current_scratch_id: Option<u32>,
+    /// Next id `:new` will hand out. Incremented after each mint;
+    /// never reused even after a scratch buffer is deleted, so a
+    /// stashed sleeping scratch can't be confused with a fresh one.
+    pub next_scratch_id: u32,
     /// Sleeping (non-active) buffers, keyed by [`BufferRef`]. When the
     /// user switches away from a buffer we move its state in here so
     /// the unsaved edits, undo history, and cursor position are still
@@ -203,7 +213,9 @@ impl App {
             // Pre-seed with Scratch so the picker always offers a way
             // back to the unnamed empty buffer, even after opening a
             // real file over it.
-            opened_paths: vec![BufferRef::Scratch],
+            opened_paths: vec![BufferRef::Scratch(0)],
+            current_scratch_id: Some(0),
+            next_scratch_id: 1,
             sleeping: HashMap::new(),
             last_find: None,
             last_change: None,

@@ -170,6 +170,7 @@ impl App {
                     crate::finder::FuzzyKind::Buffers,
                 )));
             }
+            D::NewScratchBuffer => cmds.push(Cmd::NewScratchBuffer),
             D::SaveAndQuit => cmds.push(Cmd::Save {
                 path: parse_save_path(ctx.rest),
                 then_quit: true,

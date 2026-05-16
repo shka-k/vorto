@@ -153,7 +153,10 @@ impl App {
             .rev() // newest first
             .map(|r| {
                 let (label, is_current) = match r {
-                    BufferRef::Scratch => ("[scratch]".to_string(), on_scratch),
+                    BufferRef::Scratch(id) => {
+                        let is_current = on_scratch && self.current_scratch_id == Some(*id);
+                        (BufferRef::scratch_label(*id), is_current)
+                    }
                     BufferRef::File(p) => {
                         let rel = p
                             .strip_prefix(cwd)
@@ -180,7 +183,7 @@ impl App {
                 // buffer still shows as changed even if its on-disk
                 // copy matches HEAD.
                 let entry_vcs = match r {
-                    BufferRef::Scratch => false,
+                    BufferRef::Scratch(_) => false,
                     BufferRef::File(p) => {
                         if is_current {
                             active_vcs_changed

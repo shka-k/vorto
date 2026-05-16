@@ -47,7 +47,7 @@ pub(super) fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area
                 return;
             };
             match r {
-                crate::buffer_ref::BufferRef::Scratch => {}
+                crate::buffer_ref::BufferRef::Scratch(_) => {}
                 crate::buffer_ref::BufferRef::File(path) => {
                     preview_from_file(f, app, area, path, 0);
                 }
