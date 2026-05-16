@@ -60,8 +60,10 @@ pub use uri::{path_to_uri, uri_to_path};
 use codec::{notification, read_message, reader_loop, request, write_framed};
 
 pub struct LspClient {
-    /// Kept alive so the child isn't reaped while we hold its pipes.
-    _child: Child,
+    /// The server subprocess. `std::process::Child` has no `Drop` of its
+    /// own, so without our [`Drop`] impl below the server would outlive
+    /// the editor (closing the pipes alone isn't a guaranteed signal).
+    child: Child,
     /// Shared with the reader thread so it can reply to server-to-client
     /// requests (`client/registerCapability`, `workspace/configuration`,
     /// `window/workDoneProgress/create`, …) without round-tripping
@@ -259,7 +261,7 @@ impl LspClient {
         });
 
         Ok(Self {
-            _child: child,
+            child,
             stdin,
             next_id: 2,
             docs: HashMap::new(),
@@ -389,5 +391,57 @@ impl LspClient {
                 bail!("textDocument/formatting: lsp reader gone")
             }
         }
+    }
+}
+
+impl Drop for LspClient {
+    /// Best-effort graceful shutdown per the LSP spec:
+    ///   1. `shutdown` request — server stops accepting work, replies, then waits for `exit`.
+    ///   2. `exit` notification — server terminates.
+    ///   3. Poll the child briefly; SIGKILL if it overstays the budget.
+    ///
+    /// Without this the server would linger after the editor quits
+    /// (`std::process::Child` has no `Drop`), and slow shutdowns of e.g.
+    /// rust-analyzer would block the editor indefinitely.
+    fn drop(&mut self) {
+        let shutdown_wait = Duration::from_millis(500);
+        let exit_wait = Duration::from_millis(300);
+
+        let shutdown_id = self.next_id;
+        self.next_id += 1;
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut guard) = self.blocking_pending.lock() {
+            guard.insert(shutdown_id, tx);
+        }
+
+        let shutdown_sent =
+            write_framed(&self.stdin, &request(shutdown_id, "shutdown", Value::Null)).is_ok();
+
+        if shutdown_sent {
+            // We don't care about the reply contents, only that the
+            // server has acknowledged before we send `exit`.
+            let _ = rx.recv_timeout(shutdown_wait);
+        }
+        // Pop the pending entry whether or not the reader thread already
+        // consumed it — leaves no dangling sender.
+        if let Ok(mut guard) = self.blocking_pending.lock() {
+            guard.remove(&shutdown_id);
+        }
+
+        if shutdown_sent {
+            let _ = write_framed(&self.stdin, &notification("exit", Value::Null));
+        }
+
+        let deadline = std::time::Instant::now() + exit_wait;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() >= deadline => break,
+                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
