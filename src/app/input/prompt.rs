@@ -31,7 +31,14 @@ impl App {
                 // anchor against `startup_cwd` so the resulting buffer
                 // path doesn't depend on whatever `current_dir()` is now.
                 let path = self.startup_cwd.join(rel);
-                self.open_path(&path)
+                if let Err(e) = self.open_path(&path) {
+                    // Bubbling this up would terminate the event loop —
+                    // a picker entry that fails to load (e.g. a stray
+                    // symlink to a directory) should leave the user in
+                    // their current buffer with a visible error.
+                    self.push_toast(Toast::error(format!("open: {}", root_cause(&e))));
+                }
+                Ok(())
             }
             PromptOutcome::GotoLine(row) => {
                 self.buffer.cursor.row = row;

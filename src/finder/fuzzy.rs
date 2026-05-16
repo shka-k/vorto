@@ -78,6 +78,7 @@ impl Finder {
             paths
                 .into_iter()
                 .filter(|p| !ignore.hidden || !is_hidden_path(p))
+                .filter(|p| !is_symlink(&root.join(p)))
                 .take(5000)
                 .collect()
         } else {
@@ -267,6 +268,16 @@ fn is_hidden_path(rel: &str) -> bool {
     rel.split('/').any(|seg| seg.starts_with('.'))
 }
 
+/// True if `path` is a symlink (without following it). Symlinks are
+/// filtered out of the picker because opening one whose target is a
+/// directory or broken propagates an `io::Error` from `Buffer::load`
+/// up to the main loop and terminates the editor.
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 fn collect_files(
     root: &Path,
     dir: &Path,
@@ -297,11 +308,23 @@ fn collect_files(
         if ignore.vcs && matches!(name.as_str(), "target" | "node_modules" | "dist" | "build") {
             continue;
         }
-        if path.is_dir() {
+        // Use `file_type` (not `is_dir`/`is_file`) so symlinks are
+        // detected without being followed: traversing through a
+        // directory symlink risks cycles, and listing a file symlink
+        // can crash the editor on open (broken target / target is a
+        // directory bubbles an io::Error out of the prompt path).
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_files(root, &path, out, depth + 1, ignore);
             continue;
         }
-        if !path.is_file() {
+        if !file_type.is_file() {
             continue;
         }
         let rel = path.strip_prefix(root).ok().and_then(|p| p.to_str());
