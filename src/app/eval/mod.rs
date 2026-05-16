@@ -39,6 +39,19 @@ impl App {
             );
         }
 
+        // `:s/...` / `:%s/...` — substitute. Intercepted before the
+        // `CommandBind` table because the head has no leading-word
+        // boundary to split on (e.g. `s/foo/bar/g` is one token).
+        if crate::editor::parse_substitute(cmd).is_some() {
+            return self.evaluate(
+                Expr::Direct {
+                    kind: DirectKind::Substitute,
+                    count: 1,
+                },
+                Ctx::with_rest(cmd),
+            );
+        }
+
         let (head, rest) = match cmd.split_once(' ') {
             Some((h, r)) => (h, r.trim()),
             None => (cmd, ""),

@@ -288,6 +288,11 @@ pub enum DirectKind {
     /// painting matches. The pattern goes back to empty; `n` / `N`
     /// after this do nothing until a new search is performed.
     ClearSearch,
+    /// `:s/pat/repl/[g]` / `:%s/pat/repl/[g]` — substitute. The full
+    /// command line (e.g. `s/foo/bar/g` or `%s/foo/bar/g`) is passed
+    /// through `Ctx::rest`; parsing and execution happen in the
+    /// handler.
+    Substitute,
     /// `+` — multi-cursor: find the next occurrence of the word under
     /// the cursor, push the current primary into `extra_cursors`, and
     /// jump primary to the match. Also seeds the search pattern so

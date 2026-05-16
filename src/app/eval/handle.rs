@@ -230,6 +230,7 @@ impl App {
                     forward: true,
                 });
             }
+            D::Substitute => run_substitute(self, ctx.rest, &mut cmds),
             D::MultiCursorAddNext => add_next_cursor(self, &mut cmds),
             D::MultiCursorPop => {
                 if let Some(c) = self.buffer.extra_cursors.pop() {
@@ -703,10 +704,69 @@ pub(super) fn expr_modifies_buffer(expr: &Expr) -> bool {
                 | D::SubstituteLine
                 | D::ReplaceChar { .. }
                 | D::ToggleComment
+                | D::Substitute
         ),
         Expr::Motion(_) => false,
         Expr::Op { op, .. } => !matches!(op, Operator::Yank),
     }
+}
+
+/// Body of `:s/pat/repl/[g]` and `:%s/...`. Parses the raw command
+/// string off `ctx.rest`, falls back to the active search pattern when
+/// the user passed an empty pattern (vim convention: `:%s//new/g`
+/// after a `/old`), applies the substitution against the buffer, and
+/// pushes a status toast plus a `SetSearch` so `n`/`hlsearch` track
+/// what was replaced.
+fn run_substitute(app: &mut App, raw: &str, cmds: &mut Vec<Cmd>) {
+    let Some(parsed) = crate::editor::parse_substitute(raw) else {
+        cmds.push(Cmd::ToastError("usage: :s/pat/repl/[g]".into()));
+        return;
+    };
+    let args = match parsed {
+        Ok(a) => a,
+        Err(msg) => {
+            cmds.push(Cmd::ToastError(msg.into()));
+            return;
+        }
+    };
+
+    // Empty pattern → reuse the last search pattern. Saves typing
+    // after `/foo<CR>:%s//bar/g`.
+    let fallback;
+    let pattern = if args.pattern.is_empty() {
+        if app.search.query.is_empty() {
+            cmds.push(Cmd::ToastError("no previous search pattern".into()));
+            return;
+        }
+        fallback = app.search.query.clone();
+        fallback.as_str()
+    } else {
+        args.pattern
+    };
+
+    let resolved = crate::editor::SubsArgs {
+        range: args.range,
+        pattern,
+        replacement: args.replacement,
+        global: args.global,
+    };
+    let outcome = app.buffer.substitute(&resolved);
+
+    if outcome.matches == 0 {
+        cmds.push(Cmd::ToastError(format!("pattern not found: {}", pattern)));
+        return;
+    }
+    cmds.push(Cmd::SetSearch {
+        pattern: pattern.to_string(),
+        forward: true,
+    });
+    cmds.push(Cmd::ToastInfo(format!(
+        "{} substitution{} on {} line{}",
+        outcome.matches,
+        if outcome.matches == 1 { "" } else { "s" },
+        outcome.lines_changed,
+        if outcome.lines_changed == 1 { "" } else { "s" },
+    )));
 }
 
 /// Look up the active buffer's language comment token. Returns `None`

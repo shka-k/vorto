@@ -23,10 +23,12 @@ mod insert;
 mod motion;
 mod ops;
 mod search;
+mod substitute;
 mod text_object;
 mod vcs_link;
 
 pub use search::SearchState;
+pub use substitute::{SubsArgs, parse_substitute};
 
 use std::cell::{Cell, RefCell};
 use std::fs;
@@ -318,6 +320,13 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(s.len())
+}
+
+/// Inverse of [`char_to_byte`]. Counts the chars up to (but not
+/// including) `byte_idx`. The caller is responsible for ensuring
+/// `byte_idx` falls on a char boundary.
+fn byte_to_char(s: &str, byte_idx: usize) -> usize {
+    s[..byte_idx].chars().count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
