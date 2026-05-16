@@ -53,10 +53,21 @@ impl App {
             .rev()
             .find(|r| *r != &current_ref)
             .cloned();
-        // Drop the deleted buffer from all bookkeeping.
+        // Drop the deleted buffer from all bookkeeping. For
+        // file-backed buffers we also tell every LSP client to
+        // forget about the document — `:bd` is the one path where
+        // the buffer truly goes away, so the server should release
+        // its copy. Plain `detach_current` would leave the URI
+        // `didOpen`'d (the right call for plain buffer switches,
+        // see [`LspCoordinator::detach_current`]).
         self.opened_paths.retain(|r| r != &current_ref);
         self.sleeping.remove(&current_ref);
-        self.lsp.detach_current();
+        if let BufferRef::File(path) = &current_ref {
+            let uri = crate::lsp::path_to_uri(path);
+            self.lsp.close_uri(&uri);
+        } else {
+            self.lsp.detach_current();
+        }
 
         match target {
             Some(BufferRef::Scratch(id)) => {

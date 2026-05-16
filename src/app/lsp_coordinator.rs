@@ -176,6 +176,15 @@ struct Pending {
 pub struct LspCoordinator {
     /// Live LSP clients, keyed by `client_key` (see [`client_key`]).
     clients: HashMap<String, LspClient>,
+    /// Every URI we've sent `textDocument/didOpen` for, mapped to the
+    /// list of `client_key`s currently holding it open. Buffer switches
+    /// no longer `didClose` — we keep the server's view of every
+    /// visited buffer alive so workspace-wide diagnostics survive
+    /// while the buffer sleeps in vorto's parked/sleeping pool. Only
+    /// `:bd` (or the client dying) sends `didClose` and removes the
+    /// entry here. Used by `did_open` to skip a no-op re-open and by
+    /// the workspace diagnostics picker via `all_diagnostics`.
+    open_uris: HashMap<String, Vec<String>>,
     /// Diagnostics keyed first by URI, then by the client that
     /// published them. Merged across clients on read so the UI sees
     /// every server's findings at once. `publishDiagnostics` is
@@ -206,6 +215,7 @@ impl LspCoordinator {
     pub fn new(event_tx: Sender<AppEvent>, startup_cwd: PathBuf) -> Self {
         Self {
             clients: HashMap::new(),
+            open_uris: HashMap::new(),
             diagnostics: HashMap::new(),
             pending: HashMap::new(),
             groups: HashMap::new(),
@@ -321,19 +331,34 @@ impl LspCoordinator {
         Some(out)
     }
 
-    /// Tell every client attached to the current document that we're
-    /// done with it. No-op when nothing is attached.
+    /// Drop the "current document" pointers without telling the
+    /// servers anything. The URI stays in `open_uris` so the server's
+    /// view of the buffer (and its diagnostics) survives the switch —
+    /// `<space>D` then sees every visited file, not just the active
+    /// one. Use [`Self::close_uri`] when the buffer is actually being
+    /// destroyed (`:bd`).
     pub fn detach_current(&mut self) {
-        let Some(uri) = self.current_uri.take() else {
-            return;
-        };
-        let clients = std::mem::take(&mut self.current_clients);
-        for key in &clients {
-            if let Some(client) = self.clients.get_mut(key) {
-                let _ = client.did_close(&uri);
+        self.current_uri = None;
+        self.current_clients.clear();
+        self.current_language = None;
+    }
+
+    /// Explicitly tear down a URI's didOpen state across every client
+    /// that has it open. Sends `didClose`, removes the URI from
+    /// `open_uris`, and drops its diagnostics. Called by `:bd` so the
+    /// server can release its copy when the buffer is gone for good.
+    pub fn close_uri(&mut self, uri: &str) {
+        if let Some(client_keys) = self.open_uris.remove(uri) {
+            for key in &client_keys {
+                if let Some(client) = self.clients.get_mut(key) {
+                    let _ = client.did_close(uri);
+                }
             }
         }
-        self.current_language = None;
+        self.diagnostics.remove(uri);
+        if self.current_uri.as_deref() == Some(uri) {
+            self.detach_current();
+        }
     }
 
     /// Returns `true` when a client for `client_key` is already attached.
@@ -375,9 +400,14 @@ impl LspCoordinator {
         &self.startup_cwd
     }
 
-    /// Send `didOpen` for `path` against `client_key`. Sets the document
-    /// as the current one and records the client as active. No-op when
-    /// the client is missing.
+    /// Send `didOpen` for `path` against `client_key` and mark it as
+    /// the current document. When `client_key` already holds this URI
+    /// open (the user is switching back to an already-visited buffer)
+    /// the LSP notification is skipped — re-sending `didOpen` for an
+    /// already-open document is forbidden by the spec and would make
+    /// servers like tsserver reject the request. Either way the
+    /// "current document" pointers are repointed so subsequent
+    /// `did_change` / requests target this URI.
     pub fn did_open(
         &mut self,
         client_key: &str,
@@ -386,8 +416,18 @@ impl LspCoordinator {
         text: &str,
     ) -> Result<()> {
         let uri = lsp::path_to_uri(path);
-        if let Some(client) = self.clients.get_mut(client_key) {
+        let already_open = self
+            .open_uris
+            .get(&uri)
+            .is_some_and(|keys| keys.iter().any(|k| k == client_key));
+        if !already_open
+            && let Some(client) = self.clients.get_mut(client_key)
+        {
             client.did_open(&uri, text)?;
+            self.open_uris
+                .entry(uri.clone())
+                .or_default()
+                .push(client_key.to_string());
         }
         self.current_uri = Some(uri);
         self.current_language = Some(lang_name.to_string());
@@ -908,6 +948,14 @@ impl LspCoordinator {
             slices.remove(client_key);
         }
         self.diagnostics.retain(|_, slices| !slices.is_empty());
+        // The dead client no longer holds anything open — drop its
+        // entries so a future `did_open` for a previously-visited URI
+        // re-fires (against whichever client picks the language up
+        // next) instead of being skipped as a duplicate.
+        for keys in self.open_uris.values_mut() {
+            keys.retain(|k| k != client_key);
+        }
+        self.open_uris.retain(|_, keys| !keys.is_empty());
     }
 
     pub fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> Result<WorkspaceEditResult> {
