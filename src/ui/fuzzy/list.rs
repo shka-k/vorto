@@ -158,14 +158,18 @@ fn render_match<'a>(
         FuzzyKind::Files { .. } | FuzzyKind::Buffers => {
             chars.iter().rposition(|c| *c == '/').map(|i| i + 1)
         }
-        FuzzyKind::Locations | FuzzyKind::WorkspaceSearch => {
+        FuzzyKind::Locations
+        | FuzzyKind::WorkspaceSearch
+        | FuzzyKind::Diagnostics { workspace: true } => {
             let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
             chars[..path_end]
                 .iter()
                 .rposition(|c| *c == '/')
                 .map(|i| i + 1)
         }
-        FuzzyKind::Lines => None,
+        // Current-buffer diagnostics start with `line:col` — no path to
+        // color as directory.
+        FuzzyKind::Lines | FuzzyKind::Diagnostics { workspace: false } => None,
     };
 
     // Head-truncate when the item is longer than the available width so

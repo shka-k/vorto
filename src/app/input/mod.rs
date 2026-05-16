@@ -19,7 +19,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::PromptKind;
 use crate::finder::{FuzzyKind, IgnoreOpts, workspace_files};
-use crate::lsp::{Location, Position, Range, path_to_uri};
+use crate::lsp::{Location, Position, Range, Severity, path_to_uri, uri_to_path};
 use crate::mode::Mode;
 
 use crate::buffer_ref::BufferRef;
@@ -117,7 +117,79 @@ impl App {
             // empty picker that would do nothing useful on submit.
             PromptKind::Fuzzy(FuzzyKind::Locations) => {}
             PromptKind::Fuzzy(FuzzyKind::WorkspaceSearch) => self.open_workspace_search(),
+            PromptKind::Fuzzy(FuzzyKind::Diagnostics { workspace }) => {
+                self.open_diagnostics_picker(workspace)
+            }
         }
+    }
+
+    /// `<space>d` / `<space>D` — build the diagnostics picker.
+    ///
+    /// `workspace == false` lists every diagnostic for the current
+    /// buffer (display: `line:col [sev] message`); `workspace == true`
+    /// folds in every URI the coordinator has diagnostics for and
+    /// prepends a relative path. Both go through the same `Location`
+    /// side-channel as references, so submit fires `JumpToLocation`.
+    fn open_diagnostics_picker(&mut self, workspace: bool) {
+        let mut items: Vec<String> = Vec::new();
+        let mut locations: Vec<Location> = Vec::new();
+
+        if workspace {
+            let root = self.startup_cwd.clone();
+            for (uri, diags) in self.all_diagnostics() {
+                let label = relative_uri_label(&uri, &root);
+                for d in diags {
+                    items.push(format!(
+                        "{}:{}:{} [{}] {}",
+                        label,
+                        d.range.start.line + 1,
+                        d.range.start.character + 1,
+                        severity_tag(d.severity),
+                        d.message.replace('\n', " ")
+                    ));
+                    locations.push(Location {
+                        uri: uri.clone(),
+                        range: d.range,
+                    });
+                }
+            }
+        } else {
+            let uri = match self
+                .buffer
+                .path
+                .as_ref()
+                .map(|p| path_to_uri(p))
+            {
+                Some(u) => u,
+                None => {
+                    self.push_toast(crate::app::Toast::info("no diagnostics"));
+                    return;
+                }
+            };
+            let Some(diags) = self.current_diagnostics() else {
+                self.push_toast(crate::app::Toast::info("no diagnostics"));
+                return;
+            };
+            for d in diags {
+                items.push(format!(
+                    "{}:{} [{}] {}",
+                    d.range.start.line + 1,
+                    d.range.start.character + 1,
+                    severity_tag(d.severity),
+                    d.message.replace('\n', " ")
+                ));
+                locations.push(Location {
+                    uri: uri.clone(),
+                    range: d.range,
+                });
+            }
+        }
+
+        if items.is_empty() {
+            self.push_toast(crate::app::Toast::info("no diagnostics"));
+            return;
+        }
+        self.prompt.open_diagnostics(items, locations, workspace);
     }
 
     /// Build the MRU display list and open the buffer picker. Shows
@@ -274,6 +346,33 @@ impl App {
         }
         self.prompt
             .open_workspace_search(items, file_lines, locations);
+    }
+}
+
+/// Render the `path` portion of a workspace-diagnostic entry. Strips
+/// the workspace root and canonicalises both sides so symlinked paths
+/// don't surface as absolute. Falls back to the raw URI when the
+/// scheme isn't `file://`.
+fn relative_uri_label(uri: &str, root: &std::path::Path) -> String {
+    let Some(path) = uri_to_path(uri) else {
+        return uri.to_string();
+    };
+    let path_c = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let root_c = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    path_c
+        .strip_prefix(&root_c)
+        .unwrap_or(&path_c)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// One-letter severity badge for the picker — `E` / `W` / `I` / `H`.
+fn severity_tag(sev: Severity) -> char {
+    match sev {
+        Severity::Error => 'E',
+        Severity::Warning => 'W',
+        Severity::Info => 'I',
+        Severity::Hint => 'H',
     }
 }
 

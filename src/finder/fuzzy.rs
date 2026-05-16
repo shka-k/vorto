@@ -53,6 +53,14 @@ pub enum FuzzyKind {
     /// parallel `buffer_paths` Vec for the absolute path to actually
     /// open on selection.
     Buffers,
+    /// LSP diagnostics picker. Same wiring as [`Locations`] — the
+    /// caller supplies display strings and a parallel `Vec<Location>`
+    /// on the prompt controller; submit fires `JumpToLocation`. The
+    /// `workspace` flag toggles between "current buffer only" and
+    /// "every URI the coordinator has diagnostics for" so the title
+    /// and item formatting can differ without duplicating the picker
+    /// plumbing.
+    Diagnostics { workspace: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +185,24 @@ impl Finder {
     pub fn locations(items: Vec<String>) -> Self {
         let mut f = Self {
             kind: FuzzyKind::Locations,
+            query: String::new(),
+            items,
+            file_lines: Vec::new(),
+            matches: Vec::new(),
+            selected: 0,
+            cursor: 0,
+        };
+        f.refilter();
+        f
+    }
+
+    /// Build a [`FuzzyKind::Diagnostics`] picker. Plumbing matches
+    /// [`Self::locations`] — `items` are the display strings and the
+    /// caller is responsible for stashing the parallel `Location`s on
+    /// the prompt controller.
+    pub fn diagnostics(items: Vec<String>, workspace: bool) -> Self {
+        let mut f = Self {
+            kind: FuzzyKind::Diagnostics { workspace },
             query: String::new(),
             items,
             file_lines: Vec::new(),

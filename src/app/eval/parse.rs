@@ -19,8 +19,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{DirectKind, Expr, MotionExpr, MotionKind, Operator, Target, Token};
 use crate::config::{
-    CTRL_W_BINDINGS, GOTO_BINDINGS, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
-    WINDOW_BINDINGS, Z_BINDINGS,
+    BRACKET_NEXT_BINDINGS, BRACKET_PREV_BINDINGS, CTRL_W_BINDINGS, GOTO_BINDINGS, KeySig, Keymap,
+    OBJECT_BINDINGS, OP_PENDING_BINDINGS, WINDOW_BINDINGS, Z_BINDINGS,
 };
 use crate::mode::Mode;
 
@@ -64,6 +64,11 @@ enum ParseCtx {
     /// `CTRL_W_BINDINGS` (vim's window-prefix chord — h/j/k/l move
     /// focus, v / s split, c close, w cycle).
     CtrlWPending,
+    /// Right after `]` or `[`. The follower picks a "next/prev X"
+    /// target (currently just `d` for diagnostics). Which table is
+    /// consulted depends on the prefix's direction, read back off
+    /// the token stack in [`bracket_pending_token`].
+    BracketPending,
 }
 
 /// Decide which tokenization context the next key falls into by looking
@@ -89,6 +94,7 @@ fn context_of(prev: &[Token]) -> ParseCtx {
         Some(ZPrefix) => ParseCtx::ZPending,
         Some(WindowPrefix) => ParseCtx::WindowPending,
         Some(CtrlWPrefix) => ParseCtx::CtrlWPending,
+        Some(BracketPrefix { .. }) => ParseCtx::BracketPending,
         // After Motion/Direct/Object/SelfDouble the command is already
         // Complete; we shouldn't be tokenizing in those contexts.
         _ => ParseCtx::Initial,
@@ -154,7 +160,25 @@ pub(in crate::app) fn tokenize(
         ParseCtx::ZPending => z_pending_token(code),
         ParseCtx::WindowPending => window_pending_token(code),
         ParseCtx::CtrlWPending => ctrl_w_pending_token(code),
+        ParseCtx::BracketPending => bracket_pending_token(code, prev),
     }
+}
+
+/// Resolve the follower after `]` or `[`. Direction is read back off
+/// the token stack: the most recent `BracketPrefix` carries `forward`,
+/// which picks between [`BRACKET_NEXT_BINDINGS`] and
+/// [`BRACKET_PREV_BINDINGS`].
+fn bracket_pending_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
+    let forward = prev.iter().rev().find_map(|t| match t {
+        Token::BracketPrefix { forward } => Some(*forward),
+        _ => None,
+    })?;
+    let table = if forward {
+        BRACKET_NEXT_BINDINGS
+    } else {
+        BRACKET_PREV_BINDINGS
+    };
+    table.iter().find(|b| b.matches(code)).map(|b| b.token)
 }
 
 fn window_pending_token(code: crossterm::event::KeyCode) -> Option<Token> {
@@ -328,6 +352,14 @@ fn build_expr(tokens: &[Token]) -> Option<Expr> {
             count: outer_count,
         }),
 
+        // `]d` / `[d` — bracket prefix followed by a direction-baked
+        // direct from `BRACKET_*_BINDINGS`. The prefix dropped at the
+        // AST level; direction lives inside `d` itself.
+        [BracketPrefix { .. }, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
+
         // gg → file start (with optional count: 5gg = goto line 5)
         [GotoPrefix, GotoPrefix] => Some(Expr::Motion(MotionExpr {
             motion: MotionKind::FileStart,
@@ -450,6 +482,7 @@ fn is_valid_prefix(tokens: &[Token]) -> bool {
         [LeaderPrefix, WindowPrefix] => true,   // <space>w waiting for v/h/c/o/arrow
         [CtrlWPrefix] => true,                  // <C-w> waiting for follower
         [GotoPrefix] => true,                   // g waiting for the second g
+        [BracketPrefix { .. }] => true,         // ] or [ waiting for the follower
         [ZPrefix] => true,                      // z waiting for z/t/b
         [FindCharPrefix { .. }] => true,        // f/F/t/T waiting for the literal char
         [ReplaceCharPrefix] => true,            // r waiting for the replacement

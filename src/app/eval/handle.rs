@@ -216,6 +216,9 @@ impl App {
             D::Rename => cmds.push(Cmd::OpenRenamePrompt),
             D::CodeAction => cmds.push(Cmd::LspCodeAction),
             D::Hover => cmds.push(Cmd::LspHover),
+            D::GotoDiagnostic { forward } => {
+                cmds.push(Cmd::GotoDiagnostic { forward, count });
+            }
             // Intercepted by `App::evaluate` before reaching here.
             D::RepeatLast => unreachable!("RepeatLast handled in App::evaluate"),
             D::SearchSelectNext { reverse } => {

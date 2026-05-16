@@ -29,7 +29,7 @@ pub(super) fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area
         FuzzyKind::Lines => {
             preview_from_buffer(f, app, area, sel.idx);
         }
-        FuzzyKind::Locations => {
+        FuzzyKind::Locations | FuzzyKind::Diagnostics { .. } => {
             let Some(loc) = app.prompt.locations().get(sel.idx) else {
                 return;
             };

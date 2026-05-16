@@ -60,6 +60,7 @@ impl App {
             Cmd::LspFindReferences => self.lsp_find_references(),
             Cmd::LspCodeAction => self.lsp_code_action(),
             Cmd::LspHover => self.lsp_hover(),
+            Cmd::GotoDiagnostic { forward, count } => self.run_goto_diagnostic(forward, count),
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
             Cmd::NewScratchBuffer => {
@@ -106,6 +107,68 @@ impl App {
         self.visual_anchor = Some(crate::editor::Cursor { row: 0, col: 0 });
         self.mode = crate::mode::Mode::VisualLine;
         self.buffer.cursor = crate::editor::Cursor { row: last, col: 0 };
+    }
+
+    /// `]d` / `[d` — move the cursor to the next/previous LSP
+    /// diagnostic in the current buffer. Diagnostics are sorted by
+    /// `(line, column)` upstream (in `lsp_coordinator`), so the walk
+    /// is just a linear scan. Wraps at the buffer boundary so repeated
+    /// presses cycle. Centers the viewport on the landing position
+    /// and surfaces the diagnostic message as an info toast — the
+    /// inline marker would otherwise be the only feedback that the
+    /// jump fired, and that's easy to miss after a long jump.
+    fn run_goto_diagnostic(&mut self, forward: bool, count: u32) {
+        let Some(diags) = self.current_diagnostics() else {
+            self.push_toast(Toast::info("no diagnostics"));
+            return;
+        };
+        if diags.is_empty() {
+            self.push_toast(Toast::info("no diagnostics"));
+            return;
+        }
+        let n = diags.len();
+        let cur = self.buffer.cursor;
+        // Index of the next match in `forward` direction strictly past
+        // the cursor; falls back to wrap-around when the cursor sits
+        // at/after the last (forward) or at/before the first (back).
+        let start = if forward {
+            diags
+                .iter()
+                .position(|d| {
+                    let p = d.range.start;
+                    (p.line as usize, p.character as usize) > (cur.row, cur.col)
+                })
+                .unwrap_or(0)
+        } else {
+            diags
+                .iter()
+                .rposition(|d| {
+                    let p = d.range.start;
+                    (p.line as usize, p.character as usize) < (cur.row, cur.col)
+                })
+                .unwrap_or(n - 1)
+        };
+        // Count: walk `count - 1` more steps in the same direction,
+        // wrapping. count == 0 shouldn't reach here (the parser maps
+        // bare `]d` to count == 1) but guard with max(1) just in case.
+        let steps = count.max(1) as usize - 1;
+        let idx = if forward {
+            (start + steps) % n
+        } else {
+            // (start - steps) mod n, computed without going negative.
+            (start + n - (steps % n)) % n
+        };
+        let target = &diags[idx];
+        // Clamp against the live buffer — servers occasionally publish
+        // diagnostics that point past EOF (in-flight edits race against
+        // the next `publishDiagnostics`).
+        let last_row = self.buffer.lines.len().saturating_sub(1);
+        let row = (target.range.start.line as usize).min(last_row);
+        let col = target.range.start.character as usize;
+        self.buffer.cursor = crate::editor::Cursor { row, col };
+        self.buffer.clamp_col(false);
+        self.run_scroll(ScrollAnchor::Center);
+        self.push_toast(Toast::info(target.message.clone()));
     }
 
     fn run_jump_search(&mut self, forward: bool) {

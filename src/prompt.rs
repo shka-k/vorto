@@ -433,6 +433,19 @@ impl PromptController {
         self.state = Prompt::Fuzzy(Finder::locations(items));
     }
 
+    /// `<space>d` / `<space>D` — diagnostics picker. Same `Location`
+    /// side-channel as references; only the picker kind (and therefore
+    /// the title / formatting) differs.
+    pub fn open_diagnostics(
+        &mut self,
+        items: Vec<String>,
+        locations: Vec<Location>,
+        workspace: bool,
+    ) {
+        self.locations = locations;
+        self.state = Prompt::Fuzzy(Finder::diagnostics(items, workspace));
+    }
+
     /// `<space>/` — workspace-wide content picker. One candidate per
     /// file; on each keystroke, the Finder scans every line of every
     /// file and exposes the matched line numbers via
@@ -617,7 +630,7 @@ impl PromptController {
                 PromptOutcome::OpenRelativeFile(finder.items[sel.idx].clone())
             }
             FuzzyKind::Lines => PromptOutcome::GotoLine(sel.idx),
-            FuzzyKind::Locations => {
+            FuzzyKind::Locations | FuzzyKind::Diagnostics { .. } => {
                 let loc = self.locations.get(sel.idx).cloned();
                 self.locations.clear();
                 match loc {

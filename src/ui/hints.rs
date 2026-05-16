@@ -11,8 +11,8 @@ use crate::action::{Operator, Token};
 use crate::app::App;
 use crate::config::COMMAND_BINDS;
 use crate::config::{
-    CTRL_W_BINDINGS, GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
-    WINDOW_BINDINGS, Z_BINDINGS,
+    BRACKET_NEXT_BINDINGS, BRACKET_PREV_BINDINGS, CTRL_W_BINDINGS, GOTO_BINDINGS, LEADER_DEFAULTS,
+    OBJECT_BINDINGS, OP_PENDING_BINDINGS, WINDOW_BINDINGS, Z_BINDINGS,
 };
 use crate::prompt::{CommandPrompt, CompletionKind};
 
@@ -257,6 +257,20 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
                 .map(|b| (display_key(b.key), b.label))
                 .collect(),
         ),
+        Token::BracketPrefix { forward } => {
+            let (name, table) = if *forward {
+                ("next", BRACKET_NEXT_BINDINGS)
+            } else {
+                ("prev", BRACKET_PREV_BINDINGS)
+            };
+            (
+                name,
+                table
+                    .iter()
+                    .map(|b| (display_key(b.key), b.label))
+                    .collect(),
+            )
+        }
         Token::FindCharPrefix { forward, till } => {
             let label = match (forward, till) {
                 (true, false) => "type char to find forward",

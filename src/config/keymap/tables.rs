@@ -393,6 +393,22 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             label: "code action (lsp)",
         },
         Binding {
+            key: KeyCode::Char('d'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Diagnostics {
+                workspace: false,
+            }))),
+            label: "diagnostics (buffer)",
+        },
+        Binding {
+            key: KeyCode::Char('D'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Diagnostics {
+                workspace: true,
+            }))),
+            label: "diagnostics (workspace)",
+        },
+        Binding {
             key: KeyCode::Char('K'),
             aliases: &[KeyCode::Char('k')],
             token: Dir(D::Hover),
@@ -499,6 +515,33 @@ pub const CTRL_W_BINDINGS: &[Binding] = {
             label: "close pane",
         },
     ]
+};
+
+/// Keys valid in the `BracketPending` context (right after `]`). One
+/// row per "jump to next X" target. The mirror `[` table lives in
+/// [`BRACKET_PREV_BINDINGS`] and binds the same key to the backward
+/// variant of the same direct.
+pub const BRACKET_NEXT_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use Token::Direct as Dir;
+    &[Binding {
+        key: KeyCode::Char('d'),
+        aliases: &[],
+        token: Dir(D::GotoDiagnostic { forward: true }),
+        label: "next diagnostic (lsp)",
+    }]
+};
+
+/// Mirror of [`BRACKET_NEXT_BINDINGS`] for the `[` prefix.
+pub const BRACKET_PREV_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use Token::Direct as Dir;
+    &[Binding {
+        key: KeyCode::Char('d'),
+        aliases: &[],
+        token: Dir(D::GotoDiagnostic { forward: false }),
+        label: "prev diagnostic (lsp)",
+    }]
 };
 
 /// Keys valid in the `WindowPending` context (right after `<space>w`).
@@ -746,6 +789,8 @@ impl Keymap {
             ),
             (KeyCode::Char('.'), Direct(D::RepeatLast)),
             (KeyCode::Char('g'), GotoPrefix),
+            (KeyCode::Char(']'), BracketPrefix { forward: true }),
+            (KeyCode::Char('['), BracketPrefix { forward: false }),
             // `K` — LSP hover popup for the symbol under the cursor.
             // Matches vim's `K` (which runs `man`-style lookups by
             // default) and helix's binding.

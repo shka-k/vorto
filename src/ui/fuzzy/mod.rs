@@ -28,6 +28,8 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
         FuzzyKind::Locations => " references ",
         FuzzyKind::WorkspaceSearch => " fuzzy: workspace ",
         FuzzyKind::Buffers => " fuzzy: buffers ",
+        FuzzyKind::Diagnostics { workspace: false } => " diagnostics ",
+        FuzzyKind::Diagnostics { workspace: true } => " diagnostics: workspace ",
     };
     let total = finder.matches.len();
     let footer = format!(" {}/{} ", finder.selected + 1, total.max(1));

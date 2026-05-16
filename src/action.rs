@@ -53,6 +53,11 @@ pub enum Token {
     ///
     /// [`WindowPrefix`]: Token::WindowPrefix
     CtrlWPrefix,
+    /// `]` / `[` — bracket-prefix for next/previous-style jumps
+    /// (`]d` / `[d` for diagnostics, room for `]c` / `[c` etc.).
+    /// Direction is baked into the prefix so the body bindings can
+    /// stay direction-free.
+    BracketPrefix { forward: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +326,11 @@ pub enum DirectKind {
     /// `:close` / `<space>w c` — close the active pane (refuses on
     /// the last remaining pane; `:q` is the right tool there).
     CloseWindow,
+    /// `]d` / `[d` — jump to the next / previous LSP diagnostic in the
+    /// current buffer. Wraps around at the end / start of the buffer.
+    GotoDiagnostic {
+        forward: bool,
+    },
     /// Move focus to the pane lying in the given cardinal direction.
     /// Used by `Ctrl-W h/j/k/l` and `<space>w` arrow keys.
     FocusWindow {

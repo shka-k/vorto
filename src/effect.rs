@@ -102,6 +102,10 @@ pub enum Cmd {
     LspCodeAction,
     /// `K` — `textDocument/hover` for the symbol under the cursor.
     LspHover,
+    /// `]d` / `[d` — jump the cursor to the next / previous LSP
+    /// diagnostic in the current buffer. `count` walks N items in
+    /// the requested direction.
+    GotoDiagnostic { forward: bool, count: u32 },
 
     // ── Multi-buffer / lifecycle ─────────────────────────────
     BufferCycle {

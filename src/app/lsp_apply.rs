@@ -295,6 +295,13 @@ impl App {
     pub fn current_diagnostics(&self) -> Option<Vec<Diagnostic>> {
         self.lsp.current_diagnostics()
     }
+
+    /// Workspace-wide diagnostics — see
+    /// [`crate::app::lsp_coordinator::LspCoordinator::all_diagnostics`]
+    /// for the merge / ordering contract.
+    pub fn all_diagnostics(&self) -> Vec<(String, Vec<Diagnostic>)> {
+        self.lsp.all_diagnostics()
+    }
 }
 
 /// Render a `path:line:col` label for an LSP `Location`. Used to

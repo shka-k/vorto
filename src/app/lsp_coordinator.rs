@@ -274,6 +274,34 @@ impl LspCoordinator {
         })
     }
 
+    /// Every (uri, diagnostic) pair the coordinator currently holds,
+    /// merged across clients and sorted within each URI. Used by the
+    /// workspace diagnostics picker; cloned because storage is keyed
+    /// per-client and the caller wants a flat owned list.
+    ///
+    /// URI ordering is alphabetical so the picker order is stable
+    /// across runs (`HashMap` iteration would otherwise reshuffle
+    /// every restart).
+    pub fn all_diagnostics(&self) -> Vec<(String, Vec<Diagnostic>)> {
+        let mut out: Vec<(String, Vec<Diagnostic>)> = self
+            .diagnostics
+            .iter()
+            .filter_map(|(uri, per_client)| {
+                let mut merged: Vec<Diagnostic> = per_client
+                    .values()
+                    .flat_map(|v| v.iter().cloned())
+                    .collect();
+                if merged.is_empty() {
+                    return None;
+                }
+                merged.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+                Some((uri.clone(), merged))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// Merged diagnostics across all clients for the current buffer's
     /// URI, if any. Cloned into an owned Vec because the underlying
     /// storage is per-client and we have to fold across that on read.
