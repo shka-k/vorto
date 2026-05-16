@@ -241,17 +241,31 @@ impl App {
     /// the renderer should skip it; the main loop also reads this to
     /// pick a `recv_timeout` so the toast vanishes on its own rather
     /// than lingering until the next keypress.
+    ///
+    /// Error-level toasts are sticky — they return a placeholder long
+    /// duration so the renderer keeps them on screen until the user
+    /// dismisses with `Esc`. The user needs time to read the message,
+    /// and the message is often too long to absorb in three seconds.
     pub fn toast_remaining(&self) -> Option<std::time::Duration> {
-        const TTL: std::time::Duration = std::time::Duration::from_secs(3);
         if self.toast.text().is_empty() {
             return None;
         }
+        if self.toast.level() == Level::Error {
+            return Some(std::time::Duration::from_secs(3600));
+        }
+        const TTL: std::time::Duration = std::time::Duration::from_secs(3);
         let elapsed = self.toast.shown_at().elapsed();
         if elapsed >= TTL {
             None
         } else {
             Some(TTL - elapsed)
         }
+    }
+
+    /// Drop the current toast immediately, regardless of TTL. Used by
+    /// the Esc handler to dismiss sticky error toasts.
+    pub fn clear_toast(&mut self) {
+        self.toast = Toast::info("");
     }
 
     /// Visual column (0-based cell offset, not char index) of the

@@ -137,6 +137,9 @@ impl App {
                     let source = self.buffer.lines.join("\n");
                     h.refresh(&source, self.buffer.version);
                 }
+                if let Some(msg) = h.warnings.drain(..).next() {
+                    self.toast = Toast::error(msg);
+                }
                 self.buffer.highlighter = Some(h);
             }
             Err(e) => {

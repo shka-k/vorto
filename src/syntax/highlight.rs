@@ -35,6 +35,11 @@ pub struct Highlighter {
     source: String,
     parsed_version: Option<u64>,
     capture_names: Vec<String>,
+    /// Non-fatal warnings collected during construction (e.g. an
+    /// `indents.scm` that failed to compile). The TUI drains these into
+    /// toasts; writing to stderr from a worker thread would corrupt the
+    /// alt-screen display.
+    pub warnings: Vec<String>,
 }
 
 impl Highlighter {
@@ -67,6 +72,7 @@ impl Highlighter {
         // we still want highlighting/textobjects to work. The
         // trailing-bracket fallback in `compute_new_line_indent`
         // keeps newline/o/O usable in this degraded state.
+        let mut warnings = Vec::new();
         let (indents, indent_capture_names) = match indents_src {
             Some(src) => match Query::new(&language, src) {
                 Ok(q) => {
@@ -74,7 +80,9 @@ impl Highlighter {
                     (Some(q), names)
                 }
                 Err(e) => {
-                    eprintln!("indents.scm compile failed, auto-indent disabled: {e}");
+                    warnings.push(format!(
+                        "indents.scm compile failed, auto-indent disabled: {e}"
+                    ));
                     (None, Vec::new())
                 }
             },
@@ -91,6 +99,7 @@ impl Highlighter {
             source: String::new(),
             parsed_version: None,
             capture_names,
+            warnings,
         })
     }
 
@@ -165,11 +174,20 @@ impl Highlighter {
     }
 
     /// True when the `indents.scm` query has an `@indent.begin` capture
-    /// whose node *opens* on `row` (i.e. the node's start row equals
-    /// `row` and the node spans more than that single row). Used by
-    /// the auto-indent path to decide whether a new line inserted
-    /// after `row` should pick up one extra indent level beyond the
-    /// row's existing leading whitespace.
+    /// whose node *opens* on `row`. Used by the auto-indent path to
+    /// decide whether a new line inserted after `row` should pick up
+    /// one extra indent level beyond the row's existing leading
+    /// whitespace.
+    ///
+    /// Two shapes are accepted:
+    /// - `start_row == row && end_row > row`: the node already has a
+    ///   body that wraps the following lines (e.g. `def f():\n    x`).
+    /// - `start_row == row && end_row == row` with an empty `body`
+    ///   child: the node is mid-construction — the user just typed
+    ///   `def f():` and hasn't filled in the body yet, so tree-sitter
+    ///   reports a zero-width body block on the same row. Without this
+    ///   branch Python auto-indent never fires while typing, only
+    ///   after-the-fact when there's already body content below.
     ///
     /// Returns `false` when no indents query is installed, the tree
     /// hasn't been built yet, or no matching capture starts on `row`.
@@ -195,7 +213,19 @@ impl Highlighter {
                 let node = cap.node;
                 let start_row = node.start_position().row;
                 let end_row = node.end_position().row;
-                if start_row == row && end_row > row {
+                if start_row != row {
+                    continue;
+                }
+                if end_row > row {
+                    return true;
+                }
+                // Same-row span: distinguish an incomplete header
+                // (empty body, user about to type it) from a true
+                // one-liner (`if x: y` — body has content, no
+                // auto-indent wanted).
+                if let Some(body) = node.child_by_field_name("body")
+                    && body.start_byte() == body.end_byte()
+                {
                     return true;
                 }
             }

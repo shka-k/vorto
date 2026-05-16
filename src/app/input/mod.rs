@@ -45,6 +45,21 @@ impl App {
             return Ok(());
         }
 
+        // Esc in Normal mode dismisses a sticky error toast before
+        // anything else. Pre-existing handlers (jump overlay, prompt)
+        // already ran above, so this only fires when the editor is
+        // genuinely idle. Other modes leave the toast alone — the user
+        // is in the middle of input and shouldn't have side effects on
+        // mode-exit Esc.
+        if matches!(self.mode, Mode::Normal)
+            && key.code == KeyCode::Esc
+            && self.toast.level() == crate::app::Level::Error
+            && !self.toast.text().is_empty()
+        {
+            self.clear_toast();
+            return Ok(());
+        }
+
         // Insert & Visual modes have small enough surfaces that they're
         // handled directly. The token pipeline is Normal-mode only — that
         // is where the rich operator/motion/text-object grammar lives.

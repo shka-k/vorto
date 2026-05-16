@@ -17,7 +17,6 @@
   (while_statement)
   (try_statement)
   (except_clause)
-  (except_group_clause)
   (finally_clause)
   (with_statement)
   (match_statement)
