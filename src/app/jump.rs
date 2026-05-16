@@ -20,7 +20,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::editor::{Buffer, Cursor};
 
-use super::{App, Status};
+use super::{App, Toast};
 
 /// Alphabet used to construct labels. Home row first, then top row,
 /// then bottom row — same ergonomics ordering hop/leap converged on.
@@ -57,7 +57,7 @@ impl App {
     pub(super) fn start_jump_label(&mut self) {
         let targets = collect_jump_targets(&self.buffer);
         if targets.is_empty() {
-            self.status = Status::info("no jump targets");
+            self.toast = Toast::info("no jump targets");
             return;
         }
         let labels = assign_labels(targets);
@@ -65,7 +65,7 @@ impl App {
             labels,
             typed_first: None,
         });
-        self.status = Status::info("jump: type label (Esc to cancel)");
+        self.toast = Toast::info("jump: type label (Esc to cancel)");
     }
 
     /// Handle a key while jump-label mode is active. Always consumes
@@ -124,12 +124,12 @@ impl App {
     fn finish_jump(&mut self, pos: Cursor) {
         self.buffer.cursor = pos;
         self.jump_state = None;
-        self.status = Status::info("");
+        self.toast = Toast::info("");
     }
 
     fn cancel_jump(&mut self) {
         self.jump_state = None;
-        self.status = Status::info("jump cancelled");
+        self.toast = Toast::info("jump cancelled");
     }
 }
 

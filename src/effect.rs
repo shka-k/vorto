@@ -33,8 +33,8 @@ pub enum ScrollAnchor {
 pub enum Cmd {
     // ── App state ────────────────────────────────────────────
     EnterMode(Mode),
-    StatusInfo(String),
-    StatusError(String),
+    ToastInfo(String),
+    ToastError(String),
 
     // ── Prompt / picker ──────────────────────────────────────
     OpenPrompt(PromptKind),

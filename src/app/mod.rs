@@ -17,7 +17,7 @@ mod lsp_request;
 mod open;
 mod runtime;
 mod sleeping;
-mod status;
+mod toast;
 mod types;
 mod workers;
 
@@ -26,7 +26,7 @@ pub use completion::CompletionState;
 pub use jump::JumpState;
 pub use lsp_coordinator::{LspCoordinator, LspEventOutcome};
 pub use sleeping::SleepingBuffer;
-pub use status::{Level, Status};
+pub use toast::{Level, Toast};
 pub use types::Selection;
 
 use crate::buffer_ref::BufferRef;
@@ -67,7 +67,7 @@ pub struct App {
     pub mode: Mode,
     pub prompt: PromptController,
     pub search: SearchState,
-    pub status: Status,
+    pub toast: Toast,
     /// Accumulated tokens since the last command fired. Cleared on
     /// Complete dispatch or Invalid parse.
     pub tokens: Vec<Token>,
@@ -188,7 +188,7 @@ impl App {
             mode: Mode::Normal,
             prompt: PromptController::new(),
             search: SearchState::default(),
-            status: Status::info("vorto — :q quit, :w save, <space>f files, <space>l lines"),
+            toast: Toast::info(""),
             tokens: Vec::new(),
             visual_anchor: None,
             config,
@@ -243,10 +243,10 @@ impl App {
     /// than lingering until the next keypress.
     pub fn toast_remaining(&self) -> Option<std::time::Duration> {
         const TTL: std::time::Duration = std::time::Duration::from_secs(3);
-        if self.status.text().is_empty() {
+        if self.toast.text().is_empty() {
             return None;
         }
-        let elapsed = self.status.shown_at().elapsed();
+        let elapsed = self.toast.shown_at().elapsed();
         if elapsed >= TTL {
             None
         } else {

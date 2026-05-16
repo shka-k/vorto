@@ -12,6 +12,8 @@
 //! - [`status`] — the one-line status bar (mode badge, status text,
 //!   diagnostic under cursor, pending count, cursor position) and the
 //!   `:` / `/` / rename command line directly under it.
+//! - [`toast`] — the floating bottom-right toast for transient
+//!   info / warn / error messages.
 //! - [`hints`] — overlay panels: `:command` autocomplete and the
 //!   which-key panel that appears while an operator is pending.
 //! - [`fuzzy`] — the fuzzy picker popup with its source-preview pane.
@@ -23,6 +25,7 @@ mod fuzzy;
 mod hints;
 mod hover;
 mod status;
+mod toast;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -48,7 +51,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     buffer::draw_buffer(f, app, chunks[0]);
     status::draw_status(f, app, chunks[1]);
     status::draw_command_line(f, app, chunks[2]);
-    status::draw_toast(f, app, chunks[0]);
+    toast::draw_toast(f, app, chunks[0]);
 
     buffer::place_cursor(f, app, chunks[0]);
 

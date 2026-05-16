@@ -19,7 +19,7 @@ pub(super) use parse::{Parse, classify, tokenize};
 
 use anyhow::Result;
 
-use super::{App, InsertRecording, Status};
+use super::{App, InsertRecording, Toast};
 use crate::action::{Ctx, DirectKind, Expr, InsertKey, LastChange, MotionExpr, MotionKind};
 use crate::config::CommandBind;
 use crate::editor::Cursor;
@@ -55,7 +55,7 @@ impl App {
                 Ctx::with_rest(rest),
             ),
             None => {
-                self.status = Status::error(format!("unknown command: {}", head));
+                self.toast = Toast::error(format!("unknown command: {}", head));
                 Ok(())
             }
         }
@@ -114,7 +114,7 @@ impl App {
     /// count overrides the recorded one (vim's behaviour for `5.`).
     fn replay_last_change(&mut self, count: u32, ctx: Ctx) -> Result<()> {
         let Some(change) = self.last_change.clone() else {
-            self.status = Status::error("nothing to repeat".to_string());
+            self.toast = Toast::error("nothing to repeat".to_string());
             return Ok(());
         };
         match change {
@@ -303,8 +303,8 @@ impl App {
                 match &cmd {
                     Cmd::EnterMode(_) if seen_mode => continue,
                     Cmd::EnterMode(_) => seen_mode = true,
-                    Cmd::StatusInfo(_) | Cmd::StatusError(_) if seen_status => continue,
-                    Cmd::StatusInfo(_) | Cmd::StatusError(_) => seen_status = true,
+                    Cmd::ToastInfo(_) | Cmd::ToastError(_) if seen_status => continue,
+                    Cmd::ToastInfo(_) | Cmd::ToastError(_) => seen_status = true,
                     Cmd::SetLastFind(_) if seen_last_find => continue,
                     Cmd::SetLastFind(_) => seen_last_find = true,
                     _ => {}

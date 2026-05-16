@@ -1,4 +1,4 @@
-//! Transient message surfaced as a top-right toast. Each constructor
+//! Transient message surfaced as a bottom-right toast. Each constructor
 //! stamps `shown_at = Instant::now()`, so the renderer and main-loop
 //! scheduler can age toasts out without any call site having to manage
 //! timestamps.
@@ -15,13 +15,13 @@ pub enum Level {
     Error,
 }
 
-pub struct Status {
+pub struct Toast {
     text: String,
     level: Level,
     shown_at: Instant,
 }
 
-impl Status {
+impl Toast {
     pub fn info(s: impl Into<String>) -> Self {
         Self::new(s, Level::Info)
     }

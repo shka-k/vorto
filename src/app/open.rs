@@ -12,7 +12,7 @@ use crate::editor::Buffer;
 
 use crate::buffer_ref::BufferRef;
 
-use super::{App, SleepingBuffer, Status};
+use super::{App, SleepingBuffer, Toast};
 
 impl App {
     /// Dispatch a buffer-picker selection. Scratch and File both go
@@ -39,7 +39,7 @@ impl App {
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.lsp.set_last_synced_version(self.buffer.version);
                 self.record_opened(BufferRef::Scratch);
-                self.status = Status::info("scratch");
+                self.toast = Toast::info("scratch");
                 Ok(())
             }
             BufferRef::File(path) => {
@@ -102,7 +102,7 @@ impl App {
             self.record_opened(key);
             self.open_gen = self.open_gen.wrapping_add(1);
             self.lsp.set_last_synced_version(self.buffer.version);
-            self.status = Status::info(format!("restored {}", path.display()));
+            self.toast = Toast::info(format!("restored {}", path.display()));
             self.spawn_highlighter_worker(&path);
             self.spawn_lsp_worker(&path);
             return Ok(());
@@ -162,10 +162,10 @@ impl App {
         // Pre-seed the LSP sync version so the first `didChange` after
         // open is a no-op when nothing has changed since load.
         self.lsp.set_last_synced_version(self.buffer.version);
-        self.status = if is_new {
-            Status::info(format!("{} [new file]", path.display()))
+        self.toast = if is_new {
+            Toast::info(format!("{} [new file]", path.display()))
         } else {
-            Status::info(format!("opened {}", path.display()))
+            Toast::info(format!("opened {}", path.display()))
         };
         // If the fuzzy preview worker already built a highlighter for
         // this path, steal it: we're about to render the buffer and the

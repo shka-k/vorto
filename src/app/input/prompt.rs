@@ -4,7 +4,7 @@
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 
-use crate::app::{App, Status, root_cause};
+use crate::app::{App, Toast, root_cause};
 use crate::prompt::PromptOutcome;
 
 impl App {
@@ -22,7 +22,7 @@ impl App {
                 if let Some(c) = self.search.find_next(&self.buffer, forward) {
                     self.buffer.cursor = c;
                 } else {
-                    self.status = Status::error("pattern not found");
+                    self.toast = Toast::error("pattern not found");
                 }
                 Ok(())
             }
@@ -41,7 +41,7 @@ impl App {
             }
             PromptOutcome::JumpToLocation(loc) => {
                 if let Err(e) = self.jump_to_location(&loc) {
-                    self.status = Status::error(format!("jump: {}", root_cause(&e)));
+                    self.toast = Toast::error(format!("jump: {}", root_cause(&e)));
                 }
                 Ok(())
             }

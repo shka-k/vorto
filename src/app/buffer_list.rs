@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::buffer_ref::BufferRef;
 use crate::editor::Buffer;
 
-use super::{App, Status, root_cause};
+use super::{App, Toast, root_cause};
 
 impl App {
     /// `:bn` / `:bp` — cycle through `opened_paths`. Same semantics
@@ -15,7 +15,7 @@ impl App {
     /// wraps to the end. No-op when there's only one buffer.
     pub fn buffer_cycle(&mut self, forward: bool) -> Result<()> {
         if self.opened_paths.len() <= 1 {
-            self.status = Status::info("only one buffer");
+            self.toast = Toast::info("only one buffer");
             return Ok(());
         }
         let current_ref = self.active_ref();
@@ -41,7 +41,7 @@ impl App {
     /// is gone, same as vim's `:bd`.
     pub fn buffer_delete(&mut self, force: bool) -> Result<()> {
         if !force && self.buffer.dirty {
-            self.status = Status::error("unsaved changes (use :bd!)");
+            self.toast = Toast::error("unsaved changes (use :bd!)");
             return Ok(());
         }
         let current_ref = self.active_ref();
@@ -68,7 +68,7 @@ impl App {
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.lsp.set_last_synced_version(self.buffer.version);
                 self.record_opened(BufferRef::Scratch);
-                self.status = Status::info("deleted, [scratch]");
+                self.toast = Toast::info("deleted, [scratch]");
                 Ok(())
             }
             Some(BufferRef::File(path)) => {
@@ -81,7 +81,7 @@ impl App {
                     self.record_opened(BufferRef::File(path.clone()));
                     self.spawn_highlighter_worker(&path);
                     self.spawn_lsp_worker(&path);
-                    self.status = Status::info(format!("deleted, restored {}", path.display()));
+                    self.toast = Toast::info(format!("deleted, restored {}", path.display()));
                 } else {
                     // Successor isn't in sleeping (rare — would mean
                     // it was evicted by MRU cap while being in the
@@ -92,7 +92,7 @@ impl App {
                             self.install_buffer(Buffer::new());
                             self.open_gen = self.open_gen.wrapping_add(1);
                             self.record_opened(BufferRef::Scratch);
-                            self.status = Status::error(format!(
+                            self.toast = Toast::error(format!(
                                 "deleted; failed to open {}: {} — using scratch",
                                 path.display(),
                                 root_cause(&e)
@@ -106,7 +106,7 @@ impl App {
                     self.lsp.set_last_synced_version(self.buffer.version);
                     self.spawn_highlighter_worker(&path);
                     self.spawn_lsp_worker(&path);
-                    self.status = Status::info(format!("deleted, opened {}", path.display()));
+                    self.toast = Toast::info(format!("deleted, opened {}", path.display()));
                 }
                 Ok(())
             }
@@ -115,7 +115,7 @@ impl App {
                 self.install_buffer(Buffer::new());
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.record_opened(BufferRef::Scratch);
-                self.status = Status::info("deleted, [scratch]");
+                self.toast = Toast::info("deleted, [scratch]");
                 Ok(())
             }
         }

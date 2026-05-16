@@ -102,7 +102,7 @@ impl App {
                     self.buffer.yank_line();
                 }
                 cmds.push(Cmd::SyncYank);
-                cmds.push(Cmd::StatusInfo("yanked".into()));
+                cmds.push(Cmd::ToastInfo("yanked".into()));
             }
             D::JoinLines => {
                 for _ in 0..count {
@@ -146,12 +146,12 @@ impl App {
             }
             D::Undo => {
                 if !self.buffer.undo() {
-                    cmds.push(Cmd::StatusError("already at oldest change".into()));
+                    cmds.push(Cmd::ToastError("already at oldest change".into()));
                 }
             }
             D::Redo => {
                 if !self.buffer.redo() {
-                    cmds.push(Cmd::StatusError("already at newest change".into()));
+                    cmds.push(Cmd::ToastError("already at newest change".into()));
                 }
             }
             D::DeleteCharUnderCursor => {
@@ -180,14 +180,14 @@ impl App {
             }),
             D::Open => {
                 if ctx.rest.is_empty() {
-                    cmds.push(Cmd::StatusError("missing path".into()));
+                    cmds.push(Cmd::ToastError("missing path".into()));
                 } else {
                     cmds.push(Cmd::OpenPath(PathBuf::from(ctx.rest)));
                 }
             }
             D::GotoLine => match ctx.rest.parse::<usize>() {
                 Ok(n) if n >= 1 => self.goto_line_n_pure(n),
-                _ => cmds.push(Cmd::StatusError("usage: :goto <line>".into())),
+                _ => cmds.push(Cmd::ToastError("usage: :goto <line>".into())),
             },
             D::GotoDefinition => cmds.push(Cmd::LspJump {
                 method: "textDocument/definition",
@@ -224,16 +224,16 @@ impl App {
                 if let Some(c) = self.buffer.extra_cursors.pop() {
                     self.buffer.cursor = c;
                 } else {
-                    cmds.push(Cmd::StatusInfo("no extra cursor to remove".into()));
+                    cmds.push(Cmd::ToastInfo("no extra cursor to remove".into()));
                 }
             }
             D::MultiCursorClear => {
                 if self.buffer.extra_cursors.is_empty() {
-                    cmds.push(Cmd::StatusInfo("no extra cursors".into()));
+                    cmds.push(Cmd::ToastInfo("no extra cursors".into()));
                 } else {
                     let n = self.buffer.extra_cursors.len();
                     self.buffer.extra_cursors.clear();
-                    cmds.push(Cmd::StatusInfo(format!("cleared {n} extra cursors")));
+                    cmds.push(Cmd::ToastInfo(format!("cleared {n} extra cursors")));
                 }
             }
             D::JumpLabel => cmds.push(Cmd::StartJumpLabel),
@@ -253,7 +253,7 @@ impl App {
                     self.buffer.cursor.col = start_col;
                     self.buffer.clamp_col(false);
                 }
-                None => cmds.push(Cmd::StatusError(
+                None => cmds.push(Cmd::ToastError(
                     "no comment token for this buffer".into(),
                 )),
             },
@@ -272,7 +272,7 @@ impl App {
             cmds.push(Cmd::SetLastFind(lf));
         }
         let Some(resolved) = resolved else {
-            cmds.push(Cmd::StatusError("no previous find".into()));
+            cmds.push(Cmd::ToastError("no previous find".into()));
             return cmds;
         };
 
@@ -406,10 +406,10 @@ impl App {
                             Operator::Yank => {
                                 self.buffer.yank_line();
                                 cmds.push(Cmd::SyncYank);
-                                cmds.push(Cmd::StatusInfo("yanked".into()));
+                                cmds.push(Cmd::ToastInfo("yanked".into()));
                             }
                             Operator::Change => {
-                                cmds.push(Cmd::StatusError("change not implemented yet".into()));
+                                cmds.push(Cmd::ToastError("change not implemented yet".into()));
                             }
                             Operator::Indent | Operator::Dedent => unreachable!(),
                         }
@@ -422,7 +422,7 @@ impl App {
                     cmds.push(Cmd::SetLastFind(lf));
                 }
                 let Some(resolved) = resolved else {
-                    cmds.push(Cmd::StatusError("no previous find".into()));
+                    cmds.push(Cmd::ToastError("no previous find".into()));
                     return cmds;
                 };
                 let inclusive = is_inclusive_motion(resolved);
@@ -453,7 +453,7 @@ impl App {
                     let Some((start, end_incl)) =
                         self.search.find_match_range(&self.buffer, forward)
                     else {
-                        cmds.push(Cmd::StatusError("pattern not found".into()));
+                        cmds.push(Cmd::ToastError("pattern not found".into()));
                         break;
                     };
                     let end = self.buffer.advance_one(end_incl);
@@ -465,7 +465,7 @@ impl App {
                     match self.buffer.text_object_range(scope, object) {
                         Some((start, end)) => self.apply_op_range_handle(op, start, end, &mut cmds),
                         None => {
-                            cmds.push(Cmd::StatusError("no matching object".into()));
+                            cmds.push(Cmd::ToastError("no matching object".into()));
                             break;
                         }
                     }
@@ -491,7 +491,7 @@ impl App {
             Operator::Yank => {
                 self.buffer.yank_range(start, end);
                 cmds.push(Cmd::SyncYank);
-                cmds.push(Cmd::StatusInfo("yanked".into()));
+                cmds.push(Cmd::ToastInfo("yanked".into()));
             }
             Operator::Change => {
                 self.buffer.delete_range(start, end);
@@ -584,7 +584,7 @@ fn push_word_search(app: &App, cmds: &mut Vec<Cmd>, forward: bool, jump: bool) {
                 cmds.push(Cmd::JumpSearch { reverse: false });
             }
         }
-        None => cmds.push(Cmd::StatusError("no word under cursor".into())),
+        None => cmds.push(Cmd::ToastError("no word under cursor".into())),
     }
 }
 
@@ -593,7 +593,7 @@ fn push_word_search(app: &App, cmds: &mut Vec<Cmd>, forward: bool, jump: bool) {
 /// buffer; otherwise emits the actual quit command.
 fn plan_quit(app: &App) -> Cmd {
     if app.buffer.dirty {
-        return Cmd::StatusError("unsaved changes (use :q!)".into());
+        return Cmd::ToastError("unsaved changes (use :q!)".into());
     }
     let sleeping_dirty: Vec<&BufferRef> = app
         .sleeping
@@ -602,7 +602,7 @@ fn plan_quit(app: &App) -> Cmd {
         .map(|(r, _)| r)
         .collect();
     if !sleeping_dirty.is_empty() {
-        return Cmd::StatusError(format!(
+        return Cmd::ToastError(format!(
             "unsaved changes in {} (use :q!)",
             format_dirty_list(&sleeping_dirty)
         ));
@@ -619,7 +619,7 @@ fn plan_quit(app: &App) -> Cmd {
 /// the next match would land on a cursor that's already tracked.
 fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
     let Some(word) = word_under_cursor(&app.buffer) else {
-        cmds.push(Cmd::StatusError("no word under cursor".into()));
+        cmds.push(Cmd::ToastError("no word under cursor".into()));
         return;
     };
     // Use a throwaway SearchState for the lookup so we can act on the
@@ -629,12 +629,12 @@ fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
     let mut tmp = crate::editor::SearchState::default();
     tmp.set(word.clone(), true);
     let Some(next) = tmp.find_next(&app.buffer, true) else {
-        cmds.push(Cmd::StatusError("no further match".into()));
+        cmds.push(Cmd::ToastError("no further match".into()));
         return;
     };
     let primary = app.buffer.cursor;
     if next == primary || app.buffer.extra_cursors.contains(&next) {
-        cmds.push(Cmd::StatusInfo("no further match".into()));
+        cmds.push(Cmd::ToastInfo("no further match".into()));
         return;
     }
     app.buffer.extra_cursors.push(primary);
@@ -644,7 +644,7 @@ fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
         forward: true,
     });
     let n = app.buffer.extra_cursors.len() + 1;
-    cmds.push(Cmd::StatusInfo(format!("{n} cursors")));
+    cmds.push(Cmd::ToastInfo(format!("{n} cursors")));
 }
 
 /// Move the cursor to the first non-whitespace column on its current

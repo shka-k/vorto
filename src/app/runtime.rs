@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use super::eval::word_under_cursor;
-use super::{App, Status, root_cause};
+use super::{App, Toast, root_cause};
 use crate::effect::{Cmd, ScrollAnchor};
 
 impl App {
@@ -25,8 +25,8 @@ impl App {
     fn run_cmd(&mut self, cmd: Cmd) -> Result<()> {
         match cmd {
             Cmd::EnterMode(m) => self.enter_mode(m),
-            Cmd::StatusInfo(s) => self.status = Status::info(s),
-            Cmd::StatusError(s) => self.status = Status::error(s),
+            Cmd::ToastInfo(s) => self.toast = Toast::info(s),
+            Cmd::ToastError(s) => self.toast = Toast::error(s),
             Cmd::OpenPrompt(k) => self.open_prompt(k),
             Cmd::OpenRenamePrompt => self.open_rename_prompt(),
             Cmd::SetSearch { pattern, forward } => self.search.set(pattern, forward),
@@ -87,7 +87,7 @@ impl App {
         if let Some(c) = self.search.find_next(&self.buffer, forward) {
             self.buffer.cursor = c;
         } else {
-            self.status = Status::error("pattern not found");
+            self.toast = Toast::error("pattern not found");
         }
     }
 
@@ -101,7 +101,7 @@ impl App {
         let Some((start, end_incl)) =
             self.search.find_match_range(&self.buffer, forward)
         else {
-            self.status = Status::error("pattern not found");
+            self.toast = Toast::error("pattern not found");
             return;
         };
         if !self.mode.is_visual() {
@@ -118,7 +118,7 @@ impl App {
     /// shim collapses both into one call.
     pub(super) fn search_word_under_cursor(&mut self, forward: bool) {
         let Some(word) = word_under_cursor(&self.buffer) else {
-            self.status = Status::error("no word under cursor");
+            self.toast = Toast::error("no word under cursor");
             return;
         };
         self.search.set(word, forward);
@@ -148,14 +148,14 @@ impl App {
     fn run_save(&mut self, path: Option<&Path>, then_quit: bool) -> Result<()> {
         let wrote = if let Some(p) = path {
             self.buffer.save_as(p)?;
-            self.status = Status::info(format!("written to {}", p.display()));
+            self.toast = Toast::info(format!("written to {}", p.display()));
             true
         } else if self.buffer.path.is_some() {
             self.buffer.save()?;
-            self.status = Status::info("written");
+            self.toast = Toast::info("written");
             true
         } else {
-            self.status = Status::error("no file name (use :w <path>)");
+            self.toast = Toast::error("no file name (use :w <path>)");
             false
         };
         if wrote {
@@ -173,7 +173,7 @@ impl App {
     fn run_notify_lsp_save(&mut self) {
         let text = self.buffer.lines.join("\n");
         if let Err(e) = self.lsp.did_save(&text) {
-            self.status = Status::error(format!("lsp didSave: {}", root_cause(&e)));
+            self.toast = Toast::error(format!("lsp didSave: {}", root_cause(&e)));
         }
     }
 }

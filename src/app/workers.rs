@@ -17,7 +17,7 @@ use crate::lsp::{self, LspClient};
 use crate::syntax::Highlighter;
 
 use super::lsp_coordinator::client_key;
-use super::{App, Status, is_command_not_found, root_cause};
+use super::{App, Toast, is_command_not_found, root_cause};
 
 impl App {
     /// Build a tree-sitter `Highlighter` for `path` off the main thread
@@ -82,7 +82,7 @@ impl App {
             if self.lsp.has_client(&key) {
                 let text = self.buffer.lines.join("\n");
                 if let Err(e) = self.lsp.did_open(&key, &lang_name, path, &text) {
-                    self.status = Status::error(format!(
+                    self.toast = Toast::error(format!(
                         "lsp didOpen ({}): {}",
                         key,
                         root_cause(&e)
@@ -140,7 +140,7 @@ impl App {
                 self.buffer.highlighter = Some(h);
             }
             Err(e) => {
-                self.status = Status::error(format!("highlight: {}", root_cause(&e)));
+                self.toast = Toast::error(format!("highlight: {}", root_cause(&e)));
             }
         }
     }
@@ -170,8 +170,8 @@ impl App {
                 // have installed. Stay quiet when the binary isn't on
                 // PATH; surface every other failure.
                 if !is_command_not_found(&e) {
-                    self.status =
-                        Status::error(format!("lsp ({}): {}", client_key, root_cause(&e)));
+                    self.toast =
+                        Toast::error(format!("lsp ({}): {}", client_key, root_cause(&e)));
                 }
                 return;
             }
@@ -186,7 +186,7 @@ impl App {
         // server was initializing.
         let text = self.buffer.lines.join("\n");
         if let Err(e) = self.lsp.did_open(&client_key, &lang, &path, &text) {
-            self.status = Status::error(format!(
+            self.toast = Toast::error(format!(
                 "lsp didOpen ({}): {}",
                 client_key,
                 root_cause(&e)
