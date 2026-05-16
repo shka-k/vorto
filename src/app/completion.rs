@@ -82,15 +82,19 @@ impl CompletionState {
     }
 
     /// Merge a server-returned resolved item into the slot at `idx`.
-    /// Updates fields that the server only fills lazily (`detail`,
-    /// `additional_text_edits`), leaves the rest as-is so client-side
-    /// fallbacks (`kind_word` → "func") aren't clobbered by a less
-    /// informative response. Always marks the slot as resolved so we
-    /// don't refire the request when the user navigates back.
+    /// Updates fields that the server only fills lazily — the resolve
+    /// response's `detail` lands in `resolved_detail` (consumed by the
+    /// side popup) instead of overwriting the compact `detail` that
+    /// drives the main popup's inline column, and any deferred
+    /// `additional_text_edits` (auto-imports etc.) get merged in.
+    /// Leaves everything else as-is so client-side fallbacks
+    /// (`kind_word` → "func") aren't clobbered by a less informative
+    /// response. Always marks the slot as resolved so we don't refire
+    /// the request when the user navigates back.
     pub fn merge_resolved(&mut self, idx: usize, resolved: &CompletionItem) {
         if let Some(item) = self.items.get_mut(idx) {
             if resolved.detail.as_ref().is_some_and(|s| !s.is_empty()) {
-                item.detail = resolved.detail.clone();
+                item.resolved_detail = resolved.detail.clone();
             }
             if !resolved.additional_text_edits.is_empty() {
                 item.additional_text_edits = resolved.additional_text_edits.clone();
@@ -216,6 +220,7 @@ mod tests {
             filter_text: None,
             sort_text: None,
             detail: None,
+            resolved_detail: None,
             additional_text_edits: Vec::new(),
             raw: serde_json::Value::Null,
             source: String::new(),

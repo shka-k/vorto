@@ -300,6 +300,7 @@ fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
         filter_text,
         sort_text,
         detail,
+        resolved_detail: None,
         additional_text_edits,
         raw: v.clone(),
         source: String::new(),

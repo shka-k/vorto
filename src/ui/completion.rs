@@ -20,7 +20,7 @@ const MAX_HEIGHT: u16 = 24;
 /// before this; capping at 32 chars keeps the popup compact and lets
 /// the label column breathe. Detail beyond this is elided with `…`.
 const MAX_DETAIL_WIDTH: u16 = 32;
-/// Side detail popup (shown only while the popup is in selecting mode)
+/// Detail popup (shown only while the popup is in selecting mode)
 /// width / height caps. The popup wraps the resolved item's `detail`
 /// across multiple lines so long signatures stay readable instead of
 /// getting `…`-truncated like in the main popup.
@@ -184,26 +184,19 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     // crowded by a documentation box for an item the user hasn't
     // committed to.
     if state.selecting {
-        draw_detail_side(f, state, buf_area, area);
+        draw_detail_popup(f, state, buf_area, area);
     }
 }
 
-/// Companion popup beside `area` showing the currently-selected
+/// Companion popup above or below `main` showing the currently-selected
 /// completion item's `detail` text, wrapped across multiple lines so
 /// long signatures stay readable.
 ///
-/// Positioning strategy:
-/// 1. Try the right of the main popup. Cap the popup width at the
-///    actual right-side gap so it never extends past `buf_area`.
-/// 2. If the right gap is too narrow to be useful (< [`MIN_DETAIL_WIDTH`]),
-///    try the left side with the same cap.
-/// 3. If neither side has room, try below the main popup, capped to
-///    the area's width and remaining vertical room.
-///
-/// The popup width adapts every frame, so the wrap width follows.
-/// When the available width is below the minimum the popup is
-/// suppressed silently. Detail with no content also short-circuits.
-fn draw_detail_side(
+/// Positioning strategy: pick whichever side (below / above the main
+/// popup) has more vertical room. The popup is x-aligned with the main
+/// popup and shifts left when its width would extend past the right
+/// edge. When neither side has enough room the popup is suppressed.
+fn draw_detail_popup(
     f: &mut Frame,
     state: &crate::app::CompletionState,
     buf_area: Rect,
@@ -215,34 +208,36 @@ fn draw_detail_side(
     let Some(item) = state.items.get(idx) else {
         return;
     };
-    let Some(detail) = item.detail.as_deref().filter(|s| !s.is_empty()) else {
+    // Prefer the richer resolved_detail when it's landed, falling back
+    // to the compact `detail` from the initial completion response
+    // while resolve is still in flight.
+    let Some(detail) = item
+        .resolved_detail
+        .as_deref()
+        .or(item.detail.as_deref())
+        .filter(|s| !s.is_empty())
+    else {
         return;
     };
 
-    // Decide which side (right/left/below) wins and how wide the
-    // popup is allowed to be. Borders + 1-cell horizontal padding on
-    // each side eats 4 cells, so refuse anything narrower than that
-    // plus a useful text width.
-    let space_right = buf_area.right().saturating_sub(main.right());
-    let space_left = main.x.saturating_sub(buf_area.x);
-    let space_below_h = buf_area.bottom().saturating_sub(main.bottom());
+    let avail_w = buf_area.width.min(DETAIL_POPUP_WIDTH);
+    if avail_w < MIN_DETAIL_WIDTH {
+        return;
+    }
+    let popup_w = avail_w;
+
+    let space_below = buf_area.bottom().saturating_sub(main.bottom());
+    let space_above = main.y.saturating_sub(buf_area.y);
 
     enum Placement {
-        Right,
-        Left,
         Below,
+        Above,
     }
-    let preferred_w = DETAIL_POPUP_WIDTH;
-    let (placement, popup_w) = if space_right >= MIN_DETAIL_WIDTH {
-        (Placement::Right, preferred_w.min(space_right))
-    } else if space_left >= MIN_DETAIL_WIDTH {
-        (Placement::Left, preferred_w.min(space_left))
-    } else if space_below_h >= 3 {
-        let avail_w = buf_area.width.min(preferred_w);
-        if avail_w < MIN_DETAIL_WIDTH {
-            return;
-        }
-        (Placement::Below, avail_w)
+    // Need at least 3 rows for borders + one line of text to be useful.
+    let (placement, max_h) = if space_below >= 3 && space_below >= space_above {
+        (Placement::Below, space_below)
+    } else if space_above >= 3 {
+        (Placement::Above, space_above)
     } else {
         return;
     };
@@ -253,29 +248,16 @@ fn draw_detail_side(
     }
     let wrapped = wrap_text(detail, text_w);
     let lines_n = wrapped.len() as u16;
-    let popup_h = (lines_n + 2).min(DETAIL_POPUP_HEIGHT + 2);
+    let popup_h = (lines_n + 2).min(DETAIL_POPUP_HEIGHT + 2).min(max_h);
 
-    let (x, y, max_h) = match placement {
-        Placement::Right => (
-            main.right(),
-            main.y,
-            popup_h.min(main.height),
-        ),
-        Placement::Left => (
-            main.x - popup_w,
-            main.y,
-            popup_h.min(main.height),
-        ),
-        Placement::Below => {
-            // Anchor at main.x but shift left when popup_w extends
-            // past the right edge — same trick the main popup uses.
-            let max_x = buf_area.right().saturating_sub(popup_w);
-            let x = main.x.min(max_x).max(buf_area.x);
-            (x, main.bottom(), popup_h.min(space_below_h))
-        }
+    let max_x = buf_area.right().saturating_sub(popup_w);
+    let x = main.x.min(max_x).max(buf_area.x);
+    let y = match placement {
+        Placement::Below => main.bottom(),
+        Placement::Above => main.y - popup_h,
     };
 
-    let height = max_h.min(buf_area.bottom().saturating_sub(y));
+    let height = popup_h.min(buf_area.bottom().saturating_sub(y));
     let area = Rect {
         x,
         y,

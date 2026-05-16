@@ -121,6 +121,11 @@ pub struct CompletionItem {
     /// Free-form details — usually a short type signature ("fn(u32) -> u32")
     /// shown beside the label. May be empty.
     pub detail: Option<String>,
+    /// Richer detail filled in by a `completionItem/resolve` round-trip.
+    /// Kept separate from `detail` so the (often multi-line) resolve
+    /// response doesn't clobber the compact text the inline column
+    /// renders. Consumed by the side detail popup only.
+    pub resolved_detail: Option<String>,
     /// Extra edits applied alongside the main replacement when the user
     /// accepts. Auto-import lands here: the server returns an `import …`
     /// / `use …` insertion targeting the top of the file in this list,
