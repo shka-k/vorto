@@ -76,9 +76,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     for (&id, &rect) in &rects {
         if id == app.active_pane {
             buffer::draw_buffer(f, app, rect);
-        } else if let Some(pane_ref) = app.pane_refs.get(&id)
-            && let Some(buf) = app.parked_buffers.get(pane_ref)
-        {
+        } else if let Some(buf) = app.buffer_for_pane(id) {
+            // `buffer_for_pane` resolves the shared-ref case (panes
+            // pointing at the active ref read straight from
+            // `App.buffer`) so two panes on the same buffer paint the
+            // same live content.
             let eff = effective_editor_for_buffer(app, buf);
             buffer::draw_buffer_inactive(f, buf, &eff, rect);
         }

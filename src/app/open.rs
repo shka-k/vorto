@@ -27,13 +27,22 @@ impl App {
                     return Ok(());
                 }
                 self.lsp.detach_current();
+                // Look in `parked_buffers` first — another pane may
+                // already be displaying this scratch live. Otherwise
+                // thaw from `sleeping`, or mint a fresh empty buffer.
                 // `Buffer::new` (one empty line) ≠ `Buffer::default`
                 // (zero lines), so we can't use `unwrap_or_default`
                 // here — the wrong default would leave the buffer
                 // with an empty `lines` Vec and crash motions.
-                let next = match self.sleeping.remove(&BufferRef::Scratch(id)) {
-                    Some(b) => b.thaw(),
-                    None => Buffer::new(),
+                let next = if let Some(parked) =
+                    self.parked_buffers.remove(&BufferRef::Scratch(id))
+                {
+                    parked
+                } else {
+                    match self.sleeping.remove(&BufferRef::Scratch(id)) {
+                        Some(b) => b.thaw(),
+                        None => Buffer::new(),
+                    }
                 };
                 self.stash_and_install(next);
                 self.current_scratch_id = Some(id);
@@ -58,17 +67,28 @@ impl App {
         }
     }
 
-    /// Move the currently-active buffer into the sleeping map
-    /// (keyed by its [`BufferRef`]) and install `next` as the new
-    /// active buffer. The outgoing buffer is freeze-compressed; its
-    /// highlighter is dropped (rebuilt on restore). The version
-    /// counter is preserved so LSP `didChange` sequencing re-anchors
-    /// cleanly when the buffer wakes up again.
+    /// Move the currently-active buffer out of `App.buffer` and
+    /// install `next` in its place. Two destinations for the outgoing
+    /// buffer, depending on whether any inactive pane still needs it:
+    ///
+    /// - **In use by another pane:** park it into
+    ///   `App.parked_buffers[ref]`, alive and uncompressed. Dropping
+    ///   it to `sleeping` would freeze it (and lose the highlighter),
+    ///   breaking the other pane's render.
+    /// - **Not in use anywhere:** stash it into `sleeping`
+    ///   (compressed; highlighter dropped, rebuilt on restore). The
+    ///   version counter is preserved so LSP `didChange` sequencing
+    ///   re-anchors cleanly when the buffer wakes up again.
     pub(super) fn stash_and_install(&mut self, next: Buffer) {
         let key = self.active_ref();
-        let mut prev = std::mem::replace(&mut self.buffer, next);
-        prev.highlighter = None;
-        self.sleeping.insert(key, SleepingBuffer::freeze(prev));
+        let prev = std::mem::replace(&mut self.buffer, next);
+        if self.ref_used_by_inactive_pane(&key) {
+            self.parked_buffers.insert(key, prev);
+        } else {
+            let mut prev = prev;
+            prev.highlighter = None;
+            self.sleeping.insert(key, SleepingBuffer::freeze(prev));
+        }
     }
 
     /// Install `next` as the active buffer without stashing the
@@ -92,15 +112,29 @@ impl App {
         }
     }
 
-    /// Open `path`. If the buffer for this path is sleeping (i.e. the
-    /// user previously visited it and switched away), wake it up
-    /// instead of re-reading from disk — that's what preserves the
-    /// unsaved edits, undo stack, and cursor position across a
-    /// `<space>b` round-trip. Otherwise load fresh from disk.
+    /// Open `path`. Lookup order:
+    ///
+    /// 1. **Parked** (`App.parked_buffers`): another pane already
+    ///    shows this buffer. Pull it out, the active pane now shares
+    ///    that live buffer.
+    /// 2. **Sleeping**: the user previously visited and switched
+    ///    away. Wake the compressed snapshot.
+    /// 3. **Fresh disk read** as fallback.
     pub fn open_path(&mut self, path: &Path) -> Result<()> {
         let path = self.absolutize(path);
         let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
         let key = BufferRef::File(canon);
+        if let Some(parked) = self.parked_buffers.remove(&key) {
+            self.lsp.detach_current();
+            self.stash_and_install(parked);
+            self.current_scratch_id = None;
+            self.record_opened(key);
+            self.lsp.set_last_synced_version(self.buffer.version);
+            self.push_toast(Toast::info(format!("opened {} (shared)", path.display())));
+            // Buffer was live — highlighter survives; LSP resync only.
+            self.spawn_lsp_worker(&path);
+            return Ok(());
+        }
         if let Some(restored) = self.sleeping.remove(&key) {
             self.lsp.detach_current();
             self.stash_and_install(restored.thaw());

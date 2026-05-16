@@ -247,49 +247,85 @@ pub const NEXT_PANE_ID_SEED: PaneId = 1;
 
 impl App {
     /// Open a new pane in direction `dir` alongside the currently-active
-    /// pane. The new pane gets a scratch buffer — either the most-recent
-    /// sleeping scratch (so the user gets back what they had after a
-    /// `:close`) or a freshly minted empty one. Focus moves to the new
-    /// pane.
+    /// pane. The new pane shares the same buffer as the current one
+    /// (vim-style `:split`): no clone, no scratch creation, just a new
+    /// `Leaf` in the tree pointing at the same `BufferRef`. Buffer
+    /// state (cursor, scroll, undo, …) is stored on the `Buffer` itself,
+    /// so the two panes are views onto the exact same content; edits in
+    /// either pane apply to one underlying buffer.
+    ///
+    /// Focus moves to the new pane (matching vim's `:split` behaviour).
+    /// The active pane stays a leaf with no `pane_refs` entry — the
+    /// existing pane gets one pointing at the shared ref so the
+    /// `<active_ref ⇒ App.buffer, else parked>` lookup keeps working.
     pub fn split_window(&mut self, dir: SplitDir) {
         let new_pane_id = self.mint_pane_id();
-        let (new_buffer, new_buffer_ref, new_scratch_id) = self.acquire_split_scratch();
-        // Park the currently-active buffer under its derived ref so
-        // `App.buffer` becomes free for the new pane's buffer.
         let active_pane_id = self.active_pane;
-        let prev_ref = self.active_ref();
-        let prev_buffer = std::mem::replace(&mut self.buffer, new_buffer);
-        self.current_scratch_id = Some(new_scratch_id);
-        self.parked_buffers.insert(prev_ref.clone(), prev_buffer);
-        // The previous active pane is now inactive — record its ref.
-        self.pane_refs.insert(active_pane_id, prev_ref);
-        // Splice the new pane into the layout tree. New pane is the
-        // ACTIVE one; `pane_refs` only tracks inactive panes, so we
-        // don't insert anything for `new_pane_id` here.
+        let shared_ref = self.active_ref();
+        // The old leaf becomes inactive — record its ref so the
+        // renderer / focus code can resolve it. Since this ref equals
+        // the (new) active ref, no buffer movement is needed; the
+        // `App.buffer` stays put and both panes look it up through the
+        // shared-ref path.
+        self.pane_refs.insert(active_pane_id, shared_ref);
+        // New pane is the ACTIVE one — `pane_refs` only tracks
+        // inactive panes, so nothing to insert for `new_pane_id`.
         let leaf = self
             .layout
             .find_leaf_mut(active_pane_id)
             .expect("active pane must be in the layout tree");
         leaf.split_at(dir, new_pane_id, SplitPlace::After);
         self.active_pane = new_pane_id;
-        let _ = new_buffer_ref; // identity check / future use
-        self.lsp.detach_current();
-        self.open_gen = self.open_gen.wrapping_add(1);
-        self.lsp.set_last_synced_version(self.buffer.version);
         self.push_toast(Toast::info(format!(
-            "split ({}) → {}",
+            "split ({})",
             match dir {
                 SplitDir::Vertical => "vertical",
                 SplitDir::Horizontal => "horizontal",
             },
-            BufferRef::scratch_label(new_scratch_id),
         )));
     }
 
-    /// Close the active pane. Its buffer is stashed into the sleeping
-    /// pool (so accidental `:close` doesn't lose unsaved edits); focus
-    /// moves to a neighbour leaf chosen by [`PaneLayout::remove_leaf`].
-    /// No-op (with a toast) when there's only one pane left.
+    /// Look up which buffer (a `&Buffer`) the inactive pane `id` is
+    /// currently showing. Returns `None` when `id` isn't an inactive
+    /// leaf, or when the layout/`parked_buffers` invariant is violated
+    /// (shouldn't happen in practice — exists as a soft failure for
+    /// the renderer rather than a panic). Panes whose ref equals the
+    /// active ref resolve back to `App.buffer`; otherwise we look in
+    /// `parked_buffers`.
+    pub fn buffer_for_pane(&self, id: PaneId) -> Option<&Buffer> {
+        if id == self.active_pane {
+            return Some(&self.buffer);
+        }
+        let pane_ref = self.pane_refs.get(&id)?;
+        if *pane_ref == self.active_ref() {
+            return Some(&self.buffer);
+        }
+        self.parked_buffers.get(pane_ref)
+    }
+
+    /// Does any *inactive* pane currently show `r`? Used when deciding
+    /// whether the buffer currently held in `App.buffer` (or being
+    /// stashed) can move to `sleeping` (gone from every visible pane)
+    /// or has to stay live in `parked_buffers`.
+    pub fn ref_used_by_inactive_pane(&self, r: &BufferRef) -> bool {
+        self.pane_refs.values().any(|v| v == r)
+    }
+
+    /// Close the active pane. Three cases, all preserving the
+    /// `parked_buffers` invariant (entries exist only for refs that
+    /// are shown by some inactive pane AND differ from the active
+    /// ref):
+    ///
+    /// 1. **Closing pane shares its ref with another pane.** Just drop
+    ///    the leaf from the tree — no buffer changes, no stashing.
+    ///    Focus moves to a neighbour; if that neighbour also shares
+    ///    the ref, `App.buffer` stays put.
+    /// 2. **Neighbour shares the closing pane's ref.** Same: focus
+    ///    moves, `App.buffer` stays. The active ref is unchanged.
+    /// 3. **Refs differ.** Stash `App.buffer` to `sleeping`, pull the
+    ///    neighbour's buffer out of `parked_buffers`. Standard swap.
+    ///
+    /// No-op (with a toast) when only one pane is left.
     pub fn close_window(&mut self) {
         if self.pane_count() <= 1 {
             self.push_toast(Toast::error("only one pane (use :q to quit)"));
@@ -303,36 +339,46 @@ impl App {
                 return;
             }
         };
-        // Pull the neighbour out of pane_refs / parked_buffers — it's
-        // about to become the active pane. Its ref drives the new
-        // `current_scratch_id`.
         let neighbour_ref = self
             .pane_refs
             .remove(&neighbor)
             .expect("neighbour leaf must have a buffer_ref entry");
+        let closing_ref = self.active_ref();
+        if neighbour_ref == closing_ref {
+            // Active and neighbour share the same buffer. The buffer
+            // stays in `App.buffer`; nothing to stash or swap.
+            self.active_pane = neighbor;
+            self.push_toast(Toast::info("pane closed"));
+            return;
+        }
+        // The neighbour points at a different buffer — it was parked,
+        // pull it into the active slot. Whether the closing buffer
+        // goes to sleeping or parked depends on whether any other
+        // inactive pane still references its ref.
         let neighbour_buf = self
             .parked_buffers
             .remove(&neighbour_ref)
             .expect("neighbour buffer must be parked");
-        let closing_ref = self.active_ref();
         let mut closed_buffer = std::mem::replace(&mut self.buffer, neighbour_buf);
         self.current_scratch_id = match &neighbour_ref {
             BufferRef::Scratch(id) => Some(*id),
             _ => None,
         };
-        closed_buffer.highlighter = None;
-        self.sleeping
-            .insert(closing_ref, super::SleepingBuffer::freeze(closed_buffer));
+        if self.ref_used_by_inactive_pane(&closing_ref) {
+            // Another pane still shows the closing ref — keep the
+            // buffer live so that pane can read from it. No sleeping
+            // freeze (which would compress and lose the highlighter).
+            self.parked_buffers.insert(closing_ref, closed_buffer);
+        } else {
+            closed_buffer.highlighter = None;
+            self.sleeping
+                .insert(closing_ref, super::SleepingBuffer::freeze(closed_buffer));
+        }
         self.active_pane = neighbor;
         self.lsp.detach_current();
         self.lsp.set_last_synced_version(self.buffer.version);
-        // The neighbour buffer was parked with its highlighter intact —
-        // no respawn needed for the common case (and respawning would
-        // null the highlighter until the worker finishes, causing
-        // visible flicker). Fall back to a fresh worker only when the
-        // parked copy is missing one. LSP is idempotent:
-        // `spawn_lsp_worker` short-circuits to a fresh `didOpen` when
-        // the client is already up.
+        // See `focus_pane` for why we skip the highlighter respawn in
+        // the common case.
         if let Some(path) = self.buffer.path.clone() {
             if self.buffer.highlighter.is_none() {
                 self.spawn_highlighter_worker(&path);
@@ -374,27 +420,47 @@ impl App {
         self.layout.leaves().len()
     }
 
-    /// Swap focus to `target`. Moves the previously-active buffer
-    /// back into the parked pool (under its derived ref) and pulls
-    /// `target`'s buffer out of parked into `App.buffer`. LSP and
-    /// highlighter workers are respawned for the newly-active path-
-    /// backed buffer.
+    /// Swap focus to `target`. Two cases:
+    ///
+    /// 1. **Target shares the active buffer's ref.** Just rotate
+    ///    `active_pane`; the underlying buffer stays in `App.buffer`
+    ///    and the renderer's shared-ref path keeps painting the
+    ///    correct content. Cursor / scroll are buffer-level state,
+    ///    so they're naturally shared between the two panes.
+    /// 2. **Target points to a different ref.** Pull its buffer out
+    ///    of `parked_buffers` into `App.buffer`. The previous active
+    ///    buffer goes into `parked_buffers[prev_ref]` (unconditionally
+    ///    — it has to live somewhere live, and any other pane that
+    ///    shares `prev_ref` will look it up there).
     pub(super) fn focus_pane(&mut self, target: PaneId) {
         if target == self.active_pane {
             return;
         }
-        let target_ref = match self.pane_refs.remove(&target) {
+        let target_ref = match self.pane_refs.get(&target).cloned() {
             Some(r) => r,
             None => return,
         };
+        let prev_id = self.active_pane;
+        let prev_ref = self.active_ref();
+        if target_ref == prev_ref {
+            // Shared ref: nothing to move. Just rotate which leaf is
+            // active. pane_refs only tracks inactive panes, so we
+            // remove the new active's entry and insert the previous
+            // active's entry (pointing at the same shared ref).
+            self.pane_refs.remove(&target);
+            self.pane_refs.insert(prev_id, prev_ref);
+            self.active_pane = target;
+            self.record_opened(target_ref);
+            return;
+        }
+        // Target points elsewhere — full buffer swap.
+        self.pane_refs.remove(&target);
         let Some(target_buffer) = self.parked_buffers.remove(&target_ref) else {
             // pane_refs and parked_buffers are out of sync — put the
             // ref back so we don't lose track of what the pane shows.
             self.pane_refs.insert(target, target_ref);
             return;
         };
-        let prev_id = self.active_pane;
-        let prev_ref = self.active_ref();
         let prev_buffer = std::mem::replace(&mut self.buffer, target_buffer);
         self.current_scratch_id = match &target_ref {
             BufferRef::Scratch(id) => Some(*id),
@@ -460,31 +526,6 @@ impl App {
             }
         }
         best.map(|(id, _)| id)
-    }
-
-    /// Pick a scratch buffer to drop into a freshly-opened split.
-    /// Prefers the most-recent sleeping scratch (so `<space>w v` after
-    /// closing a split restores what was there); falls back to a brand-
-    /// new empty scratch.
-    fn acquire_split_scratch(&mut self) -> (Buffer, BufferRef, u32) {
-        let active_scratch_id = self.current_scratch_id;
-        let candidate = self.opened_paths.iter().rev().find_map(|r| match r {
-            BufferRef::Scratch(id)
-                if Some(*id) != active_scratch_id
-                    && self.sleeping.contains_key(&BufferRef::Scratch(*id)) =>
-            {
-                Some(*id)
-            }
-            _ => None,
-        });
-        if let Some(id) = candidate
-            && let Some(b) = self.sleeping.remove(&BufferRef::Scratch(id))
-        {
-            return (b.thaw(), BufferRef::Scratch(id), id);
-        }
-        let id = self.mint_scratch_id();
-        self.record_opened(BufferRef::Scratch(id));
-        (Buffer::new(), BufferRef::Scratch(id), id)
     }
 
     pub(super) fn mint_pane_id(&mut self) -> PaneId {
