@@ -79,6 +79,15 @@ impl App {
                 self.record_insert_key(InsertKey::Backspace);
                 self.update_completion_filter();
             }
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                // Some terminals (e.g. macOS Terminal.app) report
+                // Shift+Tab as `Tab` + SHIFT instead of `BackTab`. Treat
+                // both as dedent so users don't need to know which they
+                // have.
+                self.fan_out_dedent();
+                self.record_insert_key(InsertKey::Dedent);
+                self.update_completion_filter();
+            }
             KeyCode::Tab => {
                 // Honor the buffer's indent settings: `use_tabs` mode
                 // inserts a literal `\t`, soft-tab mode inserts enough
@@ -100,6 +109,11 @@ impl App {
                         self.record_insert_key(InsertKey::Char(' '));
                     }
                 }
+                self.update_completion_filter();
+            }
+            KeyCode::BackTab => {
+                self.fan_out_dedent();
+                self.record_insert_key(InsertKey::Dedent);
                 self.update_completion_filter();
             }
             // Arrow keys break vim's `.` recording — drop the in-flight
@@ -145,6 +159,7 @@ impl App {
                 return Some(());
             }
             KeyCode::Up | KeyCode::BackTab => Some(-1),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => Some(-1),
             KeyCode::Down | KeyCode::Tab => Some(1),
             KeyCode::Char('p') if ctrl => Some(-1),
             KeyCode::Char('n') if ctrl => Some(1),
@@ -267,6 +282,44 @@ impl App {
                     new_positions[*other_orig_idx].col -= 1;
                 }
             }
+        }
+        scatter_cursors(self, new_positions);
+    }
+
+    /// Shift+Tab fan-out: dedent each *unique* row that holds a cursor
+    /// once, then shift every cursor on that row left by the number of
+    /// chars stripped. Per-row rather than per-cursor because two
+    /// cursors on the same row would otherwise double-dedent (or worse,
+    /// the second call would see a different leading-whitespace state
+    /// than the first).
+    fn fan_out_dedent(&mut self) {
+        let indent = self.indent_settings();
+        if self.buffer.extra_cursors.is_empty() {
+            self.buffer.dedent_current_line(indent);
+            return;
+        }
+        let all = collect_cursors(self);
+        let mut rows: Vec<usize> = all.iter().map(|(_, c)| c.row).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let mut removed: Vec<(usize, usize)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let before = self.buffer.lines[row].chars().count();
+            self.buffer.dedent_line(row, indent);
+            let after = self.buffer.lines[row].chars().count();
+            removed.push((row, before - after));
+        }
+        let mut new_positions = vec![Cursor::default(); all.len()];
+        for (orig_idx, pos) in &all {
+            let n = removed
+                .iter()
+                .find(|(r, _)| *r == pos.row)
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            new_positions[*orig_idx] = Cursor {
+                row: pos.row,
+                col: pos.col.saturating_sub(n),
+            };
         }
         scatter_cursors(self, new_positions);
     }

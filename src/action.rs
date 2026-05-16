@@ -340,6 +340,7 @@ pub enum InsertKey {
     Char(char),
     Newline,
     Backspace,
+    Dedent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

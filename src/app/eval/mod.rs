@@ -133,6 +133,7 @@ impl App {
                         InsertKey::Char(c) => self.buffer.insert_char_smart(c, indent),
                         InsertKey::Newline => self.buffer.insert_newline(indent),
                         InsertKey::Backspace => self.buffer.delete_char_before(),
+                        InsertKey::Dedent => self.buffer.dedent_current_line(indent),
                     }
                 }
                 self.enter_mode(Mode::Normal);

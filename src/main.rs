@@ -20,10 +20,14 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Result;
-use crossterm::event::{self as crossterm_event, Event};
+use crossterm::event::{
+    self as crossterm_event, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -91,6 +95,21 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // Kitty keyboard protocol: with `DISAMBIGUATE_ESCAPE_CODES`, the
+    // terminal reports Shift+Tab, Ctrl+modified keys, etc. as distinct
+    // events instead of collapsing them onto plain ASCII codes. Without
+    // it, e.g. macOS Terminal.app sends Shift+Tab as plain Tab (no
+    // SHIFT modifier), making it indistinguishable from Tab. Push only
+    // on terminals that advertise support — pushing on an unsupported
+    // terminal is usually harmless but `supports_keyboard_enhancement`
+    // is the documented gate.
+    let kbd_enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    if kbd_enhanced {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -126,6 +145,9 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, &mut app, &event_rx);
 
     disable_raw_mode()?;
+    if kbd_enhanced {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
     // `\x1b[0 q` = DECSCUSR Ps=0 → restore the user's configured shape.
     let _ = io::stdout().write_all(b"\x1b[0 q");
     let _ = io::stdout().flush();
@@ -184,9 +206,25 @@ fn run(
     Ok(())
 }
 
+/// Append a single key event to the path in `VORTO_KEY_LOG`, if that
+/// env var is set. For diagnosing terminals that swallow or remap keys
+/// like Shift+Tab. Errors are silently dropped — this is opt-in debug.
+fn log_key_event(key: &crossterm_event::KeyEvent) {
+    use std::fs::OpenOptions;
+    let Ok(path) = std::env::var("VORTO_KEY_LOG") else {
+        return;
+    };
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{key:?}");
+    }
+}
+
 fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
     match ev {
-        event::AppEvent::Term(Event::Key(key)) => app.handle_key(key)?,
+        event::AppEvent::Term(Event::Key(key)) => {
+            log_key_event(&key);
+            app.handle_key(key)?;
+        }
         event::AppEvent::Term(_) => {}
         event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
         event::AppEvent::HighlighterReady { generation, result } => {
