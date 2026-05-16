@@ -22,3 +22,4 @@ libloading = "0.8"
 flate2 = "1"
 include_dir = "0.7"
 arboard = "3"
+time = { version = "0.3", features = ["formatting", "local-offset"] }

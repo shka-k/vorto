@@ -316,6 +316,13 @@ impl App {
     /// while there's room (cap of 3); otherwise waits behind the
     /// already-visible toasts and is promoted as they expire.
     pub fn push_toast(&mut self, t: Toast) {
+        // Mirror error/fatal toasts into the debug log so they survive
+        // past the TTL — info/warn stay UI-only to avoid noise.
+        match t.level() {
+            Level::Error => crate::vlog!("toast error: {}", t.text()),
+            Level::Fatal => crate::vlog!("toast fatal: {}", t.text()),
+            _ => {}
+        }
         self.toasts.push(t);
     }
 

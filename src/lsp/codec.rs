@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::types::{Diagnostic, LspEvent, Position, Range, Severity};
 use super::{BlockingPending, BlockingReply};
+use crate::vlog;
 
 pub(super) fn request(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
@@ -77,6 +78,7 @@ pub(super) fn reader_loop(
         let msg = match read_message(&mut reader) {
             Ok(m) => m,
             Err(e) => {
+                vlog!("lsp reader exit client={} err={:#}", client, e);
                 emit(LspEvent::Error {
                     client: client.clone(),
                     message: format!("lsp reader: {}", e),
@@ -140,6 +142,7 @@ pub(super) fn reader_loop(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    vlog!("lsp {} client={} level={} {}", method, client, level, text);
                     emit(LspEvent::Message { level, text });
                 }
             }

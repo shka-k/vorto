@@ -8,6 +8,7 @@ mod event;
 mod finder;
 mod format;
 mod grammar;
+mod log;
 mod lsp;
 mod mode;
 mod prompt;
@@ -91,6 +92,14 @@ fn main() -> Result<()> {
         None => (None, false),
     };
 
+    log::init();
+    vlog!(
+        "startup pid={} version={} cwd={}",
+        std::process::id(),
+        env!("CARGO_PKG_VERSION"),
+        startup_cwd.display(),
+    );
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -103,6 +112,7 @@ fn main() -> Result<()> {
     // terminal is usually harmless but `supports_keyboard_enhancement`
     // is the documented gate.
     let kbd_enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    vlog!("kbd_enhanced={kbd_enhanced}");
     if kbd_enhanced {
         execute!(
             stdout,
@@ -112,7 +122,20 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let cfg = config::Config::load(config::default_path().as_deref())?;
+    let cfg_path = config::default_path();
+    let cfg = match config::Config::load(cfg_path.as_deref()) {
+        Ok(c) => {
+            vlog!(
+                "config loaded path={}",
+                cfg_path.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "<default>".into()),
+            );
+            c
+        }
+        Err(e) => {
+            vlog!("config load failed: {e:#}");
+            return Err(e);
+        }
+    };
     let loader = syntax::Loader::new(cfg.grammar_dir.clone(), cfg.query_dir.clone());
 
     // Unified event channel. Terminal input runs on a dedicated thread

@@ -15,6 +15,7 @@ use crate::event::AppEvent;
 use crate::finder::PreviewEntry;
 use crate::lsp::{self, LspClient};
 use crate::syntax::Highlighter;
+use crate::vlog;
 
 use super::lsp_coordinator::client_key;
 use super::{App, Toast, is_command_not_found, root_cause};
@@ -103,8 +104,18 @@ impl App {
             thread::spawn(move || {
                 let root_dir = lsp::discover_root(&startup_cwd, Some(&path_buf), &cfg.root_markers);
                 let root_uri = lsp::path_to_uri(&root_dir);
+                vlog!(
+                    "lsp spawn start key={} cmd={} root={}",
+                    key_for_thread,
+                    cfg.command,
+                    root_dir.display(),
+                );
                 let result =
                     LspClient::spawn(&key_for_thread, &lang_for_thread, &cfg, &root_uri, emit);
+                match &result {
+                    Ok(_) => vlog!("lsp spawn ok key={}", key_for_thread),
+                    Err(e) => vlog!("lsp spawn err key={} err={:#}", key_for_thread, e),
+                }
                 let _ = tx.send(AppEvent::LspReady {
                     generation,
                     client_key: key_for_thread,
@@ -173,6 +184,8 @@ impl App {
                         client_key,
                         root_cause(&e)
                     )));
+                } else {
+                    vlog!("lsp not on PATH key={} err={:#}", client_key, e);
                 }
                 return;
             }
