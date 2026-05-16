@@ -11,7 +11,8 @@ use crate::action::{Operator, Token};
 use crate::app::App;
 use crate::config::COMMAND_BINDS;
 use crate::config::{
-    GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS,
+    CTRL_W_BINDINGS, GOTO_BINDINGS, LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
+    WINDOW_BINDINGS, Z_BINDINGS,
 };
 use crate::prompt::{CommandPrompt, CompletionKind};
 
@@ -238,6 +239,20 @@ fn pending_hints(tokens: &[Token]) -> Option<(&'static str, Vec<(String, &'stati
         Token::ZPrefix => (
             "viewport",
             Z_BINDINGS
+                .iter()
+                .map(|b| (display_key(b.key), b.label))
+                .collect(),
+        ),
+        Token::WindowPrefix => (
+            "window",
+            WINDOW_BINDINGS
+                .iter()
+                .map(|b| (display_key(b.key), b.label))
+                .collect(),
+        ),
+        Token::CtrlWPrefix => (
+            "window (C-w)",
+            CTRL_W_BINDINGS
                 .iter()
                 .map(|b| (display_key(b.key), b.label))
                 .collect(),

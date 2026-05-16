@@ -71,6 +71,10 @@ impl App {
             Cmd::StartJumpLabel => self.start_jump_label(),
             Cmd::SelectWholeBuffer => self.run_select_whole_buffer(),
             Cmd::SyncYank => self.sync_yank_to_clipboard(),
+            Cmd::SplitWindow { dir } => self.split_window(dir),
+            Cmd::CloseWindow => self.close_window(),
+            Cmd::FocusWindow { dir } => self.focus_window(dir),
+            Cmd::CycleWindow => self.cycle_window(),
         }
         Ok(())
     }

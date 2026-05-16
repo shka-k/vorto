@@ -265,6 +265,15 @@ impl App {
                     "no comment token for this buffer".into(),
                 )),
             },
+            D::SplitWindowHorizontal => cmds.push(Cmd::SplitWindow {
+                dir: crate::app::SplitDir::Horizontal,
+            }),
+            D::SplitWindowVertical => cmds.push(Cmd::SplitWindow {
+                dir: crate::app::SplitDir::Vertical,
+            }),
+            D::CloseWindow => cmds.push(Cmd::CloseWindow),
+            D::FocusWindow { dir } => cmds.push(Cmd::FocusWindow { dir }),
+            D::CycleWindow => cmds.push(Cmd::CycleWindow),
         }
         cmds
     }

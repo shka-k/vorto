@@ -171,6 +171,8 @@ fn format_pending(tokens: &[Token]) -> String {
             }
             Token::ZPrefix => s.push('z'),
             Token::ReplaceCharPrefix => s.push('r'),
+            Token::WindowPrefix => s.push('w'),
+            Token::CtrlWPrefix => s.push_str("<C-w>"),
             // These shouldn't be in pending state (they would've fired
             // immediately or completed the parse).
             Token::Motion(_) | Token::Direct(_) | Token::Object(_) => s.push('?'),

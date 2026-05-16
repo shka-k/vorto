@@ -15,6 +15,7 @@ mod lsp_apply;
 mod lsp_coordinator;
 mod lsp_request;
 mod open;
+mod pane;
 mod runtime;
 mod sleeping;
 mod toast;
@@ -25,6 +26,7 @@ pub use completion::CompletionState;
 
 pub use jump::JumpState;
 pub use lsp_coordinator::{LspCoordinator, LspEventOutcome};
+pub use pane::{PaneId, PaneLayout, PaneRect, PaneRectMap, SplitDir};
 pub use sleeping::SleepingBuffer;
 pub use toast::{Level, Toast, ToastQueue};
 pub use types::Selection;
@@ -167,6 +169,35 @@ pub struct App {
     /// internal `Buffer.yank` register keeps working either way, so a
     /// failed init silently degrades to vorto-local yank.
     pub clipboard: Option<arboard::Clipboard>,
+    /// Tree describing how the buffer viewport is partitioned into
+    /// panes. A bare `PaneLayout::Leaf` means "no splits — single
+    /// pane covering the whole viewport". See [`mod@pane`] for the
+    /// active-pane convention.
+    pub layout: PaneLayout,
+    /// Pane id of the currently-active leaf in [`Self::layout`]. The
+    /// buffer for that pane is `App.buffer`; other leaves' buffers
+    /// live in [`Self::parked_buffers`], looked up via
+    /// [`Self::pane_refs`].
+    pub active_pane: PaneId,
+    /// What buffer each *inactive* pane is currently displaying.
+    /// The active pane's ref is derived on demand from `App.buffer`
+    /// via [`Self::active_ref`], so this map only carries the
+    /// non-active leaves of [`Self::layout`]. Used together with
+    /// [`Self::parked_buffers`] to find an inactive pane's content.
+    pub pane_refs: std::collections::HashMap<PaneId, crate::buffer_ref::BufferRef>,
+    /// Live buffer pool for buffers currently visible in an inactive
+    /// pane. Stays uncompressed (unlike [`Self::sleeping`]) so a focus
+    /// swap is instant. Buffers shown nowhere live in `sleeping`
+    /// instead.
+    pub parked_buffers: std::collections::HashMap<crate::buffer_ref::BufferRef, Buffer>,
+    /// Counter for [`Self::mint_pane_id`]. Monotonic — never reused so
+    /// a sleeping pane snapshot can't be confused with a fresh one.
+    pub next_pane_id: PaneId,
+    /// Rectangles each pane was drawn into on the most recent frame.
+    /// Populated by the UI just before draw; read by directional
+    /// focus navigation so `Ctrl-W h/j/k/l` resolves against what the
+    /// user actually sees.
+    pub last_pane_rects: RefCell<PaneRectMap>,
     pub should_quit: bool,
 }
 
@@ -224,6 +255,14 @@ impl App {
             jump_state: None,
             completion: None,
             clipboard: None,
+            layout: PaneLayout::Leaf(pane::INITIAL_PANE_ID),
+            active_pane: pane::INITIAL_PANE_ID,
+            // pane_refs only tracks inactive panes — the initial layout
+            // has just the active pane, so this starts empty.
+            pane_refs: HashMap::new(),
+            parked_buffers: HashMap::new(),
+            next_pane_id: pane::NEXT_PANE_ID_SEED,
+            last_pane_rects: RefCell::new(PaneRectMap::default()),
             should_quit: false,
         }
     }

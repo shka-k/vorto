@@ -401,6 +401,152 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             token: Dir(D::MultiCursorClear),
             label: "clear extra cursors",
         },
+        // `<space>w` — sub-leader for window/pane operations. The
+        // follow-up key resolves through `WINDOW_BINDINGS`.
+        Binding {
+            key: KeyCode::Char('w'),
+            aliases: &[],
+            token: Token::WindowPrefix,
+            label: "window …",
+        },
+    ]
+};
+
+/// Keys valid in the `CtrlWPending` context (right after `Ctrl-W`).
+/// Mirrors vim's window-prefix chord: h/j/k/l are focus-move, v / s
+/// are vertical / horizontal splits, c / q close the active pane, w
+/// cycles. Different from [`WINDOW_BINDINGS`] (the `<space>w` sub-
+/// leader) because user-facing semantics differ: `<space>w h` is
+/// horizontal split, but vim's `Ctrl-W h` is focus-left.
+pub const CTRL_W_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use crate::action::FocusDir;
+    use Token::Direct as Dir;
+    &[
+        Binding {
+            key: KeyCode::Char('h'),
+            aliases: &[KeyCode::Left],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Left,
+            }),
+            label: "focus left",
+        },
+        Binding {
+            key: KeyCode::Char('l'),
+            aliases: &[KeyCode::Right],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Right,
+            }),
+            label: "focus right",
+        },
+        Binding {
+            key: KeyCode::Char('j'),
+            aliases: &[KeyCode::Down],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Down,
+            }),
+            label: "focus down",
+        },
+        Binding {
+            key: KeyCode::Char('k'),
+            aliases: &[KeyCode::Up],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Up,
+            }),
+            label: "focus up",
+        },
+        Binding {
+            key: KeyCode::Char('w'),
+            aliases: &[],
+            token: Dir(D::CycleWindow),
+            label: "next pane",
+        },
+        Binding {
+            key: KeyCode::Char('v'),
+            aliases: &[],
+            token: Dir(D::SplitWindowVertical),
+            label: "split right (vertical)",
+        },
+        Binding {
+            key: KeyCode::Char('s'),
+            aliases: &[],
+            token: Dir(D::SplitWindowHorizontal),
+            label: "split below (horizontal)",
+        },
+        Binding {
+            key: KeyCode::Char('c'),
+            aliases: &[KeyCode::Char('q')],
+            token: Dir(D::CloseWindow),
+            label: "close pane",
+        },
+    ]
+};
+
+/// Keys valid in the `WindowPending` context (right after `<space>w`).
+/// Same source-of-truth pattern as [`GOTO_BINDINGS`] — referenced by
+/// both the parser (`window_pending_token` in `app/eval/parse.rs`) and
+/// the which-key hint renderer.
+pub const WINDOW_BINDINGS: &[Binding] = {
+    use crate::action::DirectKind as D;
+    use crate::action::FocusDir;
+    use Token::Direct as Dir;
+    &[
+        Binding {
+            key: KeyCode::Char('v'),
+            aliases: &[],
+            token: Dir(D::SplitWindowVertical),
+            label: "split right (vertical)",
+        },
+        Binding {
+            key: KeyCode::Char('h'),
+            aliases: &[],
+            token: Dir(D::SplitWindowHorizontal),
+            label: "split below (horizontal)",
+        },
+        Binding {
+            key: KeyCode::Char('c'),
+            aliases: &[],
+            token: Dir(D::CloseWindow),
+            label: "close pane",
+        },
+        Binding {
+            key: KeyCode::Char('o'),
+            aliases: &[],
+            token: Dir(D::CycleWindow),
+            label: "next pane",
+        },
+        Binding {
+            key: KeyCode::Left,
+            aliases: &[],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Left,
+            }),
+            label: "focus left",
+        },
+        Binding {
+            key: KeyCode::Right,
+            aliases: &[],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Right,
+            }),
+            label: "focus right",
+        },
+        Binding {
+            key: KeyCode::Up,
+            aliases: &[],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Up,
+            }),
+            label: "focus up",
+        },
+        Binding {
+            key: KeyCode::Down,
+            aliases: &[],
+            token: Dir(D::FocusWindow {
+                dir: FocusDir::Down,
+            }),
+            label: "focus down",
+        },
     ]
 };
 

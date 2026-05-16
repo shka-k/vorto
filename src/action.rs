@@ -42,6 +42,17 @@ pub enum Token {
     FindCharPrefix { forward: bool, till: bool },
     /// `r` — waiting for the replacement char.
     ReplaceCharPrefix,
+    /// `<space>w` — the "window" sub-leader. Tokenization context
+    /// transitions to a window-pending state so the next key resolves
+    /// against `WINDOW_BINDINGS` (split / close / focus / cycle).
+    WindowPrefix,
+    /// `Ctrl-W` — vim's window-prefix chord. Same role as
+    /// [`WindowPrefix`] but with a separate binding table because
+    /// vim's `Ctrl-W h` is "focus left" while `<space>w h` is
+    /// "horizontal split" in this app.
+    ///
+    /// [`WindowPrefix`]: Token::WindowPrefix
+    CtrlWPrefix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +289,29 @@ pub enum DirectKind {
     /// at (0, 0), enters Visual-line mode, parks the cursor on the last
     /// line so operators apply to every line.
     SelectWholeBuffer,
+    /// `:split` / `<space>w h` — open a new pane below the active one.
+    SplitWindowHorizontal,
+    /// `:vsplit` / `<space>w v` — open a new pane to the right.
+    SplitWindowVertical,
+    /// `:close` / `<space>w c` — close the active pane (refuses on
+    /// the last remaining pane; `:q` is the right tool there).
+    CloseWindow,
+    /// Move focus to the pane lying in the given cardinal direction.
+    /// Used by `Ctrl-W h/j/k/l` and `<space>w` arrow keys.
+    FocusWindow { dir: FocusDir },
+    /// Cycle to the next pane in tree-traversal order. `Ctrl-W w` /
+    /// `<space>w o`.
+    CycleWindow,
+}
+
+/// Cardinal direction for [`DirectKind::FocusWindow`]. Re-export of the
+/// pane-module enum so the action AST doesn't depend on `app::pane`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

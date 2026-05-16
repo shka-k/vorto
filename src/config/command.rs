@@ -137,4 +137,32 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         kind: DirectKind::ClearSearch,
         takes_path: false,
     },
+    CommandBind {
+        name: "split",
+        aliases: &["sp"],
+        description: "split pane below",
+        kind: DirectKind::SplitWindowHorizontal,
+        takes_path: false,
+    },
+    CommandBind {
+        name: "vsplit",
+        aliases: &["vsp", "vs"],
+        description: "split pane right",
+        kind: DirectKind::SplitWindowVertical,
+        takes_path: false,
+    },
+    CommandBind {
+        name: "close",
+        aliases: &["clo"],
+        description: "close active pane",
+        kind: DirectKind::CloseWindow,
+        takes_path: false,
+    },
+    CommandBind {
+        name: "only",
+        aliases: &["on"],
+        description: "(future) close all but active pane",
+        kind: DirectKind::CloseWindow,
+        takes_path: false,
+    },
 ];

@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, JumpState, Selection};
+use crate::config::EditorConfig;
+use crate::editor::Buffer;
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
 use crate::vcs::LineStatus;
@@ -671,6 +673,91 @@ fn diagnostic_line(diag: &RowDiag, inner_text_width: usize) -> Line<'static> {
                 .add_modifier(ratatui::style::Modifier::ITALIC),
         ),
     ])
+}
+
+/// Render an inactive pane's buffer. Deliberately a thin renderer:
+/// gutter (line numbers + VCS bars) and lines with syntax highlighting,
+/// but no diagnostics, no selection, no extra cursors, no jump-label
+/// overlay, no search-hit painting — those overlays all belong to the
+/// active pane. Scroll is anchored on the inactive pane's own
+/// `Buffer.cursor.row` / `Buffer.scroll`, so each pane remembers where
+/// the user was last looking.
+pub(super) fn draw_buffer_inactive(
+    f: &mut Frame,
+    buf: &Buffer,
+    eff: &EditorConfig,
+    area: Rect,
+) {
+    let height = area.height as usize;
+    let cur = buf.cursor.row;
+    let mut scroll = buf.scroll.get();
+    if cur < scroll {
+        scroll = cur;
+    } else if height > 0 && cur >= scroll + height {
+        scroll = cur + 1 - height;
+    }
+    buf.scroll.set(scroll);
+    buf.viewport_height.set(height);
+    let last_visible = scroll + height;
+    let captures = buf
+        .highlighter
+        .as_ref()
+        .map(|h| h.captures_in_rows(scroll, last_visible))
+        .unwrap_or_default();
+    let vcs_statuses = buf.vcs_statuses();
+    let tab_width = eff.tab_width.max(1);
+    let show_whitespace = eff.show_whitespace;
+    let inner_text_width = area
+        .width
+        .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
+    // Track col_scroll on the inactive pane's own cell so horizontal
+    // jumps still work when the user re-focuses it.
+    let line = buf
+        .lines
+        .get(cur)
+        .map(String::as_str)
+        .unwrap_or("");
+    let visual_col = char_col_to_visual(line, buf.cursor.col, tab_width);
+    let mut col_scroll = buf.col_scroll.get();
+    if inner_text_width > 0 {
+        if visual_col < col_scroll {
+            col_scroll = visual_col;
+        } else if visual_col >= col_scroll + inner_text_width {
+            col_scroll = visual_col + 1 - inner_text_width;
+        }
+    } else {
+        col_scroll = 0;
+    }
+    buf.col_scroll.set(col_scroll);
+
+    let mut visible: Vec<Line> = Vec::with_capacity(height);
+    for (visual_y, (i, line)) in (0_usize..)
+        .zip(buf.lines.iter().enumerate().skip(scroll))
+    {
+        if visual_y >= height {
+            break;
+        }
+        let mut spans = vec![sign_span(None)];
+        let num = format!("{:>4} ", i + 1);
+        spans.push(Span::styled(num, Style::default().fg(Color::DarkGray)));
+        let vcs_status = vcs_statuses.get(i).copied().flatten();
+        spans.push(vcs_bar_span(vcs_status));
+        spans.extend(render_line(
+            i,
+            line,
+            None,
+            &captures,
+            &[],
+            &[],
+            &[],
+            tab_width,
+            col_scroll,
+            inner_text_width,
+            show_whitespace,
+        ));
+        visible.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(visible), area);
 }
 
 fn severity_color(sev: Severity) -> Color {

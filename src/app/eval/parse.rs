@@ -18,7 +18,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::{DirectKind, Expr, MotionExpr, MotionKind, Operator, Target, Token};
-use crate::config::{GOTO_BINDINGS, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS, Z_BINDINGS};
+use crate::config::{
+    CTRL_W_BINDINGS, GOTO_BINDINGS, KeySig, Keymap, OBJECT_BINDINGS, OP_PENDING_BINDINGS,
+    WINDOW_BINDINGS, Z_BINDINGS,
+};
 use crate::mode::Mode;
 
 /// Result of [`classify`].
@@ -53,6 +56,14 @@ enum ParseCtx {
     /// Right after `z`. Expecting one of `z`/`t`/`b` for the viewport
     /// scroll-to family.
     ZPending,
+    /// Right after `<space>w` (the window sub-leader). Expecting one
+    /// of the keys in `WINDOW_BINDINGS` (split / focus / close /
+    /// cycle).
+    WindowPending,
+    /// Right after `Ctrl-W`. Expecting one of the keys in
+    /// `CTRL_W_BINDINGS` (vim's window-prefix chord — h/j/k/l move
+    /// focus, v / s split, c close, w cycle).
+    CtrlWPending,
 }
 
 /// Decide which tokenization context the next key falls into by looking
@@ -76,6 +87,8 @@ fn context_of(prev: &[Token]) -> ParseCtx {
         Some(GotoPrefix) => ParseCtx::GotoPending,
         Some(FindCharPrefix { .. } | ReplaceCharPrefix) => ParseCtx::CharArgPending,
         Some(ZPrefix) => ParseCtx::ZPending,
+        Some(WindowPrefix) => ParseCtx::WindowPending,
+        Some(CtrlWPrefix) => ParseCtx::CtrlWPending,
         // After Motion/Direct/Object/SelfDouble the command is already
         // Complete; we shouldn't be tokenizing in those contexts.
         _ => ParseCtx::Initial,
@@ -98,6 +111,16 @@ pub(in crate::app) fn tokenize(
     // Ctrl-r is redo (vim convention). Works in any context.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
         return Some(Token::Direct(DirectKind::Redo));
+    }
+    // Ctrl-w opens the window-prefix sub-grammar; the next key
+    // resolves through `CTRL_W_BINDINGS`. Only fires at the start of a
+    // fresh command — using `<C-w>` mid-sequence would clobber a
+    // pending operator/scope state.
+    if prev.is_empty()
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('w')
+    {
+        return Some(Token::CtrlWPrefix);
     }
 
     let ctx = context_of(prev);
@@ -129,7 +152,23 @@ pub(in crate::app) fn tokenize(
         ParseCtx::GotoPending => goto_pending_token(code),
         ParseCtx::CharArgPending => char_arg_token(code, prev),
         ParseCtx::ZPending => z_pending_token(code),
+        ParseCtx::WindowPending => window_pending_token(code),
+        ParseCtx::CtrlWPending => ctrl_w_pending_token(code),
     }
+}
+
+fn window_pending_token(code: crossterm::event::KeyCode) -> Option<Token> {
+    WINDOW_BINDINGS
+        .iter()
+        .find(|b| b.matches(code))
+        .map(|b| b.token)
+}
+
+fn ctrl_w_pending_token(code: crossterm::event::KeyCode) -> Option<Token> {
+    CTRL_W_BINDINGS
+        .iter()
+        .find(|b| b.matches(code))
+        .map(|b| b.token)
 }
 
 /// In CharArgPending, any printable character becomes the literal
@@ -284,6 +323,18 @@ fn build_expr(tokens: &[Token]) -> Option<Expr> {
             count: outer_count,
         }),
 
+        // Window sub-leader: <space>w v, <space>w h, <space>w <arrow>, ...
+        [LeaderPrefix, WindowPrefix, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
+
+        // Vim window-prefix chord: <C-w>h, <C-w>v, <C-w>w, ...
+        [CtrlWPrefix, Direct(d)] => Some(Expr::Direct {
+            kind: *d,
+            count: outer_count,
+        }),
+
         // gg → file start (with optional count: 5gg = goto line 5)
         [GotoPrefix, GotoPrefix] => Some(Expr::Motion(MotionExpr {
             motion: MotionKind::FileStart,
@@ -403,6 +454,8 @@ fn is_valid_prefix(tokens: &[Token]) -> bool {
     match rest {
         [] => true,                                  // just counts so far
         [LeaderPrefix] => true,                      // <space> waiting for follower
+        [LeaderPrefix, WindowPrefix] => true,        // <space>w waiting for v/h/c/o/arrow
+        [CtrlWPrefix] => true,                       // <C-w> waiting for follower
         [GotoPrefix] => true,                        // g waiting for the second g
         [ZPrefix] => true,                           // z waiting for z/t/b
         [FindCharPrefix { .. }] => true,             // f/F/t/T waiting for the literal char

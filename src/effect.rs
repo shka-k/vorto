@@ -15,7 +15,8 @@
 
 use std::path::PathBuf;
 
-use crate::action::{LastFind, PromptKind};
+use crate::action::{FocusDir, LastFind, PromptKind};
+use crate::app::SplitDir;
 use crate::mode::Mode;
 
 /// Viewport anchor for `zz` / `zt` / `zb`. Mirrors the enum that used to
@@ -125,4 +126,14 @@ pub enum Cmd {
     /// alongside each yank so `p` works inside vorto *and* other apps
     /// (browser, another terminal, …) can paste what was just yanked.
     SyncYank,
+
+    // ── Window splits ────────────────────────────────────────
+    /// Open a new pane alongside the active one.
+    SplitWindow { dir: SplitDir },
+    /// Close the active pane (no-op when only one pane is open).
+    CloseWindow,
+    /// Move focus to the pane in the given cardinal direction.
+    FocusWindow { dir: FocusDir },
+    /// `Ctrl-W w` — cycle focus to the next pane.
+    CycleWindow,
 }
