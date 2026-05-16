@@ -61,6 +61,8 @@ pub struct MatchItem {
 pub struct Finder {
     pub kind: FuzzyKind,
     pub query: String,
+    /// Char index of the insertion point into `query`, in `[0, char_count]`.
+    pub cursor: usize,
     pub items: Vec<String>,
     pub matches: Vec<MatchItem>,
     pub selected: usize,
@@ -93,6 +95,7 @@ impl Finder {
             items,
             matches: Vec::new(),
             selected: 0,
+            cursor: 0,
         };
         f.refilter();
         f
@@ -106,6 +109,7 @@ impl Finder {
             items,
             matches: Vec::new(),
             selected: 0,
+            cursor: 0,
         };
         f.refilter();
         f
@@ -122,6 +126,7 @@ impl Finder {
             items,
             matches: Vec::new(),
             selected: 0,
+            cursor: 0,
         };
         f.refilter();
         f
@@ -138,19 +143,69 @@ impl Finder {
             items,
             matches: Vec::new(),
             selected: 0,
+            cursor: 0,
         };
         f.refilter();
         f
     }
 
-    pub fn push(&mut self, c: char) {
-        self.query.push(c);
+    fn char_len(&self) -> usize {
+        self.query.chars().count()
+    }
+
+    fn byte_idx(&self, char_idx: usize) -> usize {
+        self.query
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(self.query.len())
+    }
+
+    fn insert(&mut self, c: char) {
+        let byte = self.byte_idx(self.cursor);
+        self.query.insert(byte, c);
+        self.cursor += 1;
         self.refilter();
     }
 
-    pub fn pop(&mut self) {
-        self.query.pop();
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = self.byte_idx(self.cursor);
+        let start = self.byte_idx(self.cursor - 1);
+        self.query.replace_range(start..end, "");
+        self.cursor -= 1;
         self.refilter();
+    }
+
+    fn delete(&mut self) {
+        if self.cursor >= self.char_len() {
+            return;
+        }
+        let start = self.byte_idx(self.cursor);
+        let end = self.byte_idx(self.cursor + 1);
+        self.query.replace_range(start..end, "");
+        self.refilter();
+    }
+
+    pub fn apply_line_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right if self.cursor < self.char_len() => self.cursor += 1,
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = self.char_len(),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Char('b') if ctrl => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Char('f') if ctrl && self.cursor < self.char_len() => self.cursor += 1,
+            KeyCode::Char('a') if ctrl => self.cursor = 0,
+            KeyCode::Char('e') if ctrl => self.cursor = self.char_len(),
+            KeyCode::Char(c) if !ctrl => self.insert(c),
+            _ => {}
+        }
     }
 
     pub fn next(&mut self) {

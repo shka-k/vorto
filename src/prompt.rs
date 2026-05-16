@@ -10,15 +10,120 @@ use crate::buffer_ref::BufferRef;
 use crate::finder::{Finder, FuzzyKind, IgnoreOpts};
 use crate::lsp::{CodeAction, Location};
 
+/// Single-line text input with a movable insertion point. `cursor` is a
+/// char index in `[0, char_count]`; methods keep it in that range and
+/// operate at char boundaries so multi-byte input behaves correctly.
+#[derive(Default)]
+pub struct LineInput {
+    buf: String,
+    cursor: usize,
+}
+
+impl LineInput {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.buf
+    }
+
+    /// Char index of the insertion point.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn char_len(&self) -> usize {
+        self.buf.chars().count()
+    }
+
+    fn byte_idx(&self, char_idx: usize) -> usize {
+        self.buf
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(self.buf.len())
+    }
+
+    pub fn insert(&mut self, c: char) {
+        let byte = self.byte_idx(self.cursor);
+        self.buf.insert(byte, c);
+        self.cursor += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = self.byte_idx(self.cursor);
+        let start = self.byte_idx(self.cursor - 1);
+        self.buf.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor >= self.char_len() {
+            return;
+        }
+        let start = self.byte_idx(self.cursor);
+        let end = self.byte_idx(self.cursor + 1);
+        self.buf.replace_range(start..end, "");
+    }
+
+    pub fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn right(&mut self) {
+        if self.cursor < self.char_len() {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn end(&mut self) {
+        self.cursor = self.char_len();
+    }
+
+    pub fn into_string(self) -> String {
+        self.buf
+    }
+}
+
+/// Apply a single key event to a [`LineInput`]. Handles the standard
+/// readline-ish bindings the user already expects in `:`, `/`, rename,
+/// and the fuzzy picker query (left/right, home/end, Ctrl-A/E/B/F,
+/// backspace/delete, plain char insertion).
+pub(crate) fn apply_line_key(input: &mut LineInput, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Left => input.left(),
+        KeyCode::Right => input.right(),
+        KeyCode::Home => input.home(),
+        KeyCode::End => input.end(),
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Char('b') if ctrl => input.left(),
+        KeyCode::Char('f') if ctrl => input.right(),
+        KeyCode::Char('a') if ctrl => input.home(),
+        KeyCode::Char('e') if ctrl => input.end(),
+        KeyCode::Char(c) if !ctrl => input.insert(c),
+        _ => {}
+    }
+}
+
 /// Active prompt state. Mirrors the four ways the user can interact
 /// with the bottom-line input: `:` command line, `/` (or `?`) search,
 /// fuzzy pickers, and rename.
 pub enum Prompt {
     None,
-    Command(String),
+    Command(LineInput),
     Search {
         forward: bool,
-        query: String,
+        query: LineInput,
     },
     Fuzzy(Finder),
     /// `<space>r` — text input for the new identifier. The cursor and
@@ -26,7 +131,7 @@ pub enum Prompt {
     /// request is built against the live cursor at submit, which
     /// matches what the user sees (the cursor is locked while the
     /// prompt is up because Normal-mode input is suspended).
-    Rename(String),
+    Rename(LineInput),
     /// `<space>a` — popup menu of LSP code actions, anchored just under
     /// the buffer cursor. Up/Down navigate, Enter submits, Esc cancels.
     /// Filtering is intentionally omitted: action lists are short and
@@ -115,13 +220,13 @@ impl PromptController {
     }
 
     pub fn open_command(&mut self) {
-        self.state = Prompt::Command(String::new());
+        self.state = Prompt::Command(LineInput::new());
     }
 
     pub fn open_search(&mut self, forward: bool) {
         self.state = Prompt::Search {
             forward,
-            query: String::new(),
+            query: LineInput::new(),
         };
     }
 
@@ -154,7 +259,7 @@ impl PromptController {
     }
 
     pub fn open_rename(&mut self) {
-        self.state = Prompt::Rename(String::new());
+        self.state = Prompt::Rename(LineInput::new());
     }
 
     /// Open the cursor-anchored code-actions popup. `actions` is consumed
@@ -187,39 +292,22 @@ impl PromptController {
 
         match &mut self.state {
             Prompt::None => PromptOutcome::Nothing,
-            Prompt::Command(buf) | Prompt::Rename(buf) => {
-                match key.code {
-                    KeyCode::Backspace => {
-                        buf.pop();
-                    }
-                    KeyCode::Char(c) => buf.push(c),
-                    _ => {}
-                }
+            Prompt::Command(input) | Prompt::Rename(input) => {
+                apply_line_key(input, key);
                 PromptOutcome::Nothing
             }
             Prompt::Search { query, .. } => {
-                match key.code {
-                    KeyCode::Backspace => {
-                        query.pop();
-                    }
-                    KeyCode::Char(c) => query.push(c),
-                    _ => {}
-                }
+                apply_line_key(query, key);
                 PromptOutcome::Nothing
             }
             Prompt::Fuzzy(finder) => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 match key.code {
-                    KeyCode::Backspace => finder.pop(),
                     KeyCode::Up => finder.prev(),
                     KeyCode::Down => finder.next(),
-                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        finder.next()
-                    }
-                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        finder.prev()
-                    }
-                    KeyCode::Char(c) => finder.push(c),
-                    _ => {}
+                    KeyCode::Char('n') if ctrl => finder.next(),
+                    KeyCode::Char('p') if ctrl => finder.prev(),
+                    _ => finder.apply_line_key(key),
                 }
                 PromptOutcome::Nothing
             }
@@ -277,9 +365,14 @@ impl PromptController {
         let prompt = std::mem::replace(&mut self.state, Prompt::None);
         match prompt {
             Prompt::None => PromptOutcome::Nothing,
-            Prompt::Command(line) => PromptOutcome::RunCommand(line.trim().to_string()),
-            Prompt::Search { forward, query } => PromptOutcome::Search { forward, query },
-            Prompt::Rename(new_name) => PromptOutcome::SubmitRename(new_name),
+            Prompt::Command(line) => {
+                PromptOutcome::RunCommand(line.as_str().trim().to_string())
+            }
+            Prompt::Search { forward, query } => PromptOutcome::Search {
+                forward,
+                query: query.into_string(),
+            },
+            Prompt::Rename(new_name) => PromptOutcome::SubmitRename(new_name.into_string()),
             Prompt::Fuzzy(finder) => self.submit_fuzzy(finder),
             Prompt::CodeActionMenu {
                 mut actions,

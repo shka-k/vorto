@@ -32,6 +32,13 @@ pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(query_line), chunks[0]);
 
+    // Park the terminal cursor at the finder's insertion point so the
+    // user can see where typing/backspace will land. `› ` is two
+    // single-cell glyphs.
+    let col = (2 + finder.cursor) as u16;
+    let x = chunks[0].x + col.min(chunks[0].width.saturating_sub(1));
+    f.set_cursor_position((x, chunks[0].y));
+
     let sep = "─".repeat(chunks[1].width as usize);
     f.render_widget(
         Paragraph::new(Span::styled(sep, Style::default().fg(Color::DarkGray))),

@@ -92,21 +92,29 @@ fn file_label(app: &App) -> String {
 }
 
 pub(super) fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
-    let (prefix, content) = match &app.prompt.state {
-        Prompt::Command(buf) => (":", buf.as_str()),
+    let (prefix, input) = match &app.prompt.state {
+        Prompt::Command(buf) => (":", buf),
         Prompt::Search {
             forward: true,
             query,
-        } => ("/", query.as_str()),
+        } => ("/", query),
         Prompt::Search {
             forward: false,
             query,
-        } => ("?", query.as_str()),
-        Prompt::Rename(buf) => ("rename ▸ ", buf.as_str()),
+        } => ("?", query),
+        Prompt::Rename(buf) => ("rename ▸ ", buf),
         _ => return,
     };
-    let text = format!("{}{}", prefix, content);
+    let text = format!("{}{}", prefix, input.as_str());
     f.render_widget(Paragraph::new(text), area);
+
+    // Park the terminal cursor at the input's insertion point so the
+    // user can see where typing/backspace will land. All prefixes are
+    // single-cell and typical input chars are too, so char count maps
+    // straight to cell column.
+    let col = (prefix.chars().count() + input.cursor()) as u16;
+    let x = area.x + col.min(area.width.saturating_sub(1));
+    f.set_cursor_position((x, area.y));
 }
 
 fn status_label(app: &App) -> (String, Color) {
