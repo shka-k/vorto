@@ -31,6 +31,7 @@ pub use search::SearchState;
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::Result;
 
@@ -92,6 +93,42 @@ pub struct Buffer {
     /// moves; wrapped in `RefCell` so the UI can refresh it through
     /// the shared `&Buffer` it gets at draw time.
     pub vcs_diff: RefCell<Option<(u64, Vec<Option<LineStatus>>)>>,
+    /// Filesystem signature `(mtime, len)` captured the last time
+    /// we touched the backing file — at load, after a successful
+    /// save, and after `:reload`. `None` for scratch buffers and
+    /// for new files that haven't been written yet. The runtime
+    /// checks this before `:w` to refuse silently clobbering an
+    /// external edit.
+    pub disk_meta: Option<FileMeta>,
+}
+
+/// Filesystem signature used to detect external edits between
+/// load/save and the next save. `len` is what `Metadata::len()`
+/// returns; `mtime` is `Metadata::modified()`. Both are cheap to
+/// fetch and together catch the overwhelming majority of out-of-band
+/// edits — a tool that rewrites a file with the same byte count *and*
+/// preserves mtime to nanosecond precision will slip through, but
+/// that combination is vanishingly rare in practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileMeta {
+    pub mtime: SystemTime,
+    pub len: u64,
+}
+
+impl FileMeta {
+    /// Fetch `(mtime, len)` for `path`. Returns `None` when the file
+    /// doesn't exist, isn't a regular file the OS will stat, or the
+    /// platform refuses to report modification time. Callers treat
+    /// `None` as "no baseline to compare against" and skip the drift
+    /// check rather than refusing to save.
+    pub fn of(path: &Path) -> Option<Self> {
+        let md = fs::metadata(path).ok()?;
+        let mtime = md.modified().ok()?;
+        Some(Self {
+            mtime,
+            len: md.len(),
+        })
+    }
 }
 
 /// Frozen buffer state for the undo/redo history. Exposed at the
@@ -151,6 +188,7 @@ impl Buffer {
             lines.push(String::new());
         }
         let vcs_base = vcs::head_blob_lines(path);
+        let disk_meta = FileMeta::of(path);
         Ok(Self {
             lines,
             cursor: Cursor::default(),
@@ -168,6 +206,7 @@ impl Buffer {
             redo_stack: Vec::new(),
             vcs_base,
             vcs_diff: RefCell::new(None),
+            disk_meta,
         })
     }
 
@@ -175,6 +214,7 @@ impl Buffer {
         if let Some(p) = &self.path {
             fs::write(p, self.lines.join("\n"))?;
             self.dirty = false;
+            self.disk_meta = FileMeta::of(p);
         }
         Ok(())
     }
@@ -183,6 +223,7 @@ impl Buffer {
         fs::write(path, self.lines.join("\n"))?;
         self.path = Some(path.to_path_buf());
         self.dirty = false;
+        self.disk_meta = FileMeta::of(path);
         Ok(())
     }
 
@@ -204,6 +245,64 @@ impl Buffer {
         };
         let source = self.lines.join("\n");
         h.refresh(&source, self.version);
+    }
+
+    /// Re-read `self.path` from disk and replace the buffer contents
+    /// in place. Caller is responsible for the dirty-vs-force decision
+    /// — this method always reloads.
+    ///
+    /// Returns:
+    /// - `Ok(true)` when the on-disk content differed and the buffer
+    ///   was rewritten (undo snapshot taken, version bumped, cursor
+    ///   clamped, highlighter refreshed).
+    /// - `Ok(false)` when disk matched the buffer — only `disk_meta`
+    ///   is refreshed (mtime alone may have moved), nothing else
+    ///   moves so undo history stays intact.
+    /// - `Err(_)` when the read failed or no path is attached.
+    pub fn reload_from_disk(&mut self) -> Result<bool> {
+        let path = self
+            .path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no file name"))?;
+        let text = fs::read_to_string(&path)?;
+        let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        if lines == self.lines {
+            self.disk_meta = FileMeta::of(&path);
+            return Ok(false);
+        }
+        self.snapshot();
+        self.lines = lines;
+        self.dirty = false;
+        self.version = self.version.wrapping_add(1);
+        self.vcs_base = vcs::head_blob_lines(&path);
+        *self.vcs_diff.borrow_mut() = None;
+        self.disk_meta = FileMeta::of(&path);
+
+        // Clamp every cursor (primary + extras) into the possibly-shrunk
+        // buffer. Done inline instead of going through `clamp_col` so
+        // we can fix `row` first — `clamp_col` reads `current_line` off
+        // the primary cursor's row, which would panic if `row` were
+        // still past the new end.
+        let last_row = self.lines.len().saturating_sub(1);
+        let clamp_one = |c: &mut Cursor, lines: &[String]| {
+            if c.row > last_row {
+                c.row = last_row;
+            }
+            let row_len = lines.get(c.row).map(|s| s.chars().count()).unwrap_or(0);
+            if c.col > row_len {
+                c.col = row_len;
+            }
+        };
+        clamp_one(&mut self.cursor, &self.lines);
+        for c in &mut self.extra_cursors {
+            clamp_one(c, &self.lines);
+        }
+
+        self.refresh_highlights();
+        Ok(true)
     }
 }
 

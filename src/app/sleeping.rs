@@ -98,6 +98,10 @@ pub struct SleepingBuffer {
     col_scroll: usize,
     undo: Vec<FrozenSnapshot>,
     redo: Vec<FrozenSnapshot>,
+    /// Preserved across freeze/thaw so the external-edit guard on
+    /// `:w` still rejects a clobber when the user comes back to a
+    /// buffer that was stashed while another tool rewrote the file.
+    disk_meta: Option<crate::editor::FileMeta>,
 }
 
 impl SleepingBuffer {
@@ -152,6 +156,7 @@ impl SleepingBuffer {
             col_scroll: b.col_scroll.get(),
             undo,
             redo,
+            disk_meta: b.disk_meta,
         }
     }
 
@@ -166,6 +171,7 @@ impl SleepingBuffer {
         b.version = self.version;
         b.scroll.set(self.scroll);
         b.col_scroll.set(self.col_scroll);
+        b.disk_meta = self.disk_meta;
         b.undo_stack = self
             .undo
             .into_iter()

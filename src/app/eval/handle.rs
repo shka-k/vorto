@@ -194,6 +194,10 @@ impl App {
                 Some(p) => cmds.push(Cmd::OpenPath(p)),
                 None => cmds.push(Cmd::ToastError("log path unresolved".into())),
             },
+            D::Reload => cmds.push(Cmd::Reload { force: false }),
+            D::ReloadForce => cmds.push(Cmd::Reload { force: true }),
+            D::ReloadAll => cmds.push(Cmd::ReloadAll { force: false }),
+            D::ReloadAllForce => cmds.push(Cmd::ReloadAll { force: true }),
             D::GotoLine => match ctx.rest.parse::<usize>() {
                 Ok(n) if n >= 1 => self.goto_line_n_pure(n),
                 _ => cmds.push(Cmd::ToastError("usage: :goto <line>".into())),

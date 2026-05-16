@@ -82,6 +82,19 @@ pub enum Cmd {
     },
     /// `:e <path>` — switch the active buffer to a file.
     OpenPath(PathBuf),
+    /// `:reload` / `:reload!` — re-read the active buffer's backing
+    /// file. `force` lets the caller discard unsaved edits; without
+    /// it, a dirty buffer surfaces an error toast instead.
+    Reload {
+        force: bool,
+    },
+    /// `:reload-all` / `:reload-all!` — re-read every file-backed
+    /// buffer (active, parked, sleeping). `force` discards unsaved
+    /// edits across the board; without it, dirty buffers are skipped
+    /// and counted in the summary toast.
+    ReloadAll {
+        force: bool,
+    },
     /// `gd` / `gD` / `gi` — send a definition-shaped request.
     LspJump {
         method: &'static str,
