@@ -31,11 +31,7 @@ impl SearchState {
     /// Unlike `find_next`, the forward variant searches from the cursor
     /// position (inclusive), so a cursor sitting at the start of a match
     /// selects that match instead of skipping to the next one.
-    pub fn find_match_range(
-        &self,
-        buffer: &Buffer,
-        forward: bool,
-    ) -> Option<(Cursor, Cursor)> {
+    pub fn find_match_range(&self, buffer: &Buffer, forward: bool) -> Option<(Cursor, Cursor)> {
         if self.query.is_empty() {
             return None;
         }

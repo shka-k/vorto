@@ -102,7 +102,9 @@ pub enum MotionKind {
     },
     /// `;` / `,` — repeat the last find-char motion, optionally with
     /// direction reversed (`,`).
-    RepeatFind { reverse: bool },
+    RepeatFind {
+        reverse: bool,
+    },
     FileStart,
     FileEnd,
     /// `%` — jump to the matching bracket of the pair under (or just
@@ -198,7 +200,9 @@ pub enum DirectKind {
     /// `zb` — scroll so the cursor's line is the bottom of the viewport.
     ViewportBottomAtCursor,
     /// `r<c>` — replace the char under the cursor with `c`.
-    ReplaceChar { ch: char },
+    ReplaceChar {
+        ch: char,
+    },
     Paste,
     Undo,
     Redo,
@@ -258,12 +262,16 @@ pub enum DirectKind {
     /// pattern, enter Visual mode, and select the match. `reverse`
     /// flips against the stored search direction (so `gN` after a `/`
     /// becomes `reverse: true`).
-    SearchSelectNext { reverse: bool },
+    SearchSelectNext {
+        reverse: bool,
+    },
     /// `g*` / `g#` — seed the search pattern from the word under the
     /// cursor (same extraction as `*` / `#`) without jumping. Useful
     /// when you want to highlight or set up for `n` / `gn` without
     /// losing your position.
-    SearchWordKeep { forward: bool },
+    SearchWordKeep {
+        forward: bool,
+    },
     /// `:noh` — clear the active search pattern so `hlsearch` stops
     /// painting matches. The pattern goes back to empty; `n` / `N`
     /// after this do nothing until a new search is performed.
@@ -298,7 +306,9 @@ pub enum DirectKind {
     CloseWindow,
     /// Move focus to the pane lying in the given cardinal direction.
     /// Used by `Ctrl-W h/j/k/l` and `<space>w` arrow keys.
-    FocusWindow { dir: FocusDir },
+    FocusWindow {
+        dir: FocusDir,
+    },
     /// Cycle to the next pane in tree-traversal order. `Ctrl-W w` /
     /// `<space>w o`.
     CycleWindow,

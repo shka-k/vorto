@@ -295,8 +295,7 @@ pub fn fuzzy_match(haystack: &str, needle: &str) -> Option<(i32, Vec<usize>)> {
             continue;
         }
         let at_start = start == 0;
-        let at_word_boundary = at_start
-            || matches!(hay[start - 1], '/' | '_' | '-' | '.' | ' ');
+        let at_word_boundary = at_start || matches!(hay[start - 1], '/' | '_' | '-' | '.' | ' ');
         let mut score: i32 = 100;
         score -= start as i32; // earlier wins
         if at_start {
@@ -333,13 +332,7 @@ fn is_symlink(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<String>,
-    depth: usize,
-    ignore: IgnoreOpts,
-) {
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize, ignore: IgnoreOpts) {
     if depth > 12 || out.len() >= 5000 {
         return;
     }

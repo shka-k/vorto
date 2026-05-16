@@ -105,8 +105,12 @@ pub fn run_external(formatter: &FormatterConfig, text: &str, cwd: &Path) -> Resu
         }
         bail!("formatter `{}`: {}", formatter.command, msg);
     }
-    let out = String::from_utf8(output.stdout)
-        .with_context(|| format!("formatter `{}` produced non-UTF-8 output", formatter.command))?;
+    let out = String::from_utf8(output.stdout).with_context(|| {
+        format!(
+            "formatter `{}` produced non-UTF-8 output",
+            formatter.command
+        )
+    })?;
     Ok(out)
 }
 

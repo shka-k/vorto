@@ -78,7 +78,13 @@ pub fn tracked_files(cwd: &Path) -> Option<Vec<String>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
         .stderr(Stdio::null())
         .output()
         .ok()?;

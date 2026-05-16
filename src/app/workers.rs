@@ -101,8 +101,7 @@ impl App {
             let cfg = lsp_cfg;
 
             thread::spawn(move || {
-                let root_dir =
-                    lsp::discover_root(&startup_cwd, Some(&path_buf), &cfg.root_markers);
+                let root_dir = lsp::discover_root(&startup_cwd, Some(&path_buf), &cfg.root_markers);
                 let root_uri = lsp::path_to_uri(&root_dir);
                 let result =
                     LspClient::spawn(&key_for_thread, &lang_for_thread, &cfg, &root_uri, emit);
@@ -120,11 +119,7 @@ impl App {
     /// Install a freshly-built highlighter on the active buffer. Dropped
     /// when `generation` doesn't match — the user opened another file
     /// while the worker was running.
-    pub fn handle_highlighter_ready(
-        &mut self,
-        generation: u64,
-        result: Result<Highlighter>,
-    ) {
+    pub fn handle_highlighter_ready(&mut self, generation: u64, result: Result<Highlighter>) {
         if generation != self.open_gen {
             return;
         }

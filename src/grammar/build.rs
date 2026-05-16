@@ -133,12 +133,7 @@ pub fn write_vendored_queries(query_dir: &Path, name: &str) -> Result<Vec<PathBu
         // Skip anything that isn't `.scm` — `include_dir!` can pick up
         // README/LICENSE files if someone drops one alongside the
         // queries.
-        if file
-            .path()
-            .extension()
-            .and_then(|s| s.to_str())
-            != Some("scm")
-        {
+        if file.path().extension().and_then(|s| s.to_str()) != Some("scm") {
             continue;
         }
         let dst = dest_dir.join(filename);
@@ -160,8 +155,7 @@ pub fn remove(name: &str, grammar_dir: &Path) -> Result<bool> {
     for ext in ["so", "dylib", "dll"] {
         let p = grammar_dir.join(format!("{}.{}", name, ext));
         if p.exists() {
-            std::fs::remove_file(&p)
-                .with_context(|| format!("removing {}", p.display()))?;
+            std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
             removed = true;
         }
     }

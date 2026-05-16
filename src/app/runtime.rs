@@ -121,9 +121,7 @@ impl App {
     /// way, the cursor lands on the match's last char so the selection
     /// covers the whole match. Shared with Visual-mode key handling.
     pub(super) fn run_search_select(&mut self, forward: bool) {
-        let Some((start, end_incl)) =
-            self.search.find_match_range(&self.buffer, forward)
-        else {
+        let Some((start, end_incl)) = self.search.find_match_range(&self.buffer, forward) else {
             self.push_toast(Toast::error("pattern not found"));
             return;
         };

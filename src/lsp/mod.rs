@@ -47,8 +47,8 @@ mod uri;
 
 pub use edits::apply_text_edits;
 pub use parse::{
-    parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve,
-    parse_hover, parse_locations, parse_workspace_edit,
+    parse_code_action, parse_code_actions, parse_completion, parse_completion_resolve, parse_hover,
+    parse_locations, parse_workspace_edit,
 };
 pub use root::discover_root;
 pub use types::{
@@ -249,7 +249,13 @@ impl LspClient {
         let blocking_pending: BlockingPending = Arc::new(Mutex::new(HashMap::new()));
         let blocking_for_reader = Arc::clone(&blocking_pending);
         thread::spawn(move || {
-            reader_loop(reader, emit, stdin_reader, key_for_reader, blocking_for_reader)
+            reader_loop(
+                reader,
+                emit,
+                stdin_reader,
+                key_for_reader,
+                blocking_for_reader,
+            )
         });
 
         Ok(Self {
@@ -360,13 +366,19 @@ impl LspClient {
             "options": options,
         });
         if let Err(e) = write_framed(&self.stdin, &request(id, "textDocument/formatting", params)) {
-            self.blocking_pending.lock().ok().and_then(|mut g| g.remove(&id));
+            self.blocking_pending
+                .lock()
+                .ok()
+                .and_then(|mut g| g.remove(&id));
             return Err(e);
         }
         let reply = rx.recv_timeout(timeout);
         // Always clean up — on timeout, otherwise the late response would
         // leak into the map forever.
-        self.blocking_pending.lock().ok().and_then(|mut g| g.remove(&id));
+        self.blocking_pending
+            .lock()
+            .ok()
+            .and_then(|mut g| g.remove(&id));
         match reply {
             Ok(BlockingReply::Ok(v)) => Ok(parse::parse_text_edits(&v)),
             Ok(BlockingReply::Err(msg)) => bail!("textDocument/formatting: {}", msg),

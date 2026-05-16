@@ -97,7 +97,10 @@ mod tests {
     fn page_motions_step_by_height_and_half() {
         // 20 rows, viewport height = 10. From row 0:
         //   <C-d> → row 5 (half), <C-f> → row 10 (full), and back.
-        let lines_str = (0..20).map(|i| i.to_string()).collect::<Vec<_>>().join("\n");
+        let lines_str = (0..20)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         let b = buf_with(&lines_str, 0, 10);
         let from = Cursor { row: 0, col: 0 };
         assert_eq!(page_target(&b, from, MotionKind::HalfPageDown).row, 5);

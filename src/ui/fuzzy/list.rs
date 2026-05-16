@@ -56,13 +56,7 @@ pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
         .take(list_h)
         .map(|(i, m)| {
             let raw = &finder.items[m.idx];
-            let line = render_match(
-                raw,
-                &m.positions,
-                i == finder.selected,
-                finder.kind,
-                list_w,
-            );
+            let line = render_match(raw, &m.positions, i == finder.selected, finder.kind, list_w);
             ListItem::new(line)
         })
         .collect();
@@ -97,7 +91,10 @@ fn render_match<'a>(
         }
         FuzzyKind::Locations => {
             let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
-            chars[..path_end].iter().rposition(|c| *c == '/').map(|i| i + 1)
+            chars[..path_end]
+                .iter()
+                .rposition(|c| *c == '/')
+                .map(|i| i + 1)
         }
         FuzzyKind::Lines => None,
     };

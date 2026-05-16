@@ -208,9 +208,7 @@ fn collapse_singletons(node: &mut PaneLayout) {
     loop {
         let collapsed = match node {
             PaneLayout::Leaf(_) => None,
-            PaneLayout::Split { children, .. } if children.len() == 1 => {
-                Some(children.remove(0))
-            }
+            PaneLayout::Split { children, .. } if children.len() == 1 => Some(children.remove(0)),
             PaneLayout::Split { children, .. } => {
                 for c in children.iter_mut() {
                     collapse_singletons(c);
@@ -450,12 +448,10 @@ impl App {
             let cy = rect.y + rect.height / 2;
             let dist: i32 = match dir {
                 FocusDir::Left | FocusDir::Right => {
-                    (cx as i32 - active_cx as i32).abs() * 2
-                        + (cy as i32 - active_cy as i32).abs()
+                    (cx as i32 - active_cx as i32).abs() * 2 + (cy as i32 - active_cy as i32).abs()
                 }
                 FocusDir::Up | FocusDir::Down => {
-                    (cy as i32 - active_cy as i32).abs() * 2
-                        + (cx as i32 - active_cx as i32).abs()
+                    (cy as i32 - active_cy as i32).abs() * 2 + (cx as i32 - active_cx as i32).abs()
                 }
             };
             match best {
@@ -472,19 +468,15 @@ impl App {
     /// new empty scratch.
     fn acquire_split_scratch(&mut self) -> (Buffer, BufferRef, u32) {
         let active_scratch_id = self.current_scratch_id;
-        let candidate = self
-            .opened_paths
-            .iter()
-            .rev()
-            .find_map(|r| match r {
-                BufferRef::Scratch(id)
-                    if Some(*id) != active_scratch_id
-                        && self.sleeping.contains_key(&BufferRef::Scratch(*id)) =>
-                {
-                    Some(*id)
-                }
-                _ => None,
-            });
+        let candidate = self.opened_paths.iter().rev().find_map(|r| match r {
+            BufferRef::Scratch(id)
+                if Some(*id) != active_scratch_id
+                    && self.sleeping.contains_key(&BufferRef::Scratch(*id)) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        });
         if let Some(id) = candidate
             && let Some(b) = self.sleeping.remove(&BufferRef::Scratch(id))
         {

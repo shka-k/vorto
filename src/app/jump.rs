@@ -27,8 +27,7 @@ use super::{App, Toast};
 /// 26 chars, so `26 * 26 = 676` distinct labels — more than fits in any
 /// reasonable viewport.
 const ALPHABET: &[char] = &[
-    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
-    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p',
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p',
     'z', 'x', 'c', 'v', 'b', 'n', 'm',
 ];
 

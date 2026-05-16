@@ -80,9 +80,9 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let mut visible: Vec<Line> = Vec::with_capacity(height);
     let mut visual_y: u16 = 0;
     let mut cursor_visual_y: u16 = 0;
-    let inner_text_width = area
-        .width
-        .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
+    let inner_text_width =
+        area.width
+            .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
     let col_scroll = compute_col_scroll(app, inner_text_width, tab_width);
     for (i, line) in app.buffer.lines.iter().enumerate().skip(scroll) {
         if visual_y as usize >= height {
@@ -154,11 +154,8 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
     let col_scroll = app.buffer.col_scroll.get();
     let on_screen_col = visual_col.saturating_sub(col_scroll);
-    let x = buf_area.x
-        + GUTTER_SIGN_WIDTH
-        + line_no_width
-        + GUTTER_VCS_WIDTH
-        + on_screen_col as u16;
+    let x =
+        buf_area.x + GUTTER_SIGN_WIDTH + line_no_width + GUTTER_VCS_WIDTH + on_screen_col as u16;
     // `draw_buffer` ran first this frame and published the cursor's
     // visual y, accounting for any virtual diagnostic lines pushing it
     // down. Use it directly so the terminal cursor stays glued to the
@@ -260,7 +257,9 @@ fn render_line(
     let is_search_hit =
         |col: usize| -> bool { search_hits.iter().any(|(lo, hi)| col >= *lo && col < *hi) };
     let jump_label_at = |col: usize| -> Option<char> {
-        jump_labels.iter().find_map(|(c, ch)| if *c == col { Some(*ch) } else { None })
+        jump_labels
+            .iter()
+            .find_map(|(c, ch)| if *c == col { Some(*ch) } else { None })
     };
     let is_selected = |col: usize| -> bool {
         let Some(sel) = sel else { return false };
@@ -531,11 +530,7 @@ fn find_matches_in_line(line: &str, query: &str) -> Vec<(usize, usize)> {
 /// `row_diag` is the per-row diagnostic summary; rows with diagnostics
 /// each consume one extra visual row, so the "does the cursor fit"
 /// check uses visual heights rather than raw source-row counts.
-fn compute_scroll(
-    app: &App,
-    height: usize,
-    row_diag: &HashMap<usize, RowDiag>,
-) -> usize {
+fn compute_scroll(app: &App, height: usize, row_diag: &HashMap<usize, RowDiag>) -> usize {
     let cur = app.buffer.cursor.row;
     let mut scroll = app.buffer.scroll.get();
     if cur < scroll {
@@ -660,7 +655,10 @@ fn diagnostic_line(diag: &RowDiag, inner_text_width: usize) -> Line<'static> {
         text.push_str(&format!(" (+{})", diag.extra));
     }
     if inner_text_width > 0 && text.chars().count() > inner_text_width {
-        let mut t: String = text.chars().take(inner_text_width.saturating_sub(1)).collect();
+        let mut t: String = text
+            .chars()
+            .take(inner_text_width.saturating_sub(1))
+            .collect();
         t.push('…');
         text = t;
     }
@@ -682,12 +680,7 @@ fn diagnostic_line(diag: &RowDiag, inner_text_width: usize) -> Line<'static> {
 /// active pane. Scroll is anchored on the inactive pane's own
 /// `Buffer.cursor.row` / `Buffer.scroll`, so each pane remembers where
 /// the user was last looking.
-pub(super) fn draw_buffer_inactive(
-    f: &mut Frame,
-    buf: &Buffer,
-    eff: &EditorConfig,
-    area: Rect,
-) {
+pub(super) fn draw_buffer_inactive(f: &mut Frame, buf: &Buffer, eff: &EditorConfig, area: Rect) {
     let height = area.height as usize;
     let cur = buf.cursor.row;
     let mut scroll = buf.scroll.get();
@@ -707,16 +700,12 @@ pub(super) fn draw_buffer_inactive(
     let vcs_statuses = buf.vcs_statuses();
     let tab_width = eff.tab_width.max(1);
     let show_whitespace = eff.show_whitespace;
-    let inner_text_width = area
-        .width
-        .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
+    let inner_text_width =
+        area.width
+            .saturating_sub(GUTTER_SIGN_WIDTH + 5 + GUTTER_VCS_WIDTH) as usize;
     // Track col_scroll on the inactive pane's own cell so horizontal
     // jumps still work when the user re-focuses it.
-    let line = buf
-        .lines
-        .get(cur)
-        .map(String::as_str)
-        .unwrap_or("");
+    let line = buf.lines.get(cur).map(String::as_str).unwrap_or("");
     let visual_col = char_col_to_visual(line, buf.cursor.col, tab_width);
     let mut col_scroll = buf.col_scroll.get();
     if inner_text_width > 0 {
@@ -731,9 +720,7 @@ pub(super) fn draw_buffer_inactive(
     buf.col_scroll.set(col_scroll);
 
     let mut visible: Vec<Line> = Vec::with_capacity(height);
-    for (visual_y, (i, line)) in (0_usize..)
-        .zip(buf.lines.iter().enumerate().skip(scroll))
-    {
+    for (visual_y, (i, line)) in (0_usize..).zip(buf.lines.iter().enumerate().skip(scroll)) {
         if visual_y >= height {
             break;
         }

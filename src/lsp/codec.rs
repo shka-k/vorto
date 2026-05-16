@@ -125,8 +125,9 @@ pub(super) fn reader_loop(
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         match method {
             "textDocument/publishDiagnostics" => {
-                if let Some(ev) =
-                    msg.get("params").and_then(|p| parse_publish_diagnostics(&client, p))
+                if let Some(ev) = msg
+                    .get("params")
+                    .and_then(|p| parse_publish_diagnostics(&client, p))
                 {
                     emit(ev);
                 }

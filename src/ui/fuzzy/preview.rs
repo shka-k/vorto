@@ -109,12 +109,7 @@ fn enqueue_preview(app: &App, path: &std::path::Path) {
     let _ = app.preview_tx.send(path.to_path_buf());
 }
 
-fn preview_plain_fallback(
-    f: &mut Frame,
-    area: Rect,
-    path: &std::path::Path,
-    target_row: usize,
-) {
+fn preview_plain_fallback(f: &mut Frame, area: Rect, path: &std::path::Path, target_row: usize) {
     match std::fs::read_to_string(path) {
         Ok(content) => {
             let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();

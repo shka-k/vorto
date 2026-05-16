@@ -260,41 +260,146 @@ pub fn builtin_lsp() -> HashMap<String, LspConfig> {
         );
     };
 
-    add(&mut m, "rust-analyzer", "rust-analyzer", &[], None,
-        &["Cargo.toml", "rust-project.json"]);
-    add(&mut m, "pyright", "pyright-langserver", &["--stdio"], None,
-        &["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"]);
+    add(
+        &mut m,
+        "rust-analyzer",
+        "rust-analyzer",
+        &[],
+        None,
+        &["Cargo.toml", "rust-project.json"],
+    );
+    add(
+        &mut m,
+        "pyright",
+        "pyright-langserver",
+        &["--stdio"],
+        None,
+        &[
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+        ],
+    );
     add(&mut m, "taplo", "taplo", &["lsp", "stdio"], None, &[]);
-    add(&mut m, "vtsls", "vtsls", &["--stdio"], None,
-        &["package.json", "tsconfig.json"]);
-    add(&mut m, "typescript-language-server", "typescript-language-server",
-        &["--stdio"], None, &["package.json", "tsconfig.json", "jsconfig.json"]);
+    add(
+        &mut m,
+        "vtsls",
+        "vtsls",
+        &["--stdio"],
+        None,
+        &["package.json", "tsconfig.json"],
+    );
+    add(
+        &mut m,
+        "typescript-language-server",
+        "typescript-language-server",
+        &["--stdio"],
+        None,
+        &["package.json", "tsconfig.json", "jsconfig.json"],
+    );
     add(&mut m, "gopls", "gopls", &[], None, &["go.mod", "go.work"]);
-    add(&mut m, "kotlin-language-server", "kotlin-language-server", &[], None,
-        &["settings.gradle.kts", "settings.gradle", "build.gradle.kts",
-          "build.gradle", "pom.xml"]);
-    add(&mut m, "clangd", "clangd", &[], None,
-        &["compile_commands.json", ".clangd", "Makefile", "CMakeLists.txt"]);
-    add(&mut m, "jdtls", "jdtls", &[], None,
-        &["pom.xml", "build.gradle", "build.gradle.kts", ".project"]);
+    add(
+        &mut m,
+        "kotlin-language-server",
+        "kotlin-language-server",
+        &[],
+        None,
+        &[
+            "settings.gradle.kts",
+            "settings.gradle",
+            "build.gradle.kts",
+            "build.gradle",
+            "pom.xml",
+        ],
+    );
+    add(
+        &mut m,
+        "clangd",
+        "clangd",
+        &[],
+        None,
+        &[
+            "compile_commands.json",
+            ".clangd",
+            "Makefile",
+            "CMakeLists.txt",
+        ],
+    );
+    add(
+        &mut m,
+        "jdtls",
+        "jdtls",
+        &[],
+        None,
+        &["pom.xml", "build.gradle", "build.gradle.kts", ".project"],
+    );
     // bash-language-server expects `languageId: "shellscript"`; the
     // `bash` language name wouldn't match.
-    add(&mut m, "bash-language-server", "bash-language-server", &["start"],
-        Some("shellscript"), &[]);
-    add(&mut m, "vscode-json-language-server", "vscode-json-language-server",
-        &["--stdio"], None, &[]);
-    add(&mut m, "yaml-language-server", "yaml-language-server", &["--stdio"],
-        None, &[]);
-    add(&mut m, "marksman", "marksman", &["server"], None,
-        &[".marksman.toml"]);
-    add(&mut m, "vscode-html-language-server", "vscode-html-language-server",
-        &["--stdio"], None, &[]);
-    add(&mut m, "vscode-css-language-server", "vscode-css-language-server",
-        &["--stdio"], None, &[]);
-    add(&mut m, "lua-language-server", "lua-language-server", &[], None,
-        &[".luarc.json", ".luarc.jsonc", "stylua.toml"]);
-    add(&mut m, "ruby-lsp", "ruby-lsp", &[], None,
-        &["Gemfile", ".rubocop.yml"]);
+    add(
+        &mut m,
+        "bash-language-server",
+        "bash-language-server",
+        &["start"],
+        Some("shellscript"),
+        &[],
+    );
+    add(
+        &mut m,
+        "vscode-json-language-server",
+        "vscode-json-language-server",
+        &["--stdio"],
+        None,
+        &[],
+    );
+    add(
+        &mut m,
+        "yaml-language-server",
+        "yaml-language-server",
+        &["--stdio"],
+        None,
+        &[],
+    );
+    add(
+        &mut m,
+        "marksman",
+        "marksman",
+        &["server"],
+        None,
+        &[".marksman.toml"],
+    );
+    add(
+        &mut m,
+        "vscode-html-language-server",
+        "vscode-html-language-server",
+        &["--stdio"],
+        None,
+        &[],
+    );
+    add(
+        &mut m,
+        "vscode-css-language-server",
+        "vscode-css-language-server",
+        &["--stdio"],
+        None,
+        &[],
+    );
+    add(
+        &mut m,
+        "lua-language-server",
+        "lua-language-server",
+        &[],
+        None,
+        &[".luarc.json", ".luarc.jsonc", "stylua.toml"],
+    );
+    add(
+        &mut m,
+        "ruby-lsp",
+        "ruby-lsp",
+        &[],
+        None,
+        &["Gemfile", ".rubocop.yml"],
+    );
     add(&mut m, "zls", "zls", &[], None, &["build.zig"]);
     m
 }
@@ -529,9 +634,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
 /// Merge user `[lsp]` over built-in defaults. Fields the user supplied
 /// replace ours; the rest survive. New entries (user-only) require
 /// `command`.
-fn resolve_lsp_table(
-    user: HashMap<String, LspToml>,
-) -> Result<HashMap<String, LspConfig>> {
+fn resolve_lsp_table(user: HashMap<String, LspToml>) -> Result<HashMap<String, LspConfig>> {
     let mut merged = builtin_lsp();
     for (name, user_entry) in user {
         if let Some(existing) = merged.get_mut(&name) {
@@ -589,10 +692,7 @@ fn build_language(
     let formatter = match c.formatter {
         Some(f) => Some(FormatterConfig {
             command: f.command.ok_or_else(|| {
-                anyhow!(
-                    "[languages.{}.formatter] requires a `command` field",
-                    name
-                )
+                anyhow!("[languages.{}.formatter] requires a `command` field", name)
             })?,
             args: f.args.unwrap_or_default(),
         }),
@@ -820,6 +920,9 @@ mod tests {
         );
         let langs = resolve(user_langs, &empty_lsp()).unwrap();
         assert_eq!(langs["typescript"].lsp.len(), 1);
-        assert_eq!(langs["typescript"].lsp[0].name, "typescript-language-server");
+        assert_eq!(
+            langs["typescript"].lsp[0].name,
+            "typescript-language-server"
+        );
     }
 }

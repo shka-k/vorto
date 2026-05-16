@@ -51,9 +51,7 @@ impl App {
         // genuinely idle. Other modes leave the toast alone — the user
         // is in the middle of input and shouldn't have side effects on
         // mode-exit Esc.
-        if matches!(self.mode, Mode::Normal)
-            && key.code == KeyCode::Esc
-            && self.toasts.has_fatal()
+        if matches!(self.mode, Mode::Normal) && key.code == KeyCode::Esc && self.toasts.has_fatal()
         {
             self.toasts.dismiss_fatal();
             return Ok(());

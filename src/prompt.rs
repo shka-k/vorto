@@ -217,9 +217,9 @@ fn build_completion(input: &str, root: &Path) -> Option<CompletionState> {
             // Preserve everything up to and including the first space,
             // and complete the partial path after it.
             let cmd = &input[..sp_byte];
-            let bind = COMMAND_BINDS.iter().find(|b| {
-                b.name == cmd || b.aliases.contains(&cmd)
-            })?;
+            let bind = COMMAND_BINDS
+                .iter()
+                .find(|b| b.name == cmd || b.aliases.contains(&cmd))?;
             if !bind.takes_path {
                 return None;
             }
@@ -566,9 +566,7 @@ impl PromptController {
         let prompt = std::mem::replace(&mut self.state, Prompt::None);
         match prompt {
             Prompt::None => PromptOutcome::Nothing,
-            Prompt::Command(cp) => {
-                PromptOutcome::RunCommand(cp.input.as_str().trim().to_string())
-            }
+            Prompt::Command(cp) => PromptOutcome::RunCommand(cp.input.as_str().trim().to_string()),
             Prompt::Search { forward, query } => PromptOutcome::Search {
                 forward,
                 query: query.into_string(),
@@ -596,7 +594,9 @@ impl PromptController {
             return PromptOutcome::Nothing;
         };
         match finder.kind {
-            FuzzyKind::Files { .. } => PromptOutcome::OpenRelativeFile(finder.items[sel.idx].clone()),
+            FuzzyKind::Files { .. } => {
+                PromptOutcome::OpenRelativeFile(finder.items[sel.idx].clone())
+            }
             FuzzyKind::Lines => PromptOutcome::GotoLine(sel.idx),
             FuzzyKind::Locations => {
                 let loc = self.locations.get(sel.idx).cloned();

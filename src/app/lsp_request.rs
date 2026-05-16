@@ -155,10 +155,8 @@ impl App {
         // matches what other editors do. The cursor lands between the
         // parens so the user can start typing args immediately.
         let kind_is_callable = matches!(item.kind, 2..=4);
-        let appended_call = kind_is_callable
-            && !base.contains('(')
-            && !base.contains('\n')
-            && !base.is_empty();
+        let appended_call =
+            kind_is_callable && !base.contains('(') && !base.contains('\n') && !base.is_empty();
         let replacement = if appended_call {
             format!("{}()", base)
         } else {
@@ -232,7 +230,12 @@ impl App {
         } else {
             // Multi-line replacement: cursor lands at the end of the
             // last inserted line.
-            replacement.rsplit('\n').next().unwrap_or("").chars().count()
+            replacement
+                .rsplit('\n')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .count()
         };
         let last = self.buffer.lines.len().saturating_sub(1);
         self.buffer.cursor.row = final_row.min(last);
@@ -332,7 +335,10 @@ impl App {
         }
         let source = action.source.clone();
         if let Err(e) = self.lsp.request_code_action_resolve(action.raw, &source) {
-            self.push_toast(Toast::error(format!("lsp codeAction/resolve: {}", root_cause(&e))));
+            self.push_toast(Toast::error(format!(
+                "lsp codeAction/resolve: {}",
+                root_cause(&e)
+            )));
         }
     }
 

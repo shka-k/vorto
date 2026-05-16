@@ -113,9 +113,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     f.render_widget(block, area);
 
     let body_h = inner.height as usize;
-    let scroll = state
-        .selected
-        .saturating_sub(body_h.saturating_sub(1));
+    let scroll = state.selected.saturating_sub(body_h.saturating_sub(1));
     let inner_w = inner.width as usize;
 
     let items: Vec<ListItem> = state
@@ -191,7 +189,12 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
 /// popup by default; falls back to the left side, then below, when
 /// there isn't horizontal room. Bails out silently when the item has
 /// no detail at all so we don't draw an empty box.
-fn draw_detail_side(f: &mut Frame, state: &crate::app::CompletionState, buf_area: Rect, main: Rect) {
+fn draw_detail_side(
+    f: &mut Frame,
+    state: &crate::app::CompletionState,
+    buf_area: Rect,
+    main: Rect,
+) {
     let Some(idx) = state.current_index() else {
         return;
     };
@@ -255,7 +258,12 @@ fn draw_detail_side(f: &mut Frame, state: &crate::app::CompletionState, buf_area
     let lines: Vec<Line> = wrapped
         .into_iter()
         .take(body_h)
-        .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::Rgb(200, 200, 200)))))
+        .map(|s| {
+            Line::from(Span::styled(
+                s,
+                Style::default().fg(Color::Rgb(200, 200, 200)),
+            ))
+        })
         .collect();
     let para = ratatui::widgets::Paragraph::new(lines);
     f.render_widget(para, inner);

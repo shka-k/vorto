@@ -44,7 +44,14 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
     let mut next_y_bottom = buf_area.y + buf_area.height;
     for toast in active {
         let level = toast.level();
-        let rect = layout_toast(toast.text(), level, buf_area, content_max, max_h, next_y_bottom);
+        let rect = layout_toast(
+            toast.text(),
+            level,
+            buf_area,
+            content_max,
+            max_h,
+            next_y_bottom,
+        );
         let Some((area, lines, hint)) = rect else {
             continue;
         };
@@ -137,13 +144,7 @@ fn layout_toast(
     Some((area, lines, hint))
 }
 
-fn draw_one(
-    f: &mut Frame,
-    area: Rect,
-    level: Level,
-    lines: &[String],
-    hint: Option<&'static str>,
-) {
+fn draw_one(f: &mut Frame, area: Rect, level: Level, lines: &[String], hint: Option<&'static str>) {
     let bg = Style::default().bg(super::PANEL_BG);
     let fg = match level {
         Level::Info => Color::Reset,

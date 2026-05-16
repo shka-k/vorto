@@ -172,9 +172,7 @@ impl Buffer {
 /// Char index of the first non-whitespace character on a line, or `0`
 /// when the line is entirely whitespace (vim's `^` behaviour).
 fn first_non_blank(line: &str) -> usize {
-    line.chars()
-        .position(|c| !c.is_whitespace())
-        .unwrap_or(0)
+    line.chars().position(|c| !c.is_whitespace()).unwrap_or(0)
 }
 
 /// Char index of the last non-whitespace character on a line, or `0`

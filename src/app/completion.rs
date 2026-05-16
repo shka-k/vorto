@@ -115,7 +115,11 @@ impl CompletionState {
             .iter()
             .enumerate()
             .filter_map(|(i, it)| {
-                let hay = it.filter_text.as_deref().unwrap_or(&it.label).to_lowercase();
+                let hay = it
+                    .filter_text
+                    .as_deref()
+                    .unwrap_or(&it.label)
+                    .to_lowercase();
                 let pos = if needle.is_empty() {
                     Some(0)
                 } else {
@@ -234,7 +238,11 @@ mod tests {
         let items = vec![item("into_vec"), item("vec"), item("vector")];
         let mut s = CompletionState::new(Cursor { row: 0, col: 0 }, items, "vec");
         // "vec" and "vector" start with the needle (pos 0), "into_vec" doesn't (pos 5).
-        let order: Vec<&str> = s.filtered.iter().map(|i| s.items[*i].label.as_str()).collect();
+        let order: Vec<&str> = s
+            .filtered
+            .iter()
+            .map(|i| s.items[*i].label.as_str())
+            .collect();
         assert_eq!(order, vec!["vec", "vector", "into_vec"]);
         // Empty prefix → every item, original order.
         s.refilter("");

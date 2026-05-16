@@ -63,8 +63,7 @@ fn main() -> Result<()> {
     // Anchor for LSP workspace root discovery — captured once here so the
     // value can't shift mid-session if anything changes the process's
     // cwd. Every later `:e` resolves against the same directory.
-    let mut startup_cwd =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut startup_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // `vorto <dir>` (e.g. `vorto .`) means "open this directory as the
     // workspace root" — not "load the directory as a file" (which would

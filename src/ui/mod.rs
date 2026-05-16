@@ -201,7 +201,10 @@ fn compute_pane_rects(
 /// Resolve the effective editor settings (tab width, show-whitespace,
 /// …) for an inactive pane's buffer. Mirrors `App::effective_editor`
 /// which is hard-coded to read from `app.buffer`.
-fn effective_editor_for_buffer(app: &App, buf: &crate::editor::Buffer) -> crate::config::EditorConfig {
+fn effective_editor_for_buffer(
+    app: &App,
+    buf: &crate::editor::Buffer,
+) -> crate::config::EditorConfig {
     let base = app.config.editor;
     let Some(path) = buf.path.as_ref() else {
         return base;
@@ -278,10 +281,12 @@ fn draw_pane_borders(f: &mut Frame, node: &PaneLayout, area: Rect, active: PaneI
             };
             let text: Vec<ratatui::text::Line> = match direction {
                 Direction::Horizontal => (0..divider.height)
-                    .map(|_| ratatui::text::Line::from(Span::styled(
-                        glyph,
-                        Style::default().fg(Color::DarkGray),
-                    )))
+                    .map(|_| {
+                        ratatui::text::Line::from(Span::styled(
+                            glyph,
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                    })
                     .collect(),
                 Direction::Vertical => vec![ratatui::text::Line::from(Span::styled(
                     glyph.repeat(divider.width as usize),

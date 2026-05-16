@@ -176,35 +176,28 @@ fn ctrl_w_pending_token(code: crossterm::event::KeyCode) -> Option<Token> {
 /// prefix — `f`/`F`/`t`/`T` produce a `FindChar` motion, `r`
 /// produces a `ReplaceChar` direct.
 fn char_arg_token(code: KeyCode, prev: &[Token]) -> Option<Token> {
-    let prefix = prev.iter().rev().find(|t| {
-        matches!(
-            t,
-            Token::FindCharPrefix { .. } | Token::ReplaceCharPrefix
-        )
-    })?;
+    let prefix = prev
+        .iter()
+        .rev()
+        .find(|t| matches!(t, Token::FindCharPrefix { .. } | Token::ReplaceCharPrefix))?;
     let KeyCode::Char(ch) = code else {
         // Escape/arrow/etc abort the pending arg — return None so the
         // caller clears the token stack.
         return None;
     };
     match prefix {
-        Token::FindCharPrefix { forward, till } => {
-            Some(Token::Motion(MotionKind::FindChar {
-                ch,
-                forward: *forward,
-                till: *till,
-            }))
-        }
+        Token::FindCharPrefix { forward, till } => Some(Token::Motion(MotionKind::FindChar {
+            ch,
+            forward: *forward,
+            till: *till,
+        })),
         Token::ReplaceCharPrefix => Some(Token::Direct(DirectKind::ReplaceChar { ch })),
         _ => None,
     }
 }
 
 fn z_pending_token(code: KeyCode) -> Option<Token> {
-    Z_BINDINGS
-        .iter()
-        .find(|b| b.matches(code))
-        .map(|b| b.token)
+    Z_BINDINGS.iter().find(|b| b.matches(code)).map(|b| b.token)
 }
 
 fn goto_pending_token(code: KeyCode) -> Option<Token> {
@@ -452,28 +445,25 @@ fn is_valid_prefix(tokens: &[Token]) -> bool {
     // Strip leading counts — they're transparent to validity.
     let (_, rest) = take_count(tokens);
     match rest {
-        [] => true,                                  // just counts so far
-        [LeaderPrefix] => true,                      // <space> waiting for follower
-        [LeaderPrefix, WindowPrefix] => true,        // <space>w waiting for v/h/c/o/arrow
-        [CtrlWPrefix] => true,                       // <C-w> waiting for follower
-        [GotoPrefix] => true,                        // g waiting for the second g
-        [ZPrefix] => true,                           // z waiting for z/t/b
-        [FindCharPrefix { .. }] => true,             // f/F/t/T waiting for the literal char
-        [ReplaceCharPrefix] => true,                 // r waiting for the replacement
-        [Op(_)] => true,                             // d / y / c waiting
-        [Op(_), Scope(_)] => true,                   // di waiting for an object
-        [Op(_), FindCharPrefix { .. }] => true,      // df / dt waiting for the char
-        [Op(_), GotoPrefix] => true,                 // dg waiting for the follower
+        [] => true,                             // just counts so far
+        [LeaderPrefix] => true,                 // <space> waiting for follower
+        [LeaderPrefix, WindowPrefix] => true,   // <space>w waiting for v/h/c/o/arrow
+        [CtrlWPrefix] => true,                  // <C-w> waiting for follower
+        [GotoPrefix] => true,                   // g waiting for the second g
+        [ZPrefix] => true,                      // z waiting for z/t/b
+        [FindCharPrefix { .. }] => true,        // f/F/t/T waiting for the literal char
+        [ReplaceCharPrefix] => true,            // r waiting for the replacement
+        [Op(_)] => true,                        // d / y / c waiting
+        [Op(_), Scope(_)] => true,              // di waiting for an object
+        [Op(_), FindCharPrefix { .. }] => true, // df / dt waiting for the char
+        [Op(_), GotoPrefix] => true,            // dg waiting for the follower
         [Op(_), Count(_), ..] => {
             // After Op + inner counts the only continuations we can
             // still extend are Scope (heading for a text object) and
             // FindCharPrefix (heading for an `f<c>` style target).
             let after_op = &rest[1..];
             let (_, after_inner_count) = take_count(after_op);
-            matches!(
-                after_inner_count,
-                [] | [Scope(_)] | [FindCharPrefix { .. }]
-            )
+            matches!(after_inner_count, [] | [Scope(_)] | [FindCharPrefix { .. }])
         }
         _ => false,
     }

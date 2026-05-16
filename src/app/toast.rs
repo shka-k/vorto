@@ -109,10 +109,7 @@ impl ToastQueue {
         if t.text().is_empty() {
             return;
         }
-        let last = self
-            .pending
-            .back_mut()
-            .or_else(|| self.active.last_mut());
+        let last = self.pending.back_mut().or_else(|| self.active.last_mut());
         if let Some(prev) = last
             && prev.level() == t.level()
             && prev.text() == t.text()

@@ -129,11 +129,15 @@ pub enum Cmd {
 
     // ── Window splits ────────────────────────────────────────
     /// Open a new pane alongside the active one.
-    SplitWindow { dir: SplitDir },
+    SplitWindow {
+        dir: SplitDir,
+    },
     /// Close the active pane (no-op when only one pane is open).
     CloseWindow,
     /// Move focus to the pane in the given cardinal direction.
-    FocusWindow { dir: FocusDir },
+    FocusWindow {
+        dir: FocusDir,
+    },
     /// `Ctrl-W w` — cycle focus to the next pane.
     CycleWindow,
 }

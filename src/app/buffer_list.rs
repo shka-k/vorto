@@ -69,7 +69,10 @@ impl App {
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.lsp.set_last_synced_version(self.buffer.version);
                 self.record_opened(BufferRef::Scratch(id));
-                self.push_toast(Toast::info(format!("deleted, {}", BufferRef::scratch_label(id))));
+                self.push_toast(Toast::info(format!(
+                    "deleted, {}",
+                    BufferRef::scratch_label(id)
+                )));
                 Ok(())
             }
             Some(BufferRef::File(path)) => {
@@ -121,7 +124,10 @@ impl App {
                 self.current_scratch_id = Some(id);
                 self.open_gen = self.open_gen.wrapping_add(1);
                 self.record_opened(BufferRef::Scratch(id));
-                self.push_toast(Toast::info(format!("deleted, {}", BufferRef::scratch_label(id))));
+                self.push_toast(Toast::info(format!(
+                    "deleted, {}",
+                    BufferRef::scratch_label(id)
+                )));
                 Ok(())
             }
         }

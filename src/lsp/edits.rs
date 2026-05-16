@@ -48,8 +48,8 @@ fn apply_one_edit(lines: &mut Vec<String>, edit: &TextEdit) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::{Position, Range};
+    use super::*;
 
     #[test]
     fn apply_text_edits_single_line_replace() {

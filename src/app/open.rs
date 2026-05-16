@@ -150,9 +150,7 @@ impl App {
             }
             Err(e) => return Err(e),
         };
-        let canon = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         // Tell the previous LSP client we're done with that document so
         // it can drop diagnostics and stop watching it.
         self.lsp.detach_current();

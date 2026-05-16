@@ -66,13 +66,7 @@ fn scan_forward(
     None
 }
 
-fn scan_back(
-    lines: &[String],
-    row: usize,
-    col: usize,
-    open: char,
-    close: char,
-) -> Option<Cursor> {
+fn scan_back(lines: &[String], row: usize, col: usize, open: char, close: char) -> Option<Cursor> {
     let mut depth = 0_i32;
     let mut r = row as isize;
     let mut c = col as isize;

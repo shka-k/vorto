@@ -50,9 +50,9 @@ pub struct InsertRecording {
     pub keys: Vec<InsertKey>,
 }
 use crate::config::{Config, EditorConfig};
+use crate::editor::SearchState;
 use crate::editor::{Buffer, Cursor};
 use crate::event::AppEvent;
-use crate::editor::SearchState;
 use crate::finder::{self, PreviewLru};
 use crate::mode::Mode;
 use crate::prompt::PromptController;
@@ -357,8 +357,7 @@ impl App {
         // surfaced inline. Mirrors `ui::buffer`'s filter: the cursor's
         // row shows any severity, every other row only shows `Error`s.
         let cursor_row = self.buffer.cursor.row;
-        let mut diag_rows: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
+        let mut diag_rows: std::collections::HashSet<usize> = std::collections::HashSet::new();
         if let Some(diags) = self.current_diagnostics() {
             for d in diags {
                 let r = d.range.start.line as usize;

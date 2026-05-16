@@ -241,8 +241,10 @@ impl LspCoordinator {
     pub fn current_diagnostics(&self) -> Option<Vec<Diagnostic>> {
         let uri = self.current_uri.as_ref()?;
         let per_client = self.diagnostics.get(uri)?;
-        let mut out: Vec<Diagnostic> =
-            per_client.values().flat_map(|v| v.iter().cloned()).collect();
+        let mut out: Vec<Diagnostic> = per_client
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect();
         if out.is_empty() {
             return None;
         }
@@ -431,8 +433,7 @@ impl LspCoordinator {
             diagnostics
                 .iter()
                 .filter(|d| {
-                    d.range.start.line <= cursor.row as u32
-                        && cursor.row as u32 <= d.range.end.line
+                    d.range.start.line <= cursor.row as u32 && cursor.row as u32 <= d.range.end.line
                 })
                 .map(diagnostic_to_json)
                 .collect(),
@@ -675,11 +676,7 @@ impl LspCoordinator {
     /// surfaced once every fanned-out client has reported back.
     pub fn handle_event(&mut self, ev: LspEvent) -> LspEventOutcome {
         match ev {
-            LspEvent::Diagnostics {
-                client,
-                uri,
-                items,
-            } => {
+            LspEvent::Diagnostics { client, uri, items } => {
                 let entry = self.diagnostics.entry(uri.clone()).or_default();
                 if items.is_empty() {
                     entry.remove(&client);

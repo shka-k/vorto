@@ -232,20 +232,18 @@ pub fn parse_completion(v: &Value) -> Vec<CompletionItem> {
 fn parse_completion_item(v: &Value) -> Option<CompletionItem> {
     let label = v.get("label")?.as_str()?.to_string();
     let kind = v.get("kind").and_then(|x| x.as_u64()).unwrap_or(0) as u8;
-    let text_edit = v
-        .get("textEdit")
-        .and_then(|te| {
-            // Modern servers may send `InsertReplaceEdit { insert, replace, newText }`
-            // instead of `TextEdit { range, newText }`. Prefer the replace
-            // range — that's the one we'd want when the user accepts.
-            let new_text = te.get("newText")?.as_str()?.to_string();
-            let range = te
-                .get("range")
-                .or_else(|| te.get("replace"))
-                .or_else(|| te.get("insert"))?;
-            let range = parse_range(range)?;
-            Some(TextEdit { range, new_text })
-        });
+    let text_edit = v.get("textEdit").and_then(|te| {
+        // Modern servers may send `InsertReplaceEdit { insert, replace, newText }`
+        // instead of `TextEdit { range, newText }`. Prefer the replace
+        // range — that's the one we'd want when the user accepts.
+        let new_text = te.get("newText")?.as_str()?.to_string();
+        let range = te
+            .get("range")
+            .or_else(|| te.get("replace"))
+            .or_else(|| te.get("insert"))?;
+        let range = parse_range(range)?;
+        Some(TextEdit { range, new_text })
+    });
     let insert_text = v
         .get("insertText")
         .and_then(|x| x.as_str())

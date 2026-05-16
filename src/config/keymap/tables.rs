@@ -79,25 +79,37 @@ pub const OP_PENDING_BINDINGS: &[Binding] = {
         Binding {
             key: KeyCode::Char('f'),
             aliases: &[],
-            token: Token::FindCharPrefix { forward: true, till: false },
+            token: Token::FindCharPrefix {
+                forward: true,
+                till: false,
+            },
             label: "find char →",
         },
         Binding {
             key: KeyCode::Char('F'),
             aliases: &[],
-            token: Token::FindCharPrefix { forward: false, till: false },
+            token: Token::FindCharPrefix {
+                forward: false,
+                till: false,
+            },
             label: "find char ←",
         },
         Binding {
             key: KeyCode::Char('t'),
             aliases: &[],
-            token: Token::FindCharPrefix { forward: true, till: true },
+            token: Token::FindCharPrefix {
+                forward: true,
+                till: true,
+            },
             label: "till char →",
         },
         Binding {
             key: KeyCode::Char('T'),
             aliases: &[],
-            token: Token::FindCharPrefix { forward: false, till: true },
+            token: Token::FindCharPrefix {
+                forward: false,
+                till: true,
+            },
             label: "till char ←",
         },
         Binding {
@@ -450,9 +462,7 @@ pub const CTRL_W_BINDINGS: &[Binding] = {
         Binding {
             key: KeyCode::Char('k'),
             aliases: &[KeyCode::Up],
-            token: Dir(D::FocusWindow {
-                dir: FocusDir::Up,
-            }),
+            token: Dir(D::FocusWindow { dir: FocusDir::Up }),
             label: "focus up",
         },
         Binding {
@@ -534,9 +544,7 @@ pub const WINDOW_BINDINGS: &[Binding] = {
         Binding {
             key: KeyCode::Up,
             aliases: &[],
-            token: Dir(D::FocusWindow {
-                dir: FocusDir::Up,
-            }),
+            token: Dir(D::FocusWindow { dir: FocusDir::Up }),
             label: "focus up",
         },
         Binding {
@@ -660,19 +668,31 @@ impl Keymap {
             // ── char-find prefixes (next keystroke is the literal target) ─
             (
                 KeyCode::Char('f'),
-                FindCharPrefix { forward: true, till: false },
+                FindCharPrefix {
+                    forward: true,
+                    till: false,
+                },
             ),
             (
                 KeyCode::Char('F'),
-                FindCharPrefix { forward: false, till: false },
+                FindCharPrefix {
+                    forward: false,
+                    till: false,
+                },
             ),
             (
                 KeyCode::Char('t'),
-                FindCharPrefix { forward: true, till: true },
+                FindCharPrefix {
+                    forward: true,
+                    till: true,
+                },
             ),
             (
                 KeyCode::Char('T'),
-                FindCharPrefix { forward: false, till: true },
+                FindCharPrefix {
+                    forward: false,
+                    till: true,
+                },
             ),
             (KeyCode::Char(';'), Motion(M::RepeatFind { reverse: false })),
             (KeyCode::Char(','), Motion(M::RepeatFind { reverse: true })),

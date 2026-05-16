@@ -129,9 +129,7 @@ fn install(args: &[String], grammar_dir: &Path, query_dir: &Path) -> Result<()> 
                     let names: Vec<String> = report
                         .queries
                         .iter()
-                        .filter_map(|p| {
-                            p.file_name().map(|n| n.to_string_lossy().into_owned())
-                        })
+                        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                         .collect();
                     eprintln!(
                         "    queries: {} ({} files)",

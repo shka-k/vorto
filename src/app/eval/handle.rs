@@ -85,10 +85,7 @@ impl App {
             }
             D::InsertAtLineStart => {
                 let line = self.buffer.current_line();
-                let col = line
-                    .chars()
-                    .position(|c| !c.is_whitespace())
-                    .unwrap_or(0);
+                let col = line.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
                 self.buffer.cursor.col = col;
                 cmds.push(Cmd::EnterMode(Mode::Insert));
             }
@@ -261,9 +258,7 @@ impl App {
                     self.buffer.cursor.col = start_col;
                     self.buffer.clamp_col(false);
                 }
-                None => cmds.push(Cmd::ToastError(
-                    "no comment token for this buffer".into(),
-                )),
+                None => cmds.push(Cmd::ToastError("no comment token for this buffer".into())),
             },
             D::SplitWindowHorizontal => cmds.push(Cmd::SplitWindow {
                 dir: crate::app::SplitDir::Horizontal,
@@ -576,10 +571,7 @@ fn resolve_motion_pure(
                 None,
             )
         }
-        M::FindChar { ch, forward, till } => (
-            Some(motion),
-            Some(LastFind { ch, forward, till }),
-        ),
+        M::FindChar { ch, forward, till } => (Some(motion), Some(LastFind { ch, forward, till })),
         _ => (Some(motion), None),
     }
 }

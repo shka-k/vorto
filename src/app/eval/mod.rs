@@ -178,7 +178,9 @@ pub(super) fn format_dirty_list(refs: &[&crate::buffer_ref::BufferRef]) -> Strin
         .iter()
         .take(SHOW)
         .map(|r| match r {
-            crate::buffer_ref::BufferRef::Scratch(id) => crate::buffer_ref::BufferRef::scratch_label(*id),
+            crate::buffer_ref::BufferRef::Scratch(id) => {
+                crate::buffer_ref::BufferRef::scratch_label(*id)
+            }
             crate::buffer_ref::BufferRef::File(p) => p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -293,13 +295,7 @@ impl App {
             let new_cmds = self.handle_expr_no_snapshot(expr.clone(), ctx);
             let after = line_chars(self);
             new_positions[orig_idx] = self.buffer.cursor;
-            adjust_already_processed(
-                &mut new_positions,
-                &all[..i],
-                &before,
-                &after,
-                pos,
-            );
+            adjust_already_processed(&mut new_positions, &all[..i], &before, &after, pos);
             for cmd in new_cmds {
                 match &cmd {
                     Cmd::EnterMode(_) if seen_mode => continue,
@@ -333,11 +329,7 @@ impl App {
 /// Per-row char-count snapshot, used to spot what a single fan-out
 /// step did to the buffer.
 fn line_chars(app: &App) -> Vec<usize> {
-    app.buffer
-        .lines
-        .iter()
-        .map(|l| l.chars().count())
-        .collect()
+    app.buffer.lines.iter().map(|l| l.chars().count()).collect()
 }
 
 /// Apply the buffer diff between `before` and `after` to the cursors

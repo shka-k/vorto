@@ -86,7 +86,9 @@ impl Buffer {
     /// col 0) qualifies too, vacuously.
     pub fn line_is_blank_before_cursor(&self) -> bool {
         let line = &self.lines[self.cursor.row];
-        line.chars().take(self.cursor.col).all(|c| c.is_whitespace())
+        line.chars()
+            .take(self.cursor.col)
+            .all(|c| c.is_whitespace())
     }
 
     /// Add one indent level at the start of `row`. Picks tabs vs
@@ -556,7 +558,10 @@ mod tests {
     fn indent_line_falls_back_to_use_tabs_on_blank_leading() {
         let mut b = Buffer::new();
         b.lines = vec!["x".into()];
-        let s = IndentSettings { width: 4, use_tabs: true };
+        let s = IndentSettings {
+            width: 4,
+            use_tabs: true,
+        };
         b.indent_line(0, s);
         assert_eq!(b.lines[0], "\tx");
     }
