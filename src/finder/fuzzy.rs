@@ -42,6 +42,11 @@ pub enum FuzzyKind {
     /// Cross-file location results (LSP references). The Finder carries
     /// a parallel `locations` Vec so the picker can jump on selection.
     Locations,
+    /// `<space>/` — workspace-wide line search. Same data shape as
+    /// [`Locations`] (display strings + parallel `Location`s on the
+    /// prompt controller); split out only so the picker title and any
+    /// kind-specific rendering can differ.
+    WorkspaceSearch,
     /// Recently-opened files (MRU). Display strings are paths
     /// (typically relative to startup_cwd); the
     /// [`PromptController`](crate::prompt::PromptController) keeps a
@@ -54,7 +59,20 @@ pub enum FuzzyKind {
 pub struct MatchItem {
     pub idx: usize,
     pub score: i32,
+    /// Char indices into the item haystack that the fuzzy matcher hit —
+    /// used by the picker list to paint hit highlights. Empty for
+    /// [`FuzzyKind::WorkspaceSearch`], where matching is against line
+    /// content rather than the displayed path.
     pub positions: Vec<usize>,
+    /// 0-based line numbers in the item's file that matched the query,
+    /// sorted by score (best first). Only populated for
+    /// [`FuzzyKind::WorkspaceSearch`]; empty for every other kind.
+    pub line_hits: Vec<usize>,
+    /// 0-based char column where the matched substring starts in the
+    /// hit line — used by `<space>/` so the cursor lands on the match
+    /// itself when the user submits, not at column 0. Only meaningful
+    /// for [`FuzzyKind::WorkspaceSearch`]; zero everywhere else.
+    pub match_col: u32,
 }
 
 #[derive(Debug)]
@@ -64,8 +82,39 @@ pub struct Finder {
     /// Char index of the insertion point into `query`, in `[0, char_count]`.
     pub cursor: usize,
     pub items: Vec<String>,
+    /// Per-file line content, parallel to [`items`] when
+    /// `kind == FuzzyKind::WorkspaceSearch`. Empty (and unused) for
+    /// every other kind. Lives on the Finder so `refilter` can scan
+    /// content on each keystroke without bouncing through a side
+    /// channel.
+    ///
+    /// [`items`]: Self::items
+    pub file_lines: Vec<Vec<String>>,
     pub matches: Vec<MatchItem>,
     pub selected: usize,
+}
+
+/// Enumerate every file the file/workspace pickers should see, anchored
+/// at `root` and respecting `ignore`. Prefers `git ls-files` when in a
+/// repo; otherwise walks the directory tree applying the same caps and
+/// blacklists as the manual walker.
+pub fn workspace_files(root: &Path, ignore: IgnoreOpts) -> Vec<String> {
+    let mut items = if ignore.vcs
+        && let Some(paths) = crate::vcs::tracked_files(root)
+    {
+        paths
+            .into_iter()
+            .filter(|p| !ignore.hidden || !is_hidden_path(p))
+            .filter(|p| !is_symlink(&root.join(p)))
+            .take(5000)
+            .collect()
+    } else {
+        let mut v = Vec::new();
+        collect_files(root, root, &mut v, 0, ignore);
+        v
+    };
+    items.sort();
+    items
 }
 
 impl Finder {
@@ -74,25 +123,12 @@ impl Finder {
         // both faster and exact (matches `.gitignore`, global excludes,
         // etc.). The hidden filter is applied as a post-pass since git
         // doesn't know about our dotfile convention.
-        let mut items = if ignore.vcs
-            && let Some(paths) = crate::vcs::tracked_files(root)
-        {
-            paths
-                .into_iter()
-                .filter(|p| !ignore.hidden || !is_hidden_path(p))
-                .filter(|p| !is_symlink(&root.join(p)))
-                .take(5000)
-                .collect()
-        } else {
-            let mut v = Vec::new();
-            collect_files(root, root, &mut v, 0, ignore);
-            v
-        };
-        items.sort();
+        let items = workspace_files(root, ignore);
         let mut f = Self {
             kind: FuzzyKind::Files { ignore },
             query: String::new(),
             items,
+            file_lines: Vec::new(),
             matches: Vec::new(),
             selected: 0,
             cursor: 0,
@@ -107,6 +143,7 @@ impl Finder {
             kind: FuzzyKind::Lines,
             query: String::new(),
             items,
+            file_lines: Vec::new(),
             matches: Vec::new(),
             selected: 0,
             cursor: 0,
@@ -124,6 +161,7 @@ impl Finder {
             kind: FuzzyKind::Buffers,
             query: String::new(),
             items,
+            file_lines: Vec::new(),
             matches: Vec::new(),
             selected: 0,
             cursor: 0,
@@ -141,6 +179,36 @@ impl Finder {
             kind: FuzzyKind::Locations,
             query: String::new(),
             items,
+            file_lines: Vec::new(),
+            matches: Vec::new(),
+            selected: 0,
+            cursor: 0,
+        };
+        f.refilter();
+        f
+    }
+
+    /// Build a [`FuzzyKind::WorkspaceSearch`] picker.
+    ///
+    /// `items` are the file path display strings (typically relative to
+    /// `startup_cwd`); `file_lines[i]` is the full line content of
+    /// `items[i]`. Each keystroke fuzzy-matches the query against every
+    /// line of every file, then surfaces one [`MatchItem`] per file —
+    /// with `line_hits` listing the rows that matched, best score
+    /// first.
+    ///
+    /// The caller still keeps a parallel `Vec<Location>` side-channel
+    /// (one per file) on [`PromptController`] so submit can build a
+    /// jump target without recomputing paths/URIs.
+    ///
+    /// [`PromptController`]: crate::prompt::PromptController
+    pub fn workspace_search(items: Vec<String>, file_lines: Vec<Vec<String>>) -> Self {
+        debug_assert_eq!(items.len(), file_lines.len());
+        let mut f = Self {
+            kind: FuzzyKind::WorkspaceSearch,
+            query: String::new(),
+            items,
+            file_lines,
             matches: Vec::new(),
             selected: 0,
             cursor: 0,
@@ -224,12 +292,19 @@ impl Finder {
 
     fn refilter(&mut self) {
         self.matches.clear();
+        if matches!(self.kind, FuzzyKind::WorkspaceSearch) {
+            self.refilter_workspace();
+            self.selected = 0;
+            return;
+        }
         if self.query.is_empty() {
             for (i, _) in self.items.iter().enumerate().take(500) {
                 self.matches.push(MatchItem {
                     idx: i,
                     score: 0,
                     positions: Vec::new(),
+                    line_hits: Vec::new(),
+                    match_col: 0,
                 });
             }
         } else {
@@ -239,6 +314,8 @@ impl Finder {
                         idx: i,
                         score,
                         positions,
+                        line_hits: Vec::new(),
+                        match_col: 0,
                     });
                 }
             }
@@ -247,6 +324,120 @@ impl Finder {
         }
         self.selected = 0;
     }
+
+    /// `<space>/` refilter path. Substring match (not fuzzy) to match
+    /// Helix's global-search behavior — predictable, fast, and aligned
+    /// with how users already think about grepping a codebase.
+    ///
+    /// Case handling is smart-case: a lower-case query matches case-
+    /// insensitively; any upper-case char in the query flips the match
+    /// to case-sensitive. Same convention as ripgrep / vim's `smartcase`.
+    ///
+    /// Empty query → no candidates (nothing to match yet); otherwise:
+    /// emit one match item per line containing the query, capped
+    /// globally at [`WORKSPACE_SEARCH_MAX_MATCHES`] across the whole
+    /// workspace.
+    fn refilter_workspace(&mut self) {
+        if self.query.is_empty() {
+            return;
+        }
+        let case_sensitive = self.query.chars().any(|c| c.is_uppercase());
+        // Build a lower-cased needle once per refilter when we're going
+        // case-insensitive — the per-line allocation that would
+        // otherwise happen inside the loop is exactly what we're trying
+        // to avoid.
+        let needle_ci: Option<String> = (!case_sensitive).then(|| self.query.to_lowercase());
+        let mut scratch = String::new();
+        'files: for (i, lines) in self.file_lines.iter().enumerate() {
+            for (row, line) in lines.iter().enumerate() {
+                // Long lines (minified bundles, generated data) blow up
+                // `to_lowercase` for nothing useful — bail before
+                // touching them.
+                if line.len() > WORKSPACE_SEARCH_MAX_LINE_BYTES {
+                    continue;
+                }
+                // Locate the substring's char column too (not just
+                // whether it matches) so submit can land the cursor on
+                // the hit, not at the line start.
+                let col: Option<u32> = match &needle_ci {
+                    None => line
+                        .find(self.query.as_str())
+                        .map(|byte| line[..byte].chars().count() as u32),
+                    Some(n) => {
+                        if line.is_ascii() {
+                            // ASCII fast-path: byte offset == char
+                            // offset, and no allocation.
+                            ascii_find_lower(line, n).map(|c| c as u32)
+                        } else {
+                            // Unicode case-insensitive: lower-case via a
+                            // reused scratch. The lowered byte offset
+                            // can't be mapped back to the original
+                            // line's char column precisely (case-folding
+                            // is not length-preserving), so on a hit we
+                            // settle for column 0 — rare in code search.
+                            scratch.clear();
+                            scratch.extend(line.chars().flat_map(|c| c.to_lowercase()));
+                            scratch.contains(n.as_str()).then_some(0)
+                        }
+                    }
+                };
+                let Some(col) = col else {
+                    continue;
+                };
+                // One row in the candidate list per match. `idx` still
+                // names the file (used to look up the path / location
+                // / line content); `line_hits` holds the matched row;
+                // `match_col` is the cursor target column.
+                self.matches.push(MatchItem {
+                    idx: i,
+                    // Substring match — no real score to sort by. Keep
+                    // encounter order (workspace-walker alphabetical
+                    // by file, then top-to-bottom within each file).
+                    score: 0,
+                    positions: Vec::new(),
+                    line_hits: vec![row],
+                    match_col: col,
+                });
+                if self.matches.len() >= WORKSPACE_SEARCH_MAX_MATCHES {
+                    break 'files;
+                }
+            }
+        }
+    }
+}
+
+/// Hard cap on candidate rows in workspace search. Each row is one
+/// match (one file × one line); a runaway query that hits everything
+/// would otherwise blow up the list and per-frame render cost.
+const WORKSPACE_SEARCH_MAX_MATCHES: usize = 2000;
+
+/// Skip lines longer than this in workspace search. Lower-casing and
+/// substring-scanning a 200KB minified line would dominate every
+/// keystroke; cap it.
+const WORKSPACE_SEARCH_MAX_LINE_BYTES: usize = 500;
+
+/// Case-insensitive substring search for the ASCII fast path. Returns
+/// the byte (= char, since haystack is ASCII) offset where the needle
+/// first occurs. `needle_lower` must already be lower-cased; the
+/// haystack is lower-cased inline byte-by-byte (no allocation).
+fn ascii_find_lower(hay: &str, needle_lower: &str) -> Option<usize> {
+    let hay = hay.as_bytes();
+    let ndl = needle_lower.as_bytes();
+    if ndl.is_empty() {
+        return Some(0);
+    }
+    if hay.len() < ndl.len() {
+        return None;
+    }
+    'outer: for start in 0..=hay.len() - ndl.len() {
+        for (k, &n) in ndl.iter().enumerate() {
+            if hay[start + k].to_ascii_lowercase() != n {
+                continue 'outer;
+            }
+        }
+        return Some(start);
+    }
+    None
 }
 
 // Smith-Waterman-style scoring constants, matching nucleo/fzf v2 so

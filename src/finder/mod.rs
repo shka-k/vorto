@@ -7,5 +7,5 @@
 mod fuzzy;
 mod preview;
 
-pub use fuzzy::{Finder, FuzzyKind, IgnoreOpts};
+pub use fuzzy::{Finder, FuzzyKind, IgnoreOpts, workspace_files};
 pub use preview::{PreviewEntry, PreviewLru, spawn_preview_worker};

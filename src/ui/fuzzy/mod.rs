@@ -26,6 +26,7 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
         FuzzyKind::Files { .. } => " fuzzy: files ",
         FuzzyKind::Lines => " fuzzy: lines ",
         FuzzyKind::Locations => " references ",
+        FuzzyKind::WorkspaceSearch => " fuzzy: workspace ",
         FuzzyKind::Buffers => " fuzzy: buffers ",
     };
     let total = finder.matches.len();

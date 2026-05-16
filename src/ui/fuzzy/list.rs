@@ -56,11 +56,80 @@ pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
         .take(list_h)
         .map(|(i, m)| {
             let raw = &finder.items[m.idx];
-            let line = render_match(raw, &m.positions, i == finder.selected, finder.kind, list_w);
+            let line = if matches!(finder.kind, FuzzyKind::WorkspaceSearch) {
+                let row = m.line_hits.first().copied().unwrap_or(0);
+                render_workspace_match(raw, row, i == finder.selected, list_w)
+            } else {
+                render_match(raw, &m.positions, i == finder.selected, finder.kind, list_w)
+            };
             ListItem::new(line)
         })
         .collect();
     f.render_widget(List::new(items), chunks[2]);
+}
+
+/// Render a `<space>/` row: `path:line`. Path's directory portion is
+/// dimmed; the line number is cyan. Matching is against line content
+/// but we don't reproduce the content in the row — the preview pane on
+/// the right already shows it under a target band.
+fn render_workspace_match<'a>(
+    path: &'a str,
+    row: usize,
+    selected: bool,
+    width: usize,
+) -> Line<'a> {
+    let base = if selected {
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let dir = base.fg(DIR_FG).add_modifier(Modifier::BOLD);
+    let lineno = base.fg(Color::Cyan);
+    let sep = base.fg(Color::DarkGray);
+    let dim = base.fg(Color::DarkGray);
+
+    let lineno_str = format!(":{}", row + 1);
+    let lineno_w = lineno_str.chars().count();
+    let path_chars: Vec<char> = path.chars().collect();
+    let dir_end = path_chars
+        .iter()
+        .rposition(|c| *c == '/')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    // Head-truncate the path so the basename stays visible, leaving
+    // room for `:NN` at the tail.
+    let path_budget = width.saturating_sub(lineno_w);
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    let path_start = if path_budget >= 2 && path_chars.len() > path_budget {
+        spans.push(Span::styled("…", dim));
+        path_chars.len() - (path_budget - 1)
+    } else {
+        0
+    };
+    let dir_end_visible = dir_end.saturating_sub(path_start);
+
+    let mut buf = String::new();
+    let mut buf_style = base;
+    for (offset, &c) in path_chars[path_start..].iter().enumerate() {
+        let in_dir = offset < dir_end_visible;
+        let style = if in_dir { dir } else { base };
+        if style != buf_style && !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+        }
+        buf_style = style;
+        buf.push(c);
+    }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, buf_style));
+    }
+
+    // ":NN" — dim separator, colored line number. No trailing content.
+    spans.push(Span::styled(":", sep));
+    spans.push(Span::styled(format!("{}", row + 1), lineno));
+    Line::from(spans)
 }
 
 fn render_match<'a>(
@@ -89,7 +158,7 @@ fn render_match<'a>(
         FuzzyKind::Files { .. } | FuzzyKind::Buffers => {
             chars.iter().rposition(|c| *c == '/').map(|i| i + 1)
         }
-        FuzzyKind::Locations => {
+        FuzzyKind::Locations | FuzzyKind::WorkspaceSearch => {
             let path_end = chars.iter().position(|c| *c == ':').unwrap_or(chars.len());
             chars[..path_end]
                 .iter()

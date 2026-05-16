@@ -18,7 +18,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::PromptKind;
-use crate::finder::FuzzyKind;
+use crate::finder::{FuzzyKind, IgnoreOpts, workspace_files};
+use crate::lsp::{Location, Position, Range, path_to_uri};
 use crate::mode::Mode;
 
 use crate::buffer_ref::BufferRef;
@@ -115,6 +116,7 @@ impl App {
             // from a keymap — fall through to a no-op rather than a fresh
             // empty picker that would do nothing useful on submit.
             PromptKind::Fuzzy(FuzzyKind::Locations) => {}
+            PromptKind::Fuzzy(FuzzyKind::WorkspaceSearch) => self.open_workspace_search(),
         }
     }
 
@@ -199,4 +201,139 @@ impl App {
             .unzip();
         self.prompt.open_buffers(items, refs);
     }
+
+    /// `<space>/` — build a workspace-wide line picker.
+    ///
+    /// Reads every tracked text file (or, outside git, the manual
+    /// walker's set), one `path:line: text` entry per line, and opens
+    /// the picker. The fuzzy matcher then narrows in-memory as the
+    /// user types, and submit jumps to the file/line via
+    /// `JumpToLocation` (same outcome path as the LSP references
+    /// picker — preview, jump-list bookkeeping, all free).
+    ///
+    /// Filtering, applied in order, to keep the candidate set small
+    /// enough that per-keystroke refilter stays snappy:
+    ///   - `.gitignore` + dotfiles excluded (the file walker handles
+    ///     this via [`IgnoreOpts::DEFAULT`]).
+    ///   - Only extensions in [`is_searchable_ext`] are considered —
+    ///     so lockfiles, minified bundles, binaries, etc. don't blow
+    ///     up the line count.
+    ///   - Files larger than [`WORKSPACE_SEARCH_MAX_FILE_BYTES`] and
+    ///     anything that doesn't decode as UTF-8 are skipped silently.
+    ///   - Hard cap of [`WORKSPACE_SEARCH_MAX_LINES`] total entries.
+    fn open_workspace_search(&mut self) {
+        let cwd = &self.startup_cwd;
+        let files = workspace_files(cwd, IgnoreOpts::DEFAULT);
+        let mut items: Vec<String> = Vec::new();
+        let mut file_lines: Vec<Vec<String>> = Vec::new();
+        let mut locations: Vec<Location> = Vec::new();
+        let mut total_lines: usize = 0;
+        for rel in files {
+            if total_lines >= WORKSPACE_SEARCH_MAX_LINES {
+                break;
+            }
+            if !is_searchable_ext(&rel) {
+                continue;
+            }
+            let abs = cwd.join(&rel);
+            let meta = match std::fs::metadata(&abs) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.len() > WORKSPACE_SEARCH_MAX_FILE_BYTES {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&abs) {
+                Ok(s) => s,
+                // Binary or non-UTF8 — skip rather than surface garbled
+                // bytes.
+                Err(_) => continue,
+            };
+            // Keep one slot per line so MatchItem::line_hits indexes
+            // line up with on-disk row numbers (empty lines included).
+            let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+            if lines.is_empty() {
+                continue;
+            }
+            total_lines += lines.len();
+            items.push(rel.clone());
+            file_lines.push(lines);
+            locations.push(Location {
+                uri: path_to_uri(&abs),
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+            });
+        }
+        self.prompt
+            .open_workspace_search(items, file_lines, locations);
+    }
+}
+
+/// Hard cap on the number of candidate lines fed to the fuzzy matcher
+/// for `<space>/`. The matcher runs O(items * query) on every
+/// keystroke, so a soft ceiling here keeps typing latency bounded in
+/// huge repos.
+const WORKSPACE_SEARCH_MAX_LINES: usize = 50_000;
+
+/// Skip individual files larger than this. Catches generated lockfiles,
+/// vendored bundles, etc. that would dominate the candidate list with
+/// content the user almost never wants to search.
+const WORKSPACE_SEARCH_MAX_FILE_BYTES: u64 = 1_000_000;
+
+/// True if `rel` looks like a source/text file the user is likely to
+/// want to grep. Extension allowlist rather than a binary denylist
+/// because the search input is the *content* of every line we collect
+/// — we'd rather skip an obscure plaintext format than include
+/// `package-lock.json` and watch the picker stall on every keystroke.
+///
+/// `Makefile`, `Dockerfile`, etc. (no extension) are accepted by
+/// matching common basenames.
+fn is_searchable_ext(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    if matches!(
+        name,
+        "Makefile" | "Dockerfile" | "Justfile" | "CMakeLists.txt" | "Cargo.toml" | "Cargo.lock"
+    ) {
+        // Cargo.lock is intentionally in: it's small enough on most
+        // repos, and users do occasionally search for versions in it.
+        // The size cap catches the pathological case.
+        return true;
+    }
+    let Some(ext) = name.rsplit_once('.').map(|(_, e)| e) else {
+        return false;
+    };
+    matches!(
+        ext,
+        // Systems
+        "rs" | "go" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx"
+        | "zig" | "v" | "nim" | "d"
+        // JVM
+        | "java" | "kt" | "kts" | "scala" | "groovy" | "clj" | "cljs"
+        // Apple
+        | "swift" | "m" | "mm"
+        // Scripting
+        | "py" | "rb" | "php" | "pl" | "lua" | "tcl" | "r"
+        | "sh" | "bash" | "zsh" | "fish"
+        // Web
+        | "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "vue" | "svelte"
+        | "html" | "htm" | "xml" | "css" | "scss" | "sass" | "less" | "styl"
+        // Functional
+        | "hs" | "ml" | "mli" | "ex" | "exs" | "erl" | "elm" | "fs" | "fsx"
+        // Configs / data
+        | "toml" | "yaml" | "yml" | "json" | "jsonc" | "ron" | "ini" | "conf"
+        | "env" | "properties"
+        // Docs / plain text
+        | "md" | "mdx" | "rst" | "adoc" | "txt" | "tex"
+        // Build / query
+        | "mk" | "cmake" | "ninja" | "bazel" | "bzl" | "gradle"
+        | "sql" | "graphql" | "gql" | "proto"
+    )
 }

@@ -365,6 +365,15 @@ pub const LEADER_DEFAULTS: &[Binding] = {
             token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::Lines))),
             label: "fuzzy lines",
         },
+        // `<space>/` — fuzzy search every line in every tracked file
+        // in the workspace. Built on the same `Location`-based picker
+        // as LSP references, so submit jumps via the jump list.
+        Binding {
+            key: KeyCode::Char('/'),
+            aliases: &[],
+            token: Dir(D::OpenPrompt(PromptKind::Fuzzy(FuzzyKind::WorkspaceSearch))),
+            label: "fuzzy workspace",
+        },
         Binding {
             key: KeyCode::Char('b'),
             aliases: &[],

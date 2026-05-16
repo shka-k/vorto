@@ -38,6 +38,18 @@ pub(super) fn draw_fuzzy_preview(f: &mut Frame, app: &App, finder: &Finder, area
             };
             preview_from_file(f, app, area, &path, loc.range.start.line as usize);
         }
+        FuzzyKind::WorkspaceSearch => {
+            // The base location stores line 0; the actual preview target
+            // is the best-scoring matched row carried on the match item.
+            let Some(loc) = app.prompt.locations().get(sel.idx) else {
+                return;
+            };
+            let Some(path) = crate::lsp::uri_to_path(&loc.uri) else {
+                return;
+            };
+            let target = sel.line_hits.first().copied().unwrap_or(0);
+            preview_from_file(f, app, area, &path, target);
+        }
         FuzzyKind::Buffers => {
             // The picker keeps a parallel `BufferRef` slice on the
             // prompt. Files reuse the file-preview path; Scratch has

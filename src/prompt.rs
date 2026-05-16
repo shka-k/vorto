@@ -433,6 +433,25 @@ impl PromptController {
         self.state = Prompt::Fuzzy(Finder::locations(items));
     }
 
+    /// `<space>/` — workspace-wide content picker. One candidate per
+    /// file; on each keystroke, the Finder scans every line of every
+    /// file and exposes the matched line numbers via
+    /// `MatchItem::line_hits`. Submit jumps to the file's best-scoring
+    /// match.
+    ///
+    /// `locations[i]` is the *base* `Location` for `items[i]`: same
+    /// URI, line 0. Submit clones it and overrides the line with
+    /// `selection.line_hits[0]`.
+    pub fn open_workspace_search(
+        &mut self,
+        items: Vec<String>,
+        file_lines: Vec<Vec<String>>,
+        locations: Vec<Location>,
+    ) {
+        self.locations = locations;
+        self.state = Prompt::Fuzzy(Finder::workspace_search(items, file_lines));
+    }
+
     /// Open a fuzzy buffer picker. `items` are the display strings;
     /// `refs` are the matching [`BufferRef`]s in parallel order —
     /// the controller stores them and produces an `OpenBuffer(…)`
@@ -600,6 +619,26 @@ impl PromptController {
             FuzzyKind::Lines => PromptOutcome::GotoLine(sel.idx),
             FuzzyKind::Locations => {
                 let loc = self.locations.get(sel.idx).cloned();
+                self.locations.clear();
+                match loc {
+                    Some(loc) => PromptOutcome::JumpToLocation(loc),
+                    None => PromptOutcome::Nothing,
+                }
+            }
+            FuzzyKind::WorkspaceSearch => {
+                // Workspace search: `locations[idx]` is the file's base
+                // (line 0, char 0); the actual jump target lives on the
+                // match item — the matched row, and the column where
+                // the substring starts, so the cursor lands on the hit.
+                let target_line = sel.line_hits.first().copied().unwrap_or(0) as u32;
+                let target_col = sel.match_col;
+                let loc = self.locations.get(sel.idx).cloned().map(|mut l| {
+                    l.range.start.line = target_line;
+                    l.range.start.character = target_col;
+                    l.range.end.line = target_line;
+                    l.range.end.character = target_col;
+                    l
+                });
                 self.locations.clear();
                 match loc {
                     Some(loc) => PromptOutcome::JumpToLocation(loc),
