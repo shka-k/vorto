@@ -33,8 +33,8 @@ impl App {
     fn run_cmd(&mut self, cmd: Cmd) -> Result<()> {
         match cmd {
             Cmd::EnterMode(m) => self.enter_mode(m),
-            Cmd::ToastInfo(s) => self.toast = Toast::info(s),
-            Cmd::ToastError(s) => self.toast = Toast::error(s),
+            Cmd::ToastInfo(s) => self.push_toast(Toast::info(s)),
+            Cmd::ToastError(s) => self.push_toast(Toast::error(s)),
             Cmd::OpenPrompt(k) => self.open_prompt(k),
             Cmd::OpenRenamePrompt => self.open_rename_prompt(),
             Cmd::SetSearch { pattern, forward } => self.search.set(pattern, forward),
@@ -95,7 +95,7 @@ impl App {
         if let Some(c) = self.search.find_next(&self.buffer, forward) {
             self.buffer.cursor = c;
         } else {
-            self.toast = Toast::error("pattern not found");
+            self.push_toast(Toast::error("pattern not found"));
         }
     }
 
@@ -109,7 +109,7 @@ impl App {
         let Some((start, end_incl)) =
             self.search.find_match_range(&self.buffer, forward)
         else {
-            self.toast = Toast::error("pattern not found");
+            self.push_toast(Toast::error("pattern not found"));
             return;
         };
         if !self.mode.is_visual() {
@@ -126,7 +126,7 @@ impl App {
     /// shim collapses both into one call.
     pub(super) fn search_word_under_cursor(&mut self, forward: bool) {
         let Some(word) = word_under_cursor(&self.buffer) else {
-            self.toast = Toast::error("no word under cursor");
+            self.push_toast(Toast::error("no word under cursor"));
             return;
         };
         self.search.set(word, forward);
@@ -167,14 +167,14 @@ impl App {
 
         let wrote = if let Some(p) = path {
             self.buffer.save_as(p)?;
-            self.toast = Toast::info(format!("written to {}", p.display()));
+            self.push_toast(Toast::info(format!("written to {}", p.display())));
             true
         } else if self.buffer.path.is_some() {
             self.buffer.save()?;
-            self.toast = Toast::info("written");
+            self.push_toast(Toast::info("written"));
             true
         } else {
-            self.toast = Toast::error("no file name (use :w <path>)");
+            self.push_toast(Toast::error("no file name (use :w <path>)"));
             false
         };
         if wrote {
@@ -226,8 +226,11 @@ impl App {
             match crate::format::run_external(&formatter, &text, &cwd) {
                 Ok(formatted) => self.apply_formatted_text(formatted),
                 Err(e) => {
-                    self.toast =
-                        Toast::error(format!("format `{}`: {}", formatter.command, root_cause(&e)));
+                    self.push_toast(Toast::fatal(format!(
+                        "format `{}`: {}",
+                        formatter.command,
+                        root_cause(&e)
+                    )));
                 }
             }
             return;
@@ -241,8 +244,7 @@ impl App {
             Ok(Some(edits)) if !edits.is_empty() => self.apply_format_edits(edits),
             Ok(_) => {}
             Err(e) => {
-                self.toast =
-                    Toast::error(format!("lsp format: {}", root_cause(&e)));
+                self.push_toast(Toast::fatal(format!("lsp format: {}", root_cause(&e))));
             }
         }
     }
@@ -331,7 +333,7 @@ impl App {
     fn run_notify_lsp_save(&mut self) {
         let text = self.buffer.lines.join("\n");
         if let Err(e) = self.lsp.did_save(&text) {
-            self.toast = Toast::error(format!("lsp didSave: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp didSave: {}", root_cause(&e))));
         }
     }
 }

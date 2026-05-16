@@ -1,5 +1,8 @@
-//! Floating toast that surfaces info / error messages in the
-//! bottom-right corner of the buffer viewport.
+//! Floating toasts that surface info / error messages in the
+//! bottom-right corner of the buffer viewport. Up to three toasts can
+//! be live simultaneously; they stack upward from the bottom-right
+//! with the oldest at the bottom (next to expire) and the newest on
+//! top.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -9,42 +12,63 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, Level};
 
-/// Floating toast rendered in the bottom-right of the buffer viewport.
-/// Carries the most recent `Toast::{info,warn,error}` message,
-/// foreground color picked per level. Skipped when the toast has aged
-/// out, when the message is empty, or when a prompt is open (the user
-/// is mid-input and shouldn't have an overlay dropped on top of the
-/// candidate list / preview).
+/// Render the active toast stack into the bottom-right corner of
+/// `buf_area`. Toasts are skipped entirely while a prompt is open —
+/// the user is mid-input and shouldn't have an overlay dropped on top
+/// of the candidate list / preview.
+///
+/// Fatal toasts render multi-line (the message is wrapped to half the
+/// viewport width) with a `[Esc] dismiss` hint at the bottom — they
+/// don't auto-expire, so the user needs a visible way out. Other
+/// toasts (including regular errors) keep their single-line look
+/// since they vanish on their own.
 ///
 /// Background + border match the `:command` hint panel (see
 /// `hints::draw_command_hints`) so floating overlays read as one
 /// consistent visual family.
-///
-/// Errors render multi-line (the message is wrapped to half the
-/// viewport width) with a `[Esc] dismiss` hint at the bottom — they
-/// don't auto-expire, so the user needs a visible way out. Non-error
-/// toasts keep their single-line look since they vanish on their own.
 pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
-    if app.prompt.is_open() || app.toast_remaining().is_none() {
+    if app.prompt.is_open() {
         return;
     }
-    let msg = app.toast.text();
-    if msg.is_empty() {
+    let active = app.toasts.active();
+    if active.is_empty() {
         return;
     }
-    let level = app.toast.level();
-    let is_error = level == Level::Error;
 
-    // Width budget: cap content width at half the viewport so the
-    // toast never eats the whole buffer. The 4 covers 1-cell borders
-    // and 1-cell internal padding on each side.
     let max_w = (buf_area.width / 2).max(10) as usize;
     let content_max = max_w.saturating_sub(4).max(1);
+    let max_h = (buf_area.height / 2).max(3) as usize;
 
-    let mut lines: Vec<String> = if is_error {
-        // Wrap each source line to `content_max`. Hard wrap (by char)
-        // since diagnostic messages often have no spaces near the cap
-        // (`Query error at 25:4...`).
+    // Render oldest first at the bottom; each subsequent toast stacks
+    // upward. `next_y_bottom` tracks the bottom of the next slot.
+    let mut next_y_bottom = buf_area.y + buf_area.height;
+    for toast in active {
+        let level = toast.level();
+        let rect = layout_toast(toast.text(), level, buf_area, content_max, max_h, next_y_bottom);
+        let Some((area, lines, hint)) = rect else {
+            continue;
+        };
+        draw_one(f, area, level, &lines, hint);
+        next_y_bottom = area.y;
+        if next_y_bottom <= buf_area.y {
+            break;
+        }
+    }
+}
+
+/// Build the wrapped body + outer rect for a single toast. Returns
+/// `None` when the toast would exceed the available space (truncated
+/// out of view at the top of the stack).
+fn layout_toast(
+    msg: &str,
+    level: Level,
+    buf_area: Rect,
+    content_max: usize,
+    max_h: usize,
+    next_y_bottom: u16,
+) -> Option<(Rect, Vec<String>, Option<&'static str>)> {
+    let is_fatal = level == Level::Fatal;
+    let mut lines: Vec<String> = if is_fatal {
         let mut out = Vec::new();
         for raw in msg.lines() {
             if raw.is_empty() {
@@ -67,7 +91,6 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
         }
         out
     } else {
-        // Non-error: first line only, ellipsised — same as before.
         let first = msg.lines().next().unwrap_or("");
         let s = if first.chars().count() > content_max {
             let mut t: String = first.chars().take(content_max.saturating_sub(1)).collect();
@@ -79,16 +102,11 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
         vec![s]
     };
 
-    // Cap height to half the viewport so a giant message can't push
-    // the buffer off-screen; trailing lines past the cap get an
-    // ellipsis marker.
-    let max_h = (buf_area.height / 2).max(3) as usize;
-    let hint_rows: usize = if is_error { 1 } else { 0 };
+    let hint_rows: usize = if is_fatal { 1 } else { 0 };
     let body_cap = max_h.saturating_sub(2 + hint_rows).max(1);
     if lines.len() > body_cap {
         lines.truncate(body_cap);
         if let Some(last) = lines.last_mut() {
-            // Replace tail with ellipsis to signal truncation.
             let truncated: String = last
                 .chars()
                 .take(content_max.saturating_sub(1))
@@ -99,27 +117,39 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
 
     let body_w = lines.iter().map(|s| s.chars().count()).max().unwrap_or(0);
     let hint_text = "[Esc] dismiss";
-    let inner_w = if is_error {
+    let inner_w = if is_fatal {
         body_w.max(hint_text.chars().count())
     } else {
         body_w
     };
     let toast_w = (inner_w + 4) as u16;
     let toast_h = (lines.len() + 2 + hint_rows) as u16;
-    if toast_w > buf_area.width || buf_area.height < toast_h {
-        return;
+    if toast_w > buf_area.width || next_y_bottom < buf_area.y + toast_h {
+        return None;
     }
     let area = Rect {
         x: buf_area.x + buf_area.width - toast_w,
-        y: buf_area.y + buf_area.height - toast_h,
+        y: next_y_bottom - toast_h,
         width: toast_w,
         height: toast_h,
     };
+    let hint = if is_fatal { Some(hint_text) } else { None };
+    Some((area, lines, hint))
+}
+
+fn draw_one(
+    f: &mut Frame,
+    area: Rect,
+    level: Level,
+    lines: &[String],
+    hint: Option<&'static str>,
+) {
     let bg = Style::default().bg(super::PANEL_BG);
     let fg = match level {
         Level::Info => Color::Reset,
         Level::Warn => Color::Yellow,
         Level::Error => Color::Red,
+        Level::Fatal => Color::Red,
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -130,7 +160,7 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
     f.render_widget(block, area);
 
     let mut rendered: Vec<Line> = lines
-        .into_iter()
+        .iter()
         .map(|l| {
             Line::from(Span::styled(
                 format!(" {} ", l),
@@ -138,7 +168,7 @@ pub(super) fn draw_toast(f: &mut Frame, app: &App, buf_area: Rect) {
             ))
         })
         .collect();
-    if is_error {
+    if let Some(hint_text) = hint {
         rendered.push(Line::from(Span::styled(
             format!(" {} ", hint_text),
             bg.fg(Color::DarkGray),

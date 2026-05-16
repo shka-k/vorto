@@ -110,6 +110,7 @@ fn run(
     let mut last_shape: Option<CursorShape> = None;
     while !app.should_quit {
         app.buffer.refresh_highlights();
+        app.tick_toasts();
         terminal.draw(|f| ui::draw(f, app))?;
         let shape = app.config.cursor_shapes.for_mode(app.mode);
         if last_shape != Some(shape) {

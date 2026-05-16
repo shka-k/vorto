@@ -24,8 +24,8 @@ impl App {
     pub fn handle_lsp_event(&mut self, ev: LspEvent) {
         match self.lsp.handle_event(ev) {
             LspEventOutcome::Nothing => {}
-            LspEventOutcome::InfoMessage(s) => self.toast = Toast::info(s),
-            LspEventOutcome::ErrorMessage(s) => self.toast = Toast::error(s),
+            LspEventOutcome::InfoMessage(s) => self.push_toast(Toast::info(s)),
+            LspEventOutcome::ErrorMessage(s) => self.push_toast(Toast::error(s)),
             LspEventOutcome::Jump { label, locations } => self.apply_jump_outcome(label, locations),
             LspEventOutcome::References(locations) => self.apply_references_outcome(locations),
             LspEventOutcome::Rename { new_name, edit } => self.apply_rename_outcome(new_name, edit),
@@ -117,22 +117,22 @@ impl App {
 
     fn apply_jump_outcome(&mut self, label: &'static str, locations: Vec<Location>) {
         let Some(first) = locations.into_iter().next() else {
-            self.toast = Toast::info(format!("no {}", label));
+            self.push_toast(Toast::info(format!("no {}", label)));
             return;
         };
         if let Err(e) = self.jump_to_location(&first) {
-            self.toast = Toast::error(format!("jump: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("jump: {}", root_cause(&e))));
         }
     }
 
     fn apply_references_outcome(&mut self, locations: Vec<Location>) {
         if locations.is_empty() {
-            self.toast = Toast::info("no references");
+            self.push_toast(Toast::info("no references"));
             return;
         }
         if locations.len() == 1 {
             if let Err(e) = self.jump_to_location(&locations[0]) {
-                self.toast = Toast::error(format!("jump: {}", root_cause(&e)));
+                self.push_toast(Toast::error(format!("jump: {}", root_cause(&e))));
             }
             return;
         }
@@ -145,7 +145,7 @@ impl App {
 
     fn apply_code_actions_outcome(&mut self, actions: Vec<CodeAction>) {
         if actions.is_empty() {
-            self.toast = Toast::info("no code actions");
+            self.push_toast(Toast::info("no code actions"));
             return;
         }
         self.prompt.open_code_actions(actions);
@@ -153,7 +153,7 @@ impl App {
 
     fn apply_code_action_resolved_outcome(&mut self, action: Option<CodeAction>) {
         let Some(action) = action else {
-            self.toast = Toast::error("code action: server returned no action");
+            self.push_toast(Toast::error("code action: server returned no action"));
             return;
         };
         self.apply_code_action(action);
@@ -161,7 +161,7 @@ impl App {
 
     fn apply_rename_outcome(&mut self, new_name: String, edit: Option<WorkspaceEdit>) {
         let Some(edit) = edit else {
-            self.toast = Toast::info("rename: nothing to change");
+            self.push_toast(Toast::info("rename: nothing to change"));
             return;
         };
         match self.lsp.apply_workspace_edit(edit) {
@@ -174,20 +174,20 @@ impl App {
                     self.buffer.bump_version();
                     self.buffer.dirty = true;
                 }
-                self.toast = Toast::info(format!(
+                self.push_toast(Toast::info(format!(
                     "renamed to {} ({} occurrences in {} files)",
                     new_name, result.total_edits, result.files_touched
-                ));
+                )));
             }
             Err(e) => {
-                self.toast = Toast::error(format!("rename: {}", root_cause(&e)));
+                self.push_toast(Toast::error(format!("rename: {}", root_cause(&e))));
             }
         }
     }
 
     fn apply_hover_outcome(&mut self, hover: Option<Hover>) {
         let Some(h) = hover else {
-            self.toast = Toast::info("no hover info");
+            self.push_toast(Toast::info("no hover info"));
             return;
         };
         self.prompt.open_hover(h.contents);
@@ -200,7 +200,7 @@ impl App {
     pub(super) fn apply_code_action(&mut self, action: CodeAction) {
         let title = action.title.clone();
         let Some(edit) = action.edit else {
-            self.toast = Toast::info(format!("code action: {} (no edit)", title));
+            self.push_toast(Toast::info(format!("code action: {} (no edit)", title)));
             return;
         };
         match self.lsp.apply_workspace_edit(edit) {
@@ -213,13 +213,13 @@ impl App {
                     self.buffer.bump_version();
                     self.buffer.dirty = true;
                 }
-                self.toast = Toast::info(format!(
+                self.push_toast(Toast::info(format!(
                     "{} ({} edits in {} files)",
                     title, result.total_edits, result.files_touched
-                ));
+                )));
             }
             Err(e) => {
-                self.toast = Toast::error(format!("code action: {}", root_cause(&e)));
+                self.push_toast(Toast::error(format!("code action: {}", root_cause(&e))));
             }
         }
     }

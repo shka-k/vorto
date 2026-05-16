@@ -57,7 +57,7 @@ impl App {
     pub(super) fn start_jump_label(&mut self) {
         let targets = collect_jump_targets(&self.buffer);
         if targets.is_empty() {
-            self.toast = Toast::info("no jump targets");
+            self.push_toast(Toast::info("no jump targets"));
             return;
         }
         let labels = assign_labels(targets);
@@ -65,7 +65,7 @@ impl App {
             labels,
             typed_first: None,
         });
-        self.toast = Toast::info("jump: type label (Esc to cancel)");
+        self.push_toast(Toast::info("jump: type label (Esc to cancel)"));
     }
 
     /// Handle a key while jump-label mode is active. Always consumes
@@ -124,12 +124,14 @@ impl App {
     fn finish_jump(&mut self, pos: Cursor) {
         self.buffer.cursor = pos;
         self.jump_state = None;
-        self.toast = Toast::info("");
+        // The "jump: type label" hint is left to expire on its own —
+        // wiping it would also wipe unrelated toasts the user might
+        // have queued just before jumping.
     }
 
     fn cancel_jump(&mut self) {
         self.jump_state = None;
-        self.toast = Toast::info("jump cancelled");
+        self.push_toast(Toast::info("jump cancelled"));
     }
 }
 

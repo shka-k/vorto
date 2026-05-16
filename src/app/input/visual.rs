@@ -195,7 +195,7 @@ impl App {
                     Operator::Yank => {
                         self.buffer.yank_range(from, end);
                         self.sync_yank_to_clipboard();
-                        self.toast = Toast::info("yanked");
+                        self.push_toast(Toast::info("yanked"));
                         self.buffer.cursor = from;
                     }
                     Operator::Delete => self.buffer.delete_range(from, end),
@@ -212,7 +212,7 @@ impl App {
                 Operator::Yank => {
                     self.buffer.yank_lines(from_row, to_row);
                     self.sync_yank_to_clipboard();
-                    self.toast = Toast::info("yanked");
+                    self.push_toast(Toast::info("yanked"));
                     self.buffer.cursor.row = from_row;
                     self.buffer.cursor.col = 0;
                 }
@@ -229,7 +229,7 @@ impl App {
                 Operator::Yank => {
                     self.buffer.yank_block(r0, c0, r1, c1);
                     self.sync_yank_to_clipboard();
-                    self.toast = Toast::info("yanked");
+                    self.push_toast(Toast::info("yanked"));
                     self.buffer.cursor = Cursor { row: r0, col: c0 };
                 }
                 Operator::Delete => self.buffer.delete_block(r0, c0, r1, c1),

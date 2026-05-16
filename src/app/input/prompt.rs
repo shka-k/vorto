@@ -22,7 +22,7 @@ impl App {
                 if let Some(c) = self.search.find_next(&self.buffer, forward) {
                     self.buffer.cursor = c;
                 } else {
-                    self.toast = Toast::error("pattern not found");
+                    self.push_toast(Toast::error("pattern not found"));
                 }
                 Ok(())
             }
@@ -41,7 +41,7 @@ impl App {
             }
             PromptOutcome::JumpToLocation(loc) => {
                 if let Err(e) = self.jump_to_location(&loc) {
-                    self.toast = Toast::error(format!("jump: {}", root_cause(&e)));
+                    self.push_toast(Toast::error(format!("jump: {}", root_cause(&e))));
                 }
                 Ok(())
             }

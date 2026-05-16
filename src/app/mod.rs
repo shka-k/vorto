@@ -26,7 +26,7 @@ pub use completion::CompletionState;
 pub use jump::JumpState;
 pub use lsp_coordinator::{LspCoordinator, LspEventOutcome};
 pub use sleeping::SleepingBuffer;
-pub use toast::{Level, Toast};
+pub use toast::{Level, Toast, ToastQueue};
 pub use types::Selection;
 
 use crate::buffer_ref::BufferRef;
@@ -67,7 +67,7 @@ pub struct App {
     pub mode: Mode,
     pub prompt: PromptController,
     pub search: SearchState,
-    pub toast: Toast,
+    pub toasts: ToastQueue,
     /// Accumulated tokens since the last command fired. Cleared on
     /// Complete dispatch or Invalid parse.
     pub tokens: Vec<Token>,
@@ -188,7 +188,7 @@ impl App {
             mode: Mode::Normal,
             prompt: PromptController::new(),
             search: SearchState::default(),
-            toast: Toast::info(""),
+            toasts: ToastQueue::new(),
             tokens: Vec::new(),
             visual_anchor: None,
             config,
@@ -236,36 +236,36 @@ impl App {
         types::selection(self.mode, self.visual_anchor, self.buffer.cursor)
     }
 
-    /// How long the current `status` toast still has to live before it
-    /// ages out. `None` means the toast is empty or already expired and
-    /// the renderer should skip it; the main loop also reads this to
-    /// pick a `recv_timeout` so the toast vanishes on its own rather
-    /// than lingering until the next keypress.
-    ///
-    /// Error-level toasts are sticky — they return a placeholder long
-    /// duration so the renderer keeps them on screen until the user
-    /// dismisses with `Esc`. The user needs time to read the message,
-    /// and the message is often too long to absorb in three seconds.
-    pub fn toast_remaining(&self) -> Option<std::time::Duration> {
-        if self.toast.text().is_empty() {
-            return None;
-        }
-        if self.toast.level() == Level::Error {
-            return Some(std::time::Duration::from_secs(3600));
-        }
-        const TTL: std::time::Duration = std::time::Duration::from_secs(3);
-        let elapsed = self.toast.shown_at().elapsed();
-        if elapsed >= TTL {
-            None
-        } else {
-            Some(TTL - elapsed)
-        }
+    /// Advance the toast queue: drop expired non-fatal toasts and
+    /// promote pending ones into the freed slots. The main loop calls
+    /// this once per iteration before draw + [`toast_remaining`] so
+    /// both see a fresh view.
+    pub fn tick_toasts(&mut self) {
+        self.toasts.tick();
     }
 
-    /// Drop the current toast immediately, regardless of TTL. Used by
-    /// the Esc handler to dismiss sticky error toasts.
+    /// Time until the next toast-queue state change. `None` means
+    /// nothing is on screen and the main loop can block without a
+    /// timeout; otherwise the value is the soonest non-fatal TTL
+    /// expiry (or a long placeholder if only fatal toasts are live),
+    /// so the loop wakes up to advance the queue.
+    pub fn toast_remaining(&self) -> Option<std::time::Duration> {
+        self.toasts.remaining()
+    }
+
+    /// Queue a toast for display. Goes straight to the visible stack
+    /// while there's room (cap of 3); otherwise waits behind the
+    /// already-visible toasts and is promoted as they expire.
+    pub fn push_toast(&mut self, t: Toast) {
+        self.toasts.push(t);
+    }
+
+    /// Wipe all toasts — visible and queued. Exposed for callers that
+    /// want to take over the toast slot wholesale; not currently used
+    /// in-tree.
+    #[allow(dead_code)]
     pub fn clear_toast(&mut self) {
-        self.toast = Toast::info("");
+        self.toasts.clear();
     }
 
     /// Visual column (0-based cell offset, not char index) of the

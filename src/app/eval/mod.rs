@@ -55,7 +55,7 @@ impl App {
                 Ctx::with_rest(rest),
             ),
             None => {
-                self.toast = Toast::error(format!("unknown command: {}", head));
+                self.push_toast(Toast::error(format!("unknown command: {}", head)));
                 Ok(())
             }
         }
@@ -114,7 +114,7 @@ impl App {
     /// count overrides the recorded one (vim's behaviour for `5.`).
     fn replay_last_change(&mut self, count: u32, ctx: Ctx) -> Result<()> {
         let Some(change) = self.last_change.clone() else {
-            self.toast = Toast::error("nothing to repeat".to_string());
+            self.push_toast(Toast::error("nothing to repeat".to_string()));
             return Ok(());
         };
         match change {

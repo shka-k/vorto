@@ -45,7 +45,7 @@ impl App {
             return Ok(());
         }
 
-        // Esc in Normal mode dismisses a sticky error toast before
+        // Esc in Normal mode dismisses a sticky fatal toast before
         // anything else. Pre-existing handlers (jump overlay, prompt)
         // already ran above, so this only fires when the editor is
         // genuinely idle. Other modes leave the toast alone — the user
@@ -53,10 +53,9 @@ impl App {
         // mode-exit Esc.
         if matches!(self.mode, Mode::Normal)
             && key.code == KeyCode::Esc
-            && self.toast.level() == crate::app::Level::Error
-            && !self.toast.text().is_empty()
+            && self.toasts.has_fatal()
         {
-            self.clear_toast();
+            self.toasts.dismiss_fatal();
             return Ok(());
         }
 

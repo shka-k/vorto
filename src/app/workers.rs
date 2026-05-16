@@ -82,11 +82,11 @@ impl App {
             if self.lsp.has_client(&key) {
                 let text = self.buffer.lines.join("\n");
                 if let Err(e) = self.lsp.did_open(&key, &lang_name, path, &text) {
-                    self.toast = Toast::error(format!(
+                    self.push_toast(Toast::fatal(format!(
                         "lsp didOpen ({}): {}",
                         key,
                         root_cause(&e)
-                    ));
+                    )));
                 }
                 continue;
             }
@@ -138,12 +138,12 @@ impl App {
                     h.refresh(&source, self.buffer.version);
                 }
                 if let Some(msg) = h.warnings.drain(..).next() {
-                    self.toast = Toast::error(msg);
+                    self.push_toast(Toast::error(msg));
                 }
                 self.buffer.highlighter = Some(h);
             }
             Err(e) => {
-                self.toast = Toast::error(format!("highlight: {}", root_cause(&e)));
+                self.push_toast(Toast::fatal(format!("highlight: {}", root_cause(&e))));
             }
         }
     }
@@ -173,8 +173,11 @@ impl App {
                 // have installed. Stay quiet when the binary isn't on
                 // PATH; surface every other failure.
                 if !is_command_not_found(&e) {
-                    self.toast =
-                        Toast::error(format!("lsp ({}): {}", client_key, root_cause(&e)));
+                    self.push_toast(Toast::fatal(format!(
+                        "lsp ({}): {}",
+                        client_key,
+                        root_cause(&e)
+                    )));
                 }
                 return;
             }
@@ -189,11 +192,11 @@ impl App {
         // server was initializing.
         let text = self.buffer.lines.join("\n");
         if let Err(e) = self.lsp.did_open(&client_key, &lang, &path, &text) {
-            self.toast = Toast::error(format!(
+            self.push_toast(Toast::fatal(format!(
                 "lsp didOpen ({}): {}",
                 client_key,
                 root_cause(&e)
-            ));
+            )));
         }
         self.lsp.set_last_synced_version(self.buffer.version);
     }

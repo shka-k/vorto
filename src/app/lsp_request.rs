@@ -21,27 +21,27 @@ impl App {
     /// answer with the same shape.
     pub(super) fn lsp_jump(&mut self, method: &str, label: &'static str) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         if let Err(e) = self.lsp.request_jump(method, label, self.buffer.cursor) {
-            self.toast = Toast::error(format!("lsp {}: {}", method, root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp {}: {}", method, root_cause(&e))));
         }
     }
 
     pub(super) fn lsp_find_references(&mut self) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         if let Err(e) = self.lsp.request_references(self.buffer.cursor) {
-            self.toast = Toast::error(format!("lsp references: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp references: {}", root_cause(&e))));
         }
     }
 
     pub(super) fn open_rename_prompt(&mut self) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         self.prompt.open_rename();
@@ -59,7 +59,7 @@ impl App {
     /// items, so we flush pending edits here first.
     pub(super) fn lsp_completion(&mut self) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         self.sync_buffer_if_dirty();
@@ -71,7 +71,7 @@ impl App {
             col: start_col,
         };
         if let Err(e) = self.lsp.request_completion(cursor, prefix_start) {
-            self.toast = Toast::error(format!("lsp completion: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp completion: {}", root_cause(&e))));
         }
     }
 
@@ -226,17 +226,17 @@ impl App {
 
     pub(super) fn lsp_hover(&mut self) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         if let Err(e) = self.lsp.request_hover(self.buffer.cursor) {
-            self.toast = Toast::error(format!("lsp hover: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp hover: {}", root_cause(&e))));
         }
     }
 
     pub(super) fn lsp_code_action(&mut self) {
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         let cursor = self.buffer.cursor;
@@ -245,7 +245,7 @@ impl App {
         // collect into an owned Vec first.
         let diagnostics: Vec<Diagnostic> = self.lsp.current_diagnostics().unwrap_or_default();
         if let Err(e) = self.lsp.request_code_action(cursor, &diagnostics) {
-            self.toast = Toast::error(format!("lsp codeAction: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp codeAction: {}", root_cause(&e))));
         }
     }
 
@@ -258,26 +258,26 @@ impl App {
             return;
         }
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         let source = action.source.clone();
         if let Err(e) = self.lsp.request_code_action_resolve(action.raw, &source) {
-            self.toast = Toast::error(format!("lsp codeAction/resolve: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp codeAction/resolve: {}", root_cause(&e))));
         }
     }
 
     pub(super) fn submit_rename(&mut self, new_name: String) {
         if new_name.is_empty() {
-            self.toast = Toast::error("rename: empty name");
+            self.push_toast(Toast::error("rename: empty name"));
             return;
         }
         if !self.lsp.has_lsp() {
-            self.toast = Toast::error("no LSP for this buffer");
+            self.push_toast(Toast::error("no LSP for this buffer"));
             return;
         }
         if let Err(e) = self.lsp.request_rename(new_name, self.buffer.cursor) {
-            self.toast = Toast::error(format!("lsp rename: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp rename: {}", root_cause(&e))));
         }
     }
 
@@ -290,7 +290,7 @@ impl App {
         self.lsp.set_last_synced_version(self.buffer.version);
         let text = self.buffer.lines.join("\n");
         if let Err(e) = self.lsp.did_change(&text) {
-            self.toast = Toast::error(format!("lsp didChange: {}", root_cause(&e)));
+            self.push_toast(Toast::error(format!("lsp didChange: {}", root_cause(&e))));
         }
     }
 }
