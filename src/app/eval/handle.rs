@@ -622,11 +622,14 @@ fn plan_quit(app: &App) -> Cmd {
 /// pushes primary as a new extra cursor before jumping primary to the
 /// match. Also seeds `App.search` via `Cmd::SetSearch` so `n` / `N`
 /// keep working on the same pattern after the user is done adding
-/// cursors. No-ops with a status message when there is no word, or
-/// the next match would land on a cursor that's already tracked.
+/// cursors. When the cursor isn't on a word (e.g. sitting on `[`),
+/// drops into Visual mode at the current position instead of erroring
+/// — the user can extend the selection and try again, or just operate
+/// on the highlighted char. No-ops with a status message when the
+/// next match would land on a cursor that's already tracked.
 fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
     let Some(word) = word_under_cursor(&app.buffer) else {
-        cmds.push(Cmd::ToastError("no word under cursor".into()));
+        app.enter_mode(Mode::Visual);
         return;
     };
     // Use a throwaway SearchState for the lookup so we can act on the
