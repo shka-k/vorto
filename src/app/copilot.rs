@@ -538,13 +538,12 @@ impl App {
                 CopilotAuthState::Unknown
             }
         };
-        // Only surface a toast on the *transition* into an unsigned
-        // state, not on every checkStatus reply. Avoids spam when the
-        // user re-checks status manually.
-        let just_logged_out = !matches!(self.copilot_auth, CopilotAuthState::NotSignedIn)
-            && matches!(new_state, CopilotAuthState::NotSignedIn);
-        let just_unauthorized = !matches!(self.copilot_auth, CopilotAuthState::NotAuthorized { .. })
-            && matches!(new_state, CopilotAuthState::NotAuthorized { .. });
+        // Background `checkStatus` replies (startup, post-signout
+        // refresh) don't surface a toast — the user didn't ask, and an
+        // unsolicited "not signed in" warning at every editor launch
+        // is just noise. On-demand `:copilot status` still reports
+        // everything, and explicit signin/signout flows keep their own
+        // toasts.
         match &new_state {
             CopilotAuthState::SignedIn { user } => {
                 vlog!(
@@ -552,18 +551,16 @@ impl App {
                     user.as_deref().unwrap_or("?")
                 );
             }
-            CopilotAuthState::NotSignedIn if just_logged_out => {
-                self.push_toast(Toast::warn(
-                    "Copilot: not signed in — run :copilot signin".to_string(),
-                ));
+            CopilotAuthState::NotSignedIn => {
+                vlog!("copilot not signed in");
             }
-            CopilotAuthState::NotAuthorized { reason } if just_unauthorized => {
-                let msg = reason
-                    .clone()
-                    .unwrap_or_else(|| "no Copilot entitlement on this account".to_string());
-                self.push_toast(Toast::warn(format!("Copilot: not authorized ({msg})")));
+            CopilotAuthState::NotAuthorized { reason } => {
+                vlog!(
+                    "copilot not authorized: {}",
+                    reason.as_deref().unwrap_or("no entitlement")
+                );
             }
-            _ => {}
+            CopilotAuthState::Unknown => {}
         }
         self.copilot_auth = new_state;
     }

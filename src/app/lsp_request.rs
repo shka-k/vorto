@@ -14,6 +14,7 @@ use crate::lsp::{self, CodeAction, Diagnostic, Position, Range, TextEdit};
 use super::completion::{identifier_prefix_start, prefix_slice};
 use super::signature::SignatureTrigger;
 use super::{App, Toast, root_cause};
+use crate::vlog;
 
 impl App {
     /// Send a request whose result is a list of `Location`s and whose
@@ -407,7 +408,11 @@ impl App {
         if needs_lsp {
             self.lsp.set_last_synced_version(self.buffer.version);
             if let Err(e) = self.lsp.did_change(&text) {
-                self.push_toast(Toast::error(format!("lsp didChange: {}", root_cause(&e))));
+                // Background sync after every keystroke — toasting on
+                // each failure would flood the screen. Log only; if the
+                // client is wedged, subsequent user-initiated requests
+                // will surface their own errors.
+                vlog!("lsp didChange failed: {:#}", e);
             }
         }
         if needs_copilot {

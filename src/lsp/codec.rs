@@ -143,7 +143,15 @@ pub(super) fn reader_loop(
                         .unwrap_or("")
                         .to_string();
                     vlog!("lsp {} client={} level={} {}", method, client, level, text);
-                    emit(LspEvent::Message { level, text });
+                    // `logMessage` is debug telemetry by spec (rust-
+                    // analyzer floods this with `<syntax>` progress and
+                    // similar) — never surface it to the user. Only
+                    // `showMessage`, and even then only at Error/Warning,
+                    // is worth interrupting the user; Info/Log levels are
+                    // logged but not toasted.
+                    if method == "window/showMessage" && level <= 2 {
+                        emit(LspEvent::Message { level, text });
+                    }
                 }
             }
             _ => {
