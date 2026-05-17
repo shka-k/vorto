@@ -56,8 +56,6 @@ fn lookup(name: &str) -> Option<Style> {
         "field" => Style::default().fg(Color::White),
         "label" => Style::default().fg(Color::Yellow),
         "operator" => Style::default().fg(Color::White),
-        "punctuation" => Style::default().fg(Color::DarkGray),
-        "punctuation.delimiter" => Style::default().fg(Color::DarkGray),
         "punctuation.bracket" => Style::default().fg(Color::Gray),
         "attribute" => Style::default().fg(Color::LightMagenta),
         "tag" => Style::default().fg(Color::LightBlue),
