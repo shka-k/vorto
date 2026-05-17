@@ -19,6 +19,7 @@
 
 mod cursor;
 mod history;
+mod inline_suggestion;
 mod insert;
 mod motion;
 mod ops;
@@ -27,6 +28,7 @@ mod substitute;
 mod text_object;
 mod vcs_link;
 
+pub use inline_suggestion::{RequestId, Suggestion, SuggestionState};
 pub use search::SearchState;
 pub use substitute::{SubsArgs, parse_substitute};
 
