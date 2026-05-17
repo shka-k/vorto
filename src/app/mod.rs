@@ -114,6 +114,10 @@ pub struct App {
     /// reader-thread error tore it down; future requests trigger a
     /// re-spawn attempt. See [`crate::copilot`].
     pub copilot: Option<crate::copilot::CopilotClient>,
+    /// True while a Copilot spawn is in flight on a worker thread.
+    /// Prevents [`Self::spawn_copilot_if_needed`] from launching a
+    /// second handshake before the first finishes.
+    pub(super) copilot_spawning: bool,
     /// Pending Copilot requests, keyed by request id. Lets the reader
     /// thread surface generic [`crate::copilot::CopilotEvent::Response`]
     /// events without leaking response shapes into the codec layer.
@@ -266,6 +270,7 @@ impl App {
             startup_cwd,
             lsp,
             copilot: None,
+            copilot_spawning: false,
             copilot_pending: CopilotPending::default(),
             copilot_auth: CopilotAuthState::default(),
             event_tx,

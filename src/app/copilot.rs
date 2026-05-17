@@ -7,6 +7,7 @@
 //! events that come back.
 
 use std::collections::HashMap;
+use std::thread;
 
 use crate::app::App;
 use crate::app::toast::Toast;
@@ -112,28 +113,35 @@ impl CopilotPending {
 }
 
 impl App {
-    /// Best-effort spawn of the Copilot client. Idempotent: returns
-    /// immediately once a live client is already attached. The spawn is
-    /// synchronous (the `initialize` handshake is fast for Copilot
-    /// relative to language servers), runs at startup time, and silently
-    /// no-ops when `copilot-language-server` isn't on `PATH` — vorto
-    /// stays usable without it.
+    /// Best-effort spawn of the Copilot client. Runs the spawn +
+    /// initialize handshake on a worker thread so the editor stays
+    /// interactive while Node boots and Copilot initializes (typically
+    /// 500ms–2s). Idempotent: re-entry returns immediately once a
+    /// live client is attached or a spawn is already in flight.
     pub fn spawn_copilot_if_needed(&mut self) {
-        if self.copilot.is_some() {
+        if self.copilot.is_some() || self.copilot_spawning {
             return;
         }
+        self.copilot_spawning = true;
         let root_uri = path_to_uri(&self.startup_cwd);
-        let tx = self.event_tx.clone();
-        let emit: Box<dyn Fn(CopilotEvent) + Send + 'static> =
-            Box::new(move |ev| {
-                let _ = tx.send(AppEvent::Copilot(ev));
+        let event_tx = self.event_tx.clone();
+        let emit_tx = self.event_tx.clone();
+        thread::spawn(move || {
+            let emit: Box<dyn Fn(CopilotEvent) + Send + 'static> = Box::new(move |ev| {
+                let _ = emit_tx.send(AppEvent::Copilot(ev));
             });
-        match CopilotClient::spawn(&root_uri, emit) {
+            let result = CopilotClient::spawn(&root_uri, emit);
+            let _ = event_tx.send(AppEvent::CopilotReady { result });
+        });
+    }
+
+    /// Adopt the worker-built client (or log + drop on failure) and
+    /// fire the initial `checkStatus` so inline completion gating can
+    /// settle on the right auth state.
+    pub fn handle_copilot_ready(&mut self, result: anyhow::Result<Option<CopilotClient>>) {
+        self.copilot_spawning = false;
+        match result {
             Ok(Some(mut client)) => {
-                // Fire checkStatus immediately so the App knows whether
-                // inline completion requests should be skipped (no
-                // point asking when the user is signed out). The reply
-                // lands asynchronously via handle_copilot_event.
                 match client.check_status(true) {
                     Ok(id) => {
                         self.copilot_pending
@@ -144,8 +152,7 @@ impl App {
                 self.copilot = Some(client);
             }
             Ok(None) => {
-                // Binary not on PATH. Already logged inside the client;
-                // nothing surfaces to the UI by design.
+                // Binary not on PATH; already logged inside the client.
             }
             Err(e) => {
                 vlog!("copilot spawn failed: {e:#}");

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use crossterm::event::Event;
 
-use crate::copilot::CopilotEvent;
+use crate::copilot::{CopilotClient, CopilotEvent};
 use crate::finder::PreviewEntry;
 use crate::lsp::{LspClient, LspEvent};
 use crate::syntax::Highlighter;
@@ -19,6 +19,15 @@ pub enum AppEvent {
     /// Reader-thread event from the Copilot LSP client. The main loop
     /// hands these to [`crate::app::App::handle_copilot_event`].
     Copilot(CopilotEvent),
+    /// Worker-thread completion for [`crate::app::App::spawn_copilot_if_needed`].
+    /// `Ok(Some(client))` → adopt the client; `Ok(None)` → binary not
+    /// on PATH (silent); `Err` → handshake failed (logged, no UI).
+    /// Run off the main thread so startup doesn't block on Copilot's
+    /// initialize round-trip (Node start-up + GitHub Copilot init can
+    /// be 500ms–2s).
+    CopilotReady {
+        result: anyhow::Result<Option<CopilotClient>>,
+    },
     /// A worker thread spawned by `open_path` finished building a
     /// tree-sitter highlighter (grammar dlopen + query compile + initial
     /// parse). `gen` is the generation the worker was spawned for — the

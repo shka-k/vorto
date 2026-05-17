@@ -255,6 +255,7 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
         event::AppEvent::Term(_) => {}
         event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
         event::AppEvent::Copilot(cp_ev) => app.handle_copilot_event(cp_ev),
+        event::AppEvent::CopilotReady { result } => app.handle_copilot_ready(result),
         event::AppEvent::HighlighterReady { generation, result } => {
             app.handle_highlighter_ready(generation, result);
         }
