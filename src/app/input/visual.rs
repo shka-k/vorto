@@ -81,6 +81,31 @@ impl App {
                 self.buffer.snapshot();
                 self.apply_visual_op(Operator::Change);
             }
+            // `I` / `A` — enter Insert at the start / end of the selection.
+            // Block mode fans out: one cursor per selected row so each
+            // typed char repeats down the column.
+            KeyCode::Char('I') => self.visual_insert_at_start(),
+            KeyCode::Char('A') => self.visual_append_at_end(),
+            // `S` / `R` — linewise change (force).
+            KeyCode::Char('S') | KeyCode::Char('R') => self.visual_change_lines(),
+            // `C` — linewise change everywhere except VisualBlock, where
+            // it changes from c0 to EOL on each row (with fan-out).
+            KeyCode::Char('C') => self.visual_change_to_eol(),
+            // `D` — linewise delete everywhere except VisualBlock, where
+            // it deletes from c0 to EOL on each row.
+            KeyCode::Char('D') => self.visual_delete_to_eol(),
+            // `X` — always linewise delete.
+            KeyCode::Char('X') => self.visual_delete_lines(),
+            // `Y` — always linewise yank.
+            KeyCode::Char('Y') => self.visual_yank_lines(),
+            // `u` / `U` — lowercase / uppercase the selection. Vim
+            // semantics: bare `u` in visual is *not* undo, it lowercases.
+            KeyCode::Char('u') => {
+                self.transform_case_selection(crate::editor::to_lower_keep_width)
+            }
+            KeyCode::Char('U') => {
+                self.transform_case_selection(crate::editor::to_upper_keep_width)
+            }
             KeyCode::Char('~') => self.toggle_case_selection(),
             KeyCode::Char('J') => self.join_selection_lines(),
             KeyCode::Char('>') => self.indent_selection(true),
@@ -106,21 +131,26 @@ impl App {
     }
 
     /// `~` in visual — toggle case across the entire selection.
-    /// Charwise covers the span, linewise covers whole rows, block
-    /// covers the rectangle. Exits visual when finished.
     fn toggle_case_selection(&mut self) {
+        self.transform_case_selection(crate::editor::flip_case_char_keep_width);
+    }
+
+    /// `u` / `U` / `~` in visual — apply a per-char transform across
+    /// the selection. Charwise covers the span, linewise covers whole
+    /// rows, block covers the rectangle. Exits visual when finished.
+    fn transform_case_selection(&mut self, f: fn(char) -> char) {
         let Some(sel) = self.selection() else { return };
         self.buffer.snapshot();
         match sel {
             Selection::Char { from, to } => {
                 let end = self.buffer.advance_one(to);
-                self.buffer.toggle_case_range(from, end);
+                self.buffer.transform_case_range(from, end, f);
             }
             Selection::Line { from_row, to_row } => {
-                self.buffer.toggle_case_lines(from_row, to_row);
+                self.buffer.transform_case_lines(from_row, to_row, f);
             }
             Selection::Block { r0, c0, r1, c1 } => {
-                self.buffer.toggle_case_block(r0, c0, r1, c1);
+                self.buffer.transform_case_block(r0, c0, r1, c1, f);
             }
         }
         self.enter_mode(Mode::Normal);
@@ -174,6 +204,177 @@ impl App {
         let col = line.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
         self.buffer.cursor.col = col;
         self.enter_mode(Mode::Normal);
+    }
+
+    /// `I` in visual: position the cursor at the start of the selection
+    /// and enter Insert. Block mode adds one extra cursor per row so the
+    /// inserted text mirrors down the left edge of the block.
+    fn visual_insert_at_start(&mut self) {
+        let Some(sel) = self.selection() else { return };
+        self.buffer.snapshot();
+        self.buffer.extra_cursors.clear();
+        match sel {
+            Selection::Char { from, .. } => {
+                self.buffer.cursor = from;
+            }
+            Selection::Line { from_row, to_row } => {
+                // Fan out: one cursor per row at each row's first
+                // non-blank, so typed text replicates down the indent.
+                self.buffer.cursor = Cursor {
+                    row: from_row,
+                    col: first_non_blank(&self.buffer.lines[from_row]),
+                };
+                for r in (from_row + 1)..=to_row {
+                    self.buffer.extra_cursors.push(Cursor {
+                        row: r,
+                        col: first_non_blank(&self.buffer.lines[r]),
+                    });
+                }
+            }
+            Selection::Block { r0, c0, r1, .. } => {
+                self.buffer.cursor = Cursor { row: r0, col: c0 };
+                for r in (r0 + 1)..=r1 {
+                    let len = self.buffer.lines[r].chars().count();
+                    self.buffer.extra_cursors.push(Cursor {
+                        row: r,
+                        col: c0.min(len),
+                    });
+                }
+            }
+        }
+        self.enter_mode(Mode::Insert);
+    }
+
+    /// `A` in visual: position the cursor just past the end of the
+    /// selection and enter Insert. Block mode mirrors the cursor onto
+    /// each selected row at `c1 + 1` (clamped to that row's length).
+    fn visual_append_at_end(&mut self) {
+        let Some(sel) = self.selection() else { return };
+        self.buffer.snapshot();
+        self.buffer.extra_cursors.clear();
+        match sel {
+            Selection::Char { to, .. } => {
+                let len = self.buffer.lines[to.row].chars().count();
+                self.buffer.cursor = Cursor {
+                    row: to.row,
+                    col: (to.col + 1).min(len),
+                };
+            }
+            Selection::Line { from_row, to_row } => {
+                // Fan out: each row's cursor lands at its own EOL.
+                self.buffer.cursor = Cursor {
+                    row: from_row,
+                    col: self.buffer.lines[from_row].chars().count(),
+                };
+                for r in (from_row + 1)..=to_row {
+                    self.buffer.extra_cursors.push(Cursor {
+                        row: r,
+                        col: self.buffer.lines[r].chars().count(),
+                    });
+                }
+            }
+            Selection::Block { r0, r1, c1, .. } => {
+                let primary_len = self.buffer.lines[r0].chars().count();
+                self.buffer.cursor = Cursor {
+                    row: r0,
+                    col: (c1 + 1).min(primary_len),
+                };
+                for r in (r0 + 1)..=r1 {
+                    let len = self.buffer.lines[r].chars().count();
+                    self.buffer.extra_cursors.push(Cursor {
+                        row: r,
+                        col: (c1 + 1).min(len),
+                    });
+                }
+            }
+        }
+        self.enter_mode(Mode::Insert);
+    }
+
+    /// `S` / `R` / `C` (non-block) in visual — drop every covered row
+    /// and enter Insert. Cursor lands at col 0 of the deleted region.
+    fn visual_change_lines(&mut self) {
+        let Some((from_row, to_row)) = self.selection_row_span() else {
+            return;
+        };
+        self.buffer.snapshot();
+        self.buffer.extra_cursors.clear();
+        self.buffer.delete_lines(from_row, to_row);
+        self.buffer.cursor.col = 0;
+        self.enter_mode(Mode::Insert);
+    }
+
+    /// `C` in visual — linewise change everywhere except VisualBlock,
+    /// where it changes from `c0` to EOL on each row and fans cursors
+    /// out so the user's typed text replicates down the column.
+    fn visual_change_to_eol(&mut self) {
+        let Some(sel) = self.selection() else { return };
+        match sel {
+            Selection::Block { r0, c0, r1, .. } => {
+                self.buffer.snapshot();
+                self.buffer.extra_cursors.clear();
+                truncate_block_to_eol(self, r0, c0, r1);
+                self.buffer.cursor = Cursor { row: r0, col: c0 };
+                for r in (r0 + 1)..=r1 {
+                    let len = self.buffer.lines[r].chars().count();
+                    self.buffer.extra_cursors.push(Cursor {
+                        row: r,
+                        col: c0.min(len),
+                    });
+                }
+                self.enter_mode(Mode::Insert);
+            }
+            _ => self.visual_change_lines(),
+        }
+    }
+
+    /// `D` in visual — linewise delete everywhere except VisualBlock,
+    /// where it deletes from `c0` to EOL on each row. Exits to Normal.
+    fn visual_delete_to_eol(&mut self) {
+        let Some(sel) = self.selection() else { return };
+        match sel {
+            Selection::Block { r0, c0, r1, .. } => {
+                self.buffer.snapshot();
+                truncate_block_to_eol(self, r0, c0, r1);
+                self.buffer.cursor = Cursor { row: r0, col: c0 };
+                self.buffer.clamp_col(false);
+                self.enter_mode(Mode::Normal);
+            }
+            _ => self.visual_delete_lines(),
+        }
+    }
+
+    /// `X` (and `D` for non-block) — drop every covered row.
+    fn visual_delete_lines(&mut self) {
+        let Some((from_row, to_row)) = self.selection_row_span() else {
+            return;
+        };
+        self.buffer.snapshot();
+        self.buffer.delete_lines(from_row, to_row);
+        self.enter_mode(Mode::Normal);
+    }
+
+    /// `Y` — always linewise yank.
+    fn visual_yank_lines(&mut self) {
+        let Some((from_row, to_row)) = self.selection_row_span() else {
+            return;
+        };
+        self.buffer.yank_lines(from_row, to_row);
+        self.sync_yank_to_clipboard();
+        self.push_toast(Toast::info("yanked"));
+        self.buffer.cursor.row = from_row;
+        self.buffer.cursor.col = 0;
+        self.enter_mode(Mode::Normal);
+    }
+
+    /// Common helper: rows covered by the current selection, regardless
+    /// of its sub-mode flavour.
+    fn selection_row_span(&self) -> Option<(usize, usize)> {
+        Some(match self.selection()? {
+            Selection::Char { from, to } => (from.row, to.row),
+            Selection::Line { from_row, to_row } => (from_row, to_row),
+            Selection::Block { r0, r1, .. } => (r0, r1),
+        })
     }
 
     fn toggle_visual(&mut self, target: Mode) {
@@ -234,7 +435,19 @@ impl App {
                 }
                 Operator::Delete => self.buffer.delete_block(r0, c0, r1, c1),
                 Operator::Change => {
+                    // Fan-out: after the block delete, each row gets its
+                    // own cursor at the left edge so typed text repeats
+                    // down the column when Insert mode finishes.
+                    self.buffer.extra_cursors.clear();
                     self.buffer.delete_block(r0, c0, r1, c1);
+                    self.buffer.cursor = Cursor { row: r0, col: c0 };
+                    for r in (r0 + 1)..=r1 {
+                        let len = self.buffer.lines[r].chars().count();
+                        self.buffer.extra_cursors.push(Cursor {
+                            row: r,
+                            col: c0.min(len),
+                        });
+                    }
                     self.enter_mode(Mode::Insert);
                 }
                 Operator::Indent | Operator::Dedent => {
@@ -243,6 +456,30 @@ impl App {
             },
         }
     }
+}
+
+fn first_non_blank(line: &str) -> usize {
+    line.chars().position(|c| !c.is_whitespace()).unwrap_or(0)
+}
+
+/// `D`/`C` in VisualBlock — chop every row in `[r0..=r1]` so its
+/// content stops at column `c0`. Implements the per-row right-side
+/// truncation that `delete_block` doesn't cover (delete_block needs
+/// a finite `c1`, and the longest row may not match the visual `c1`).
+/// Cursor/yank are left to the caller.
+fn truncate_block_to_eol(app: &mut App, r0: usize, c0: usize, r1: usize) {
+    let r1 = r1.min(app.buffer.lines.len().saturating_sub(1));
+    let max_len = (r0..=r1)
+        .map(|r| app.buffer.lines[r].chars().count())
+        .max()
+        .unwrap_or(0);
+    if max_len <= c0 {
+        return;
+    }
+    // delete_block computes `hi = (c1 + 1).min(line_len)`, so passing
+    // `max_len.saturating_sub(1)` covers every row to its own EOL.
+    app.buffer
+        .delete_block(r0, c0, r1, max_len.saturating_sub(1));
 }
 
 /// Map a visual-mode key event to the motion it triggers, if any.

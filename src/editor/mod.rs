@@ -29,6 +29,7 @@ mod text_object;
 mod vcs_link;
 
 pub use inline_suggestion::{RequestId, Suggestion, SuggestionState};
+pub use ops::{flip_case_char_keep_width, to_lower_keep_width, to_upper_keep_width};
 pub use search::SearchState;
 pub use substitute::{SubsArgs, parse_substitute};
 

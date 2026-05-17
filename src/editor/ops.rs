@@ -165,9 +165,10 @@ impl Buffer {
 }
 
 impl Buffer {
-    /// Toggle case across the half-open range `[from, to)`. The two
-    /// endpoints may sit on different rows. Used by visual-mode `~`.
-    pub fn toggle_case_range(&mut self, from: Cursor, to: Cursor) {
+    /// Apply a per-character transform across the half-open range
+    /// `[from, to)`. The two endpoints may sit on different rows.
+    /// Backs the visual-mode `~` / `u` / `U` family.
+    pub fn transform_case_range(&mut self, from: Cursor, to: Cursor, f: fn(char) -> char) {
         let (from, to) = order(from, to);
         if from == to {
             return;
@@ -186,30 +187,32 @@ impl Buffer {
             self.lines[row] = chars
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
-                    if i >= lo && i < hi {
-                        flip_case_char(*c)
-                    } else {
-                        *c
-                    }
-                })
+                .map(|(i, c)| if i >= lo && i < hi { f(*c) } else { *c })
                 .collect();
         }
         self.touch();
     }
 
-    /// Toggle case across every char on rows `[from_row..=to_row]`.
-    pub fn toggle_case_lines(&mut self, from_row: usize, to_row: usize) {
+    /// Apply a per-character transform to every char on rows
+    /// `[from_row..=to_row]`.
+    pub fn transform_case_lines(&mut self, from_row: usize, to_row: usize, f: fn(char) -> char) {
         let (a, b) = (from_row.min(to_row), from_row.max(to_row));
         let b = b.min(self.lines.len().saturating_sub(1));
         for row in a..=b {
-            self.lines[row] = self.lines[row].chars().map(flip_case_char).collect();
+            self.lines[row] = self.lines[row].chars().map(f).collect();
         }
         self.touch();
     }
 
-    /// Toggle case across a column rectangle.
-    pub fn toggle_case_block(&mut self, r0: usize, c0: usize, r1: usize, c1: usize) {
+    /// Apply a per-character transform across a column rectangle.
+    pub fn transform_case_block(
+        &mut self,
+        r0: usize,
+        c0: usize,
+        r1: usize,
+        c1: usize,
+        f: fn(char) -> char,
+    ) {
         let (r0, r1) = (r0.min(r1), r0.max(r1));
         let (c0, c1) = (c0.min(c1), c0.max(c1));
         let r1 = r1.min(self.lines.len().saturating_sub(1));
@@ -218,16 +221,35 @@ impl Buffer {
             self.lines[row] = chars
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
-                    if i >= c0 && i <= c1 {
-                        flip_case_char(*c)
-                    } else {
-                        *c
-                    }
-                })
+                .map(|(i, c)| if i >= c0 && i <= c1 { f(*c) } else { *c })
                 .collect();
         }
         self.touch();
+    }
+
+}
+
+/// Lowercase a char, keeping its column width. Multi-char expansions
+/// (eg. Turkish `İ` → two codepoints) fall back to the original so
+/// column counts stay stable.
+pub fn to_lower_keep_width(c: char) -> char {
+    if c.is_uppercase() {
+        let mut it = c.to_lowercase();
+        let first = it.next().unwrap_or(c);
+        if it.next().is_some() { c } else { first }
+    } else {
+        c
+    }
+}
+
+/// Uppercase a char, keeping its column width. See [`to_lower_keep_width`].
+pub fn to_upper_keep_width(c: char) -> char {
+    if c.is_lowercase() {
+        let mut it = c.to_uppercase();
+        let first = it.next().unwrap_or(c);
+        if it.next().is_some() { c } else { first }
+    } else {
+        c
     }
 }
 
@@ -235,7 +257,7 @@ impl Buffer {
 /// unchanged. For chars whose case expansion is multi-char (a tiny
 /// minority — eg. German `ß` → `SS`) we fall back to the original
 /// char to keep column counts stable.
-fn flip_case_char(c: char) -> char {
+pub fn flip_case_char_keep_width(c: char) -> char {
     if c.is_uppercase() {
         let mut it = c.to_lowercase();
         let first = it.next().unwrap_or(c);
