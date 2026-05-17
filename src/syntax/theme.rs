@@ -26,15 +26,15 @@ pub fn style_for(capture: &str) -> Style {
 
 fn lookup(name: &str) -> Option<Style> {
     let s = match name {
-        "keyword" => Style::default().fg(Color::Yellow),
+        "keyword" => Style::default().fg(Color::Magenta),
         "string" => Style::default().fg(Color::Green),
         "string.escape" => Style::default().fg(Color::LightGreen),
         "character" => Style::default().fg(Color::Green),
-        "number" => Style::default().fg(Color::Magenta),
-        "boolean" => Style::default().fg(Color::Magenta),
-        "constant" => Style::default().fg(Color::Magenta),
+        "number" => Style::default().fg(Color::LightRed),
+        "boolean" => Style::default().fg(Color::LightRed),
+        "constant" => Style::default().fg(Color::LightRed),
         "constant.builtin" => Style::default()
-            .fg(Color::Magenta)
+            .fg(Color::LightRed)
             .add_modifier(Modifier::BOLD),
         "comment" => Style::default()
             .fg(Color::DarkGray)
@@ -43,14 +43,14 @@ fn lookup(name: &str) -> Option<Style> {
         "function.macro" => Style::default().fg(Color::LightMagenta),
         "function.builtin" => Style::default().fg(Color::LightBlue),
         "method" => Style::default().fg(Color::LightBlue),
-        "type" => Style::default().fg(Color::Cyan),
+        "type" => Style::default().fg(Color::Yellow),
         "type.builtin" => Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
         "variable" => Style::default(),
         "variable.parameter" => Style::default().fg(Color::White),
         "variable.builtin" => Style::default()
-            .fg(Color::White)
+            .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
         "property" => Style::default().fg(Color::White),
         "field" => Style::default().fg(Color::White),
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn exact_match() {
         let s = style_for("keyword");
-        assert_eq!(s.fg, Some(Color::Yellow));
+        assert_eq!(s.fg, Some(Color::Magenta));
     }
 
     #[test]
@@ -92,6 +92,6 @@ mod tests {
     fn deeply_nested_falls_back() {
         // `keyword.foo.bar.baz` → `keyword`.
         let s = style_for("keyword.foo.bar.baz");
-        assert_eq!(s.fg, Some(Color::Yellow));
+        assert_eq!(s.fg, Some(Color::Magenta));
     }
 }
