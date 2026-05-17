@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 
-const DEFAULT_INDENT_WIDTH: usize = 4;
+const DEFAULT_INDENT_WIDTH: usize = 2;
 const DEFAULT_TAB_WIDTH: usize = 4;
 
 /// Raw, optional fields as parsed from TOML. Used both for the global
@@ -18,7 +18,7 @@ const DEFAULT_TAB_WIDTH: usize = 4;
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct EditorToml {
     /// Width of one indent level — number of columns the editor uses
-    /// when it indents a line. Falls back to `4` when unset.
+    /// when it indents a line. Falls back to `2` when unset.
     pub indent_width: Option<usize>,
     /// Visual width of a literal `\t` character. Falls back to `4` when
     /// unset; Go-style codebases typically want `8`.
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn defaults_when_user_omits_fields() {
         let eff = EditorConfig::default().overlay(&EditorToml::default());
-        assert_eq!(eff.indent_width, 4);
+        assert_eq!(eff.indent_width, 2);
         assert_eq!(eff.tab_width, 4);
     }
 
