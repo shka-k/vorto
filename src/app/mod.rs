@@ -340,6 +340,22 @@ impl App {
         self.toasts.remaining()
     }
 
+    /// Frame interval for an in-flight indent-guide animation, or
+    /// `None` when the active buffer has no pending animation. The
+    /// main loop merges this with [`toast_remaining`] via `min` so
+    /// it wakes ~60 fps only while the bracket is expanding, then
+    /// returns to fully blocked recv as soon as the animation
+    /// clears its cache.
+    pub fn indent_anim_remaining(&self) -> Option<std::time::Duration> {
+        // Only wake during the in-flight phase. Settled entries
+        // (Instant = None) sit in the cache purely to detect future
+        // scope changes; they shouldn't keep the loop spinning.
+        match self.buffer.indent_anim.get() {
+            Some((Some(_), _, _)) => Some(std::time::Duration::from_millis(16)),
+            _ => None,
+        }
+    }
+
     /// Queue a toast for display. Goes straight to the visible stack
     /// while there's room (cap of 3); otherwise waits behind the
     /// already-visible toasts and is promoted as they expire.

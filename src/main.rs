@@ -28,11 +28,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    supports_keyboard_enhancement,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 
 use crate::action::PromptKind;
 use crate::app::App;
@@ -146,16 +146,14 @@ fn main() -> Result<()> {
     // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.
     let (event_tx, event_rx) = mpsc::channel::<event::AppEvent>();
     let input_tx = event_tx.clone();
-    thread::spawn(move || {
-        loop {
-            match crossterm_event::read() {
-                Ok(ev) => {
-                    if input_tx.send(event::AppEvent::Term(ev)).is_err() {
-                        return;
-                    }
+    thread::spawn(move || loop {
+        match crossterm_event::read() {
+            Ok(ev) => {
+                if input_tx.send(event::AppEvent::Term(ev)).is_err() {
+                    return;
                 }
-                Err(_) => return,
             }
+            Err(_) => return,
         }
     });
 
@@ -212,7 +210,14 @@ fn run(
         // loop wakes when the TTL expires and the next redraw can drop
         // the toast — otherwise it would linger until the user happens
         // to press a key.
-        let first = match app.toast_remaining() {
+        // Merge wake sources: toast TTL and indent-guide animation.
+        // Smallest non-`None` wins; `None`-vs-`None` falls back to a
+        // blocking `recv`.
+        let wake = match (app.toast_remaining(), app.indent_anim_remaining()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let first = match wake {
             Some(rem) => match event_rx.recv_timeout(rem) {
                 Ok(ev) => Some(ev),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,

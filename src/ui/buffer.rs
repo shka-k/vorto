@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{App, JumpState, Selection};
 use crate::config::{EditorConfig, IndentGuideStyle};
-use crate::editor::Buffer;
+use crate::editor::{Buffer, IndentAnimState};
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
 use crate::vcs::LineStatus;
@@ -119,6 +119,8 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             eff.indent_width,
             eff.indent_guides_skip_levels,
             eff.indent_guide_style,
+            eff.indent_animation,
+            eff.indent_animation_ms,
         )
     } else {
         GuideMap::new()
@@ -293,6 +295,7 @@ type GuideMap = HashMap<usize, Vec<IndentGuide>>;
 /// When no tree-sitter highlighter is loaded (plain-text buffer or a
 /// language without `indents.scm`), drawing falls back to a uniform
 /// leading-whitespace stair-step at multiples of `indent_width`.
+#[allow(clippy::too_many_arguments)]
 fn compute_indent_guides(
     app: &App,
     scroll: usize,
@@ -301,6 +304,8 @@ fn compute_indent_guides(
     indent_width: usize,
     skip_levels: usize,
     style: IndentGuideStyle,
+    animation: bool,
+    animation_ms: u64,
 ) -> GuideMap {
     let mut map: GuideMap = HashMap::new();
     if last_visible <= scroll || indent_width == 0 {
@@ -425,12 +430,26 @@ fn compute_indent_guides(
     // Active marking & (in p10k mode) bracket decoration.
     let active = active_scope_range(app, cursor_row, lines, tab_width, indent_width);
     if let Some((lo_active, hi_active, ac)) = active {
+        // Envelope bounds use `s` (the scope's actual header row),
+        // not `lo_active` (= s+1, the first body row), so the p10k
+        // `╭─` corner can land on `s`. Line mode naturally clamps
+        // away rows ≤ s when iterating, because no `│` exists at
+        // the active col on the header row.
+        let s = lo_active.saturating_sub(1);
+        let (anim_top, anim_bot) = animation_envelope(
+            &app.buffer.indent_anim,
+            (s, hi_active, ac),
+            cursor_row,
+            animation,
+            animation_ms,
+        );
         match style {
             IndentGuideStyle::Line => {
                 // Line mode: just mark the existing `│` cells at
                 // the scope's body column.
-                let lo = lo_active.max(scroll);
+                let lo = lo_active.max(anim_top).max(scroll);
                 let hi = hi_active
+                    .min(anim_bot)
                     .min(last_visible.saturating_sub(1))
                     .min(line_count.saturating_sub(1));
                 if lo <= hi {
@@ -449,26 +468,28 @@ fn compute_indent_guides(
                 // p10k bracket spans the *whole* scope, drawn one
                 // indent step shallower than the scope's header so
                 // the corner cells land in the start-row's leading
-                // whitespace. `s` = the scope's actual header row
-                // (one above the first body row).
-                let s = lo_active.saturating_sub(1);
+                // whitespace.
                 let p10k_col = ac.saturating_sub(indent_width);
                 if p10k_col == 0 {
                     // The scope's header sits at the buffer's left
                     // edge — no whitespace column to bracket from.
                     return map;
                 }
-                let row_lo = s.max(scroll);
-                let row_hi = hi_active
+                let anim_s = s.max(anim_top);
+                let anim_e = hi_active.min(anim_bot);
+                let row_lo = anim_s.max(scroll);
+                let row_hi = anim_e
                     .min(last_visible.saturating_sub(1))
                     .min(line_count.saturating_sub(1));
                 if row_lo > row_hi {
                     return map;
                 }
+                let top_reached = anim_s == s;
+                let bot_reached = anim_e == hi_active;
                 for row in row_lo..=row_hi {
-                    let glyph = if row == s {
+                    let glyph = if top_reached && row == s {
                         '╭'
-                    } else if row == hi_active {
+                    } else if bot_reached && row == hi_active {
                         '╰'
                     } else {
                         INDENT_GUIDE_CHAR
@@ -487,10 +508,13 @@ fn compute_indent_guides(
                 // past `p10k_col` only land on whitespace —
                 // `render_line` silently drops the override when
                 // content sits there, so we don't need to measure.
+                // Gated by `top_reached`/`bot_reached` so the
+                // bracket grows in two clean steps during the
+                // animation rather than baring its cap mid-flight.
                 let in_view = |row: usize| -> bool {
                     row >= scroll && row < last_visible && row < line_count
                 };
-                if in_view(s) {
+                if top_reached && in_view(s) {
                     push_unique_guide(
                         &mut map,
                         s,
@@ -501,7 +525,7 @@ fn compute_indent_guides(
                         },
                     );
                 }
-                if in_view(hi_active) {
+                if bot_reached && in_view(hi_active) {
                     // `╰>` (2 cells) rather than `╰─>` (3) so the
                     // arrow lands in whitespace at the common
                     // `indent_width = 2` setting — the third cell
@@ -521,6 +545,66 @@ fn compute_indent_guides(
         }
     }
     map
+}
+
+/// Animation envelope for the active scope's bracket/bar: the
+/// (inclusive) row range that should currently be drawn as active.
+///
+/// When `enabled == false`, returns the scope's full span — the
+/// bracket renders instantly.
+///
+/// When enabled, the envelope grows **top-to-bottom**: the `╭─`
+/// corner appears immediately on the scope's start row and the
+/// bar cascades downward to the `╰>` over `duration_ms`. Progress
+/// `p = elapsed / duration_ms` is clamped to `[0, 1]`. At p = 0
+/// only `scope.0` (the start row) is active; at p = 1 the full
+/// `(scope.0, scope.1)` span is active and the cached state is
+/// cleared so the loop can stop waking on the timer.
+///
+/// State is cached in the buffer's `indent_anim` `Cell` keyed by
+/// the scope tuple. Any change to the key (cursor enters a
+/// different scope) restarts the animation from the top.
+fn animation_envelope(
+    state: &std::cell::Cell<Option<IndentAnimState>>,
+    scope: (usize, usize, usize),
+    cursor_row: usize,
+    enabled: bool,
+    duration_ms: u64,
+) -> (usize, usize) {
+    if !enabled || duration_ms == 0 {
+        state.set(None);
+        return (scope.0, scope.1);
+    }
+    let now = std::time::Instant::now();
+    let cached = state.get();
+    // Three cases:
+    // 1. Cached key matches current scope, in-flight (Some t): keep ticking.
+    // 2. Cached key matches current scope, settled (None t): hold full extent.
+    // 3. Key differs (or no cache): start a fresh animation.
+    let started_at = match cached {
+        Some((Some(t), k, _)) if k == scope => Some(t),
+        Some((None, k, _)) if k == scope => None,
+        _ => {
+            state.set(Some((Some(now), scope, cursor_row)));
+            Some(now)
+        }
+    };
+    let p = match started_at {
+        Some(t) => {
+            let elapsed_ms = now.duration_since(t).as_millis() as u64;
+            (elapsed_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+        }
+        None => 1.0,
+    };
+    let length = scope.1.saturating_sub(scope.0) as f32;
+    let bot = scope.0.saturating_add((length * p).round() as usize);
+    if p >= 1.0 && started_at.is_some() {
+        // Transition to settled — keep the key cached (so we detect
+        // future scope changes) but drop the timer so the main loop
+        // stops waking at 60fps.
+        state.set(Some((None, scope, cursor_row)));
+    }
+    (scope.0, bot)
 }
 
 /// Active scope range as `(first_body_row, last_body_row,

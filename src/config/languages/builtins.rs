@@ -258,6 +258,8 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
                 indent_guides: None,
                 indent_guides_skip_levels: None,
                 indent_guide_style: None,
+                indent_animation: None,
+                indent_animation_ms: None,
             },
             lsp: lsp(&["gopls"]),
             formatter: Some(FormatterToml {

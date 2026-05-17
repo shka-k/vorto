@@ -65,6 +65,15 @@ pub struct EditorToml {
     /// `│` everywhere; `"p10k"` decorates the active scope with
     /// powerlevel10k–style corner/arrow glyphs.
     pub indent_guide_style: Option<IndentGuideStyle>,
+    /// When `true`, the active indent-guide (bar in `line` mode,
+    /// bracket in `p10k`) expands from the cursor row outward to
+    /// the scope boundaries each time the cursor enters a new
+    /// scope. Falls back to `false`.
+    pub indent_animation: Option<bool>,
+    /// Duration of the active-guide expand animation, in
+    /// milliseconds. Ignored unless `indent_animation = true`.
+    /// Falls back to `150`.
+    pub indent_animation_ms: Option<u64>,
 }
 
 /// Fully-resolved editor settings — what the runtime actually reads
@@ -79,6 +88,8 @@ pub struct EditorConfig {
     pub indent_guides: bool,
     pub indent_guides_skip_levels: usize,
     pub indent_guide_style: IndentGuideStyle,
+    pub indent_animation: bool,
+    pub indent_animation_ms: u64,
 }
 
 impl Default for EditorConfig {
@@ -92,6 +103,8 @@ impl Default for EditorConfig {
             indent_guides: true,
             indent_guides_skip_levels: 1,
             indent_guide_style: IndentGuideStyle::Line,
+            indent_animation: false,
+            indent_animation_ms: 150,
         }
     }
 }
@@ -112,6 +125,8 @@ impl EditorConfig {
                 .indent_guides_skip_levels
                 .unwrap_or(self.indent_guides_skip_levels),
             indent_guide_style: user.indent_guide_style.unwrap_or(self.indent_guide_style),
+            indent_animation: user.indent_animation.unwrap_or(self.indent_animation),
+            indent_animation_ms: user.indent_animation_ms.unwrap_or(self.indent_animation_ms),
         }
     }
 }
@@ -138,6 +153,8 @@ mod tests {
             indent_guides: true,
             indent_guides_skip_levels: 1,
             indent_guide_style: IndentGuideStyle::Line,
+            indent_animation: false,
+            indent_animation_ms: 150,
         };
         let eff = base.overlay(&EditorToml {
             tab_width: Some(8),

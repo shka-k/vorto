@@ -28,6 +28,21 @@ mod substitute;
 mod text_object;
 mod vcs_link;
 
+/// Per-buffer indent-guide animation state.
+///
+/// `started_at = Some(t)` means an animation is in flight from `t`;
+/// `None` means the cursor's current scope has already played its
+/// animation and is now static (kept so we can detect when the
+/// cursor moves into a *different* scope and restart from zero).
+/// `scope_key = (start_row, end_row, col)` is enough to detect a
+/// scope change without holding a reference to the tree.
+/// `anchor_row` is the cursor row at animation start.
+pub type IndentAnimState = (
+    Option<std::time::Instant>,
+    (usize, usize, usize),
+    usize,
+);
+
 pub use inline_suggestion::{RequestId, Suggestion, SuggestionState};
 pub use ops::{flip_case_char_keep_width, to_lower_keep_width, to_upper_keep_width};
 pub use search::SearchState;
@@ -90,6 +105,11 @@ pub struct Buffer {
     /// in `draw_buffer`; `place_cursor` and cursor-anchored overlays
     /// read it.
     pub cursor_visual_y: Cell<u16>,
+    /// Active indent-guide animation state. Reset whenever the
+    /// cursor enters a different scope; cleared by the renderer
+    /// once progress reaches 1.0 so a static frame doesn't keep
+    /// waking the loop.
+    pub indent_anim: Cell<Option<IndentAnimState>>,
     // `pub` so the sleeping-buffer freezer can take the stacks
     // by move (and reinstall them on thaw) without going through
     // accessor boilerplate. Editor-internal mutations still go
@@ -216,6 +236,7 @@ impl Buffer {
             viewport_height: Cell::new(0),
             pending_center: Cell::new(false),
             cursor_visual_y: Cell::new(0),
+            indent_anim: Cell::new(None),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             vcs_base,
