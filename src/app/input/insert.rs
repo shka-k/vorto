@@ -116,8 +116,18 @@ impl App {
                 // there shouldn't be `\t` characters in leading
                 // whitespace when `use_tabs` is false, so visual vs.
                 // char column converge in practice.
+                //
+                // Fallback: if the configured indent character is space
+                // but the current line's leading whitespace already
+                // contains tabs (the indent character "isn't found" in
+                // the line's style), fall through to a literal `\t` so
+                // we don't mix soft-tab spaces into a tab-indented row.
                 let indent = self.indent_settings();
-                if indent.use_tabs {
+                let leading_has_tab = self.buffer.lines[self.buffer.cursor.row]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .any(|c| c == '\t');
+                if indent.use_tabs || leading_has_tab {
                     self.fan_out_insert_char('\t');
                     self.record_insert_key(InsertKey::Char('\t'));
                 } else {

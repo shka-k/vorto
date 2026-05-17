@@ -372,8 +372,18 @@ impl Buffer {
             return;
         }
         if self.cursor.col > 0 && self.line_is_blank_before_cursor() {
-            self.dedent_current_line(indent);
-            return;
+            // Only collapse a full indent level when the char immediately
+            // before the cursor matches the configured indent character.
+            // Otherwise (e.g. `use_tabs=true` but the leading run is
+            // spaces, or `use_tabs=false` but it's a stray tab) the
+            // "indent character" is effectively absent — fall through to
+            // a plain single-char backspace instead of nibbling chars
+            // that aren't part of the user's indent unit.
+            let indent_char = if indent.use_tabs { '\t' } else { ' ' };
+            if self.char_before_cursor() == Some(indent_char) {
+                self.dedent_current_line(indent);
+                return;
+            }
         }
         if self.cursor.col == 0 && self.cursor.row > 0 {
             let prev_blank = self.lines[self.cursor.row - 1]
@@ -1110,5 +1120,37 @@ mod tests {
         assert_eq!(b.lines, vec!["foo    }".to_string()]);
         assert_eq!(b.cursor.row, 0);
         assert_eq!(b.cursor.col, 3);
+    }
+
+    #[test]
+    fn backspace_in_space_indent_under_tab_settings_falls_back_to_one_char() {
+        // `use_tabs=true` but the leading run is spaces — the indent
+        // character (`\t`) isn't found, so backspace nibbles one space
+        // instead of swallowing the whole space run.
+        let mut b = Buffer::new();
+        b.lines = vec!["    foo".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        let indent = IndentSettings {
+            width: 4,
+            use_tabs: true,
+        };
+        b.delete_char_before_smart(indent);
+        assert_eq!(b.lines[0], "   foo");
+        assert_eq!(b.cursor.col, 3);
+    }
+
+    #[test]
+    fn backspace_in_tab_indent_under_space_settings_falls_back_to_one_char() {
+        // `use_tabs=false` but the leading run is a tab — the indent
+        // character (` `) isn't found, so backspace deletes one char
+        // (the tab) without rounding.
+        let mut b = Buffer::new();
+        b.lines = vec!["\tfoo".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 1;
+        b.delete_char_before_smart(settings());
+        assert_eq!(b.lines[0], "foo");
+        assert_eq!(b.cursor.col, 0);
     }
 }
