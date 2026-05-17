@@ -128,7 +128,10 @@ fn main() -> Result<()> {
         Ok(c) => {
             vlog!(
                 "config loaded path={}",
-                cfg_path.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "<default>".into()),
+                cfg_path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<default>".into()),
             );
             c
         }

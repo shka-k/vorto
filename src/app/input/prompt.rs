@@ -37,9 +37,7 @@ impl App {
                     // a picker entry that fails to load (e.g. a stray
                     // symlink to a directory) should leave the user in
                     // their current buffer with a visible error.
-                    Err(e) => {
-                        self.push_toast(Toast::error(format!("open: {}", root_cause(&e))))
-                    }
+                    Err(e) => self.push_toast(Toast::error(format!("open: {}", root_cause(&e)))),
                 }
                 Ok(())
             }

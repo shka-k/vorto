@@ -447,7 +447,11 @@ impl Drop for LspClient {
     fn drop(&mut self) {
         let shutdown_wait = Duration::from_millis(500);
         let exit_wait = Duration::from_millis(300);
-        vlog!("lsp shutdown begin lang={} pid={}", self.language_id, self.child.id());
+        vlog!(
+            "lsp shutdown begin lang={} pid={}",
+            self.language_id,
+            self.child.id()
+        );
 
         let shutdown_id = self.next_id;
         self.next_id += 1;
@@ -478,7 +482,10 @@ impl Drop for LspClient {
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
-                    vlog!("lsp shutdown clean lang={} status={status}", self.language_id);
+                    vlog!(
+                        "lsp shutdown clean lang={} status={status}",
+                        self.language_id
+                    );
                     return;
                 }
                 Ok(None) if std::time::Instant::now() >= deadline => break,

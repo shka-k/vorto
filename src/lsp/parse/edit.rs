@@ -114,4 +114,3 @@ pub fn parse_text_edits(v: &Value) -> Vec<TextEdit> {
     };
     arr.iter().filter_map(parse_text_edit).collect()
 }
-

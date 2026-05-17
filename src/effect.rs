@@ -105,7 +105,10 @@ pub enum Cmd {
     /// `]d` / `[d` — jump the cursor to the next / previous LSP
     /// diagnostic in the current buffer. `count` walks N items in
     /// the requested direction.
-    GotoDiagnostic { forward: bool, count: u32 },
+    GotoDiagnostic {
+        forward: bool,
+        count: u32,
+    },
 
     // ── Multi-buffer / lifecycle ─────────────────────────────
     BufferCycle {

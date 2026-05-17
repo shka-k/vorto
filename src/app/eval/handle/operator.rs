@@ -12,12 +12,7 @@ use crate::editor::Cursor;
 use crate::effect::Cmd;
 use crate::mode::Mode;
 
-pub(super) fn handle_op(
-    app: &mut App,
-    op: Operator,
-    target: Target,
-    outer_count: u32,
-) -> Vec<Cmd> {
+pub(super) fn handle_op(app: &mut App, op: Operator, target: Target, outer_count: u32) -> Vec<Cmd> {
     let mut cmds = Vec::new();
     match target {
         Target::LineWise => {
@@ -86,8 +81,7 @@ pub(super) fn handle_op(
             // walks forward through successive matches (e.g. `2dgn`).
             let forward = app.search.last_forward ^ reverse;
             for _ in 0..outer_count {
-                let Some((start, end_incl)) =
-                    app.search.find_match_range(&app.buffer, forward)
+                let Some((start, end_incl)) = app.search.find_match_range(&app.buffer, forward)
                 else {
                     cmds.push(Cmd::ToastError("pattern not found".into()));
                     break;
@@ -113,13 +107,7 @@ pub(super) fn handle_op(
 
 /// Apply an operator over the range [start, end). Shared by
 /// motion-target, search-match, and text-object dispatch.
-fn apply_op_range(
-    app: &mut App,
-    op: Operator,
-    start: Cursor,
-    end: Cursor,
-    cmds: &mut Vec<Cmd>,
-) {
+fn apply_op_range(app: &mut App, op: Operator, start: Cursor, end: Cursor, cmds: &mut Vec<Cmd>) {
     match op {
         Operator::Delete => app.buffer.delete_range(start, end),
         Operator::Yank => {

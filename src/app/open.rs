@@ -34,8 +34,7 @@ impl App {
                 // (zero lines), so we can't use `unwrap_or_default`
                 // here — the wrong default would leave the buffer
                 // with an empty `lines` Vec and crash motions.
-                let next = if let Some(parked) =
-                    self.parked_buffers.remove(&BufferRef::Scratch(id))
+                let next = if let Some(parked) = self.parked_buffers.remove(&BufferRef::Scratch(id))
                 {
                     parked
                 } else {

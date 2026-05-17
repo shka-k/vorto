@@ -14,8 +14,8 @@ use crate::lsp::{
     WorkspaceEdit,
 };
 
-use super::completion::{CompletionState, prefix_slice};
 use super::SignatureState;
+use super::completion::{CompletionState, prefix_slice};
 use super::{App, LspEventOutcome, Toast, root_cause};
 
 impl App {

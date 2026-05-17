@@ -283,9 +283,7 @@ impl App {
                     return;
                 }
                 None => {
-                    self.push_toast(Toast::error(
-                        "file no longer on disk (use :w! to recreate)",
-                    ));
+                    self.push_toast(Toast::error("file no longer on disk (use :w! to recreate)"));
                     return;
                 }
                 _ => {}
@@ -560,9 +558,7 @@ impl App {
         let preserved_dirty = self
             .sleeping
             .iter()
-            .filter(|(k, s)| {
-                matches!(k, crate::buffer_ref::BufferRef::File(_)) && s.dirty
-            })
+            .filter(|(k, s)| matches!(k, crate::buffer_ref::BufferRef::File(_)) && s.dirty)
             .count();
         for k in &clean_keys {
             self.sleeping.remove(k);

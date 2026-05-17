@@ -28,9 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::lsp::codec::{
-    handle_server_request, notification, read_message, request, write_framed,
-};
+use crate::lsp::codec::{handle_server_request, notification, read_message, request, write_framed};
 use crate::vlog;
 
 /// Name of the Copilot server binary. Looked up via `PATH`; not bundled
@@ -404,10 +402,7 @@ fn reader_loop(
             "window/showMessage" | "window/logMessage" => {
                 if let Some(params) = msg.get("params") {
                     let level = params.get("type").and_then(|v| v.as_u64()).unwrap_or(3);
-                    let text = params
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let text = params.get("message").and_then(|v| v.as_str()).unwrap_or("");
                     vlog!("copilot {} level={} {}", method, level, text);
                 }
             }
@@ -644,7 +639,12 @@ mod tests {
     fn parse_check_status_signed_in() {
         let v = json!({ "status": "OK", "user": "octocat" });
         let s = parse_check_status(&v).unwrap();
-        assert_eq!(s, CheckStatus::SignedIn { user: Some("octocat".into()) });
+        assert_eq!(
+            s,
+            CheckStatus::SignedIn {
+                user: Some("octocat".into())
+            }
+        );
     }
 
     #[test]

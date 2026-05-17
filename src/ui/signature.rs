@@ -76,7 +76,9 @@ pub(super) fn draw_signature(f: &mut Frame, app: &App, buf_area: Rect) {
     } else if space_above >= 3 {
         anchor_y.saturating_sub(popup_h.min(space_above))
     } else {
-        anchor_y.saturating_add(1).min(buf_area.bottom().saturating_sub(1))
+        anchor_y
+            .saturating_add(1)
+            .min(buf_area.bottom().saturating_sub(1))
     };
 
     let max_x = buf_area.right().saturating_sub(popup_w);
@@ -174,11 +176,7 @@ fn resolve_param_range(label: &ParameterLabel, signature_label: &str) -> Option<
 /// spans) and divides by width; overcounting by one is fine — it just
 /// reserves an extra empty row inside the popup.
 fn wrapped_row_count(line: &Line, width: usize) -> usize {
-    let total: usize = line
-        .spans
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum();
+    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     if total == 0 {
         return 1;
     }

@@ -226,7 +226,6 @@ impl Buffer {
         }
         self.touch();
     }
-
 }
 
 /// Lowercase a char, keeping its column width. Multi-char expansions

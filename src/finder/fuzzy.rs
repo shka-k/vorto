@@ -60,7 +60,9 @@ pub enum FuzzyKind {
     /// "every URI the coordinator has diagnostics for" so the title
     /// and item formatting can differ without duplicating the picker
     /// plumbing.
-    Diagnostics { workspace: bool },
+    Diagnostics {
+        workspace: bool,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -82,9 +82,13 @@ pub enum CopilotRequestKind {
 pub enum CopilotAuthState {
     #[default]
     Unknown,
-    SignedIn { user: Option<String> },
+    SignedIn {
+        user: Option<String>,
+    },
     NotSignedIn,
-    NotAuthorized { reason: Option<String> },
+    NotAuthorized {
+        reason: Option<String>,
+    },
 }
 
 impl CopilotAuthState {
@@ -211,11 +215,7 @@ impl App {
         let Some(copilot) = self.copilot.as_mut() else {
             return false;
         };
-        let id = match copilot.inline_completion(
-            &uri,
-            anchor.row as u32,
-            anchor.col as u32,
-        ) {
+        let id = match copilot.inline_completion(&uri, anchor.row as u32, anchor.col as u32) {
             Ok(id) => id,
             Err(e) => {
                 vlog!("copilot inlineCompletion send failed: {e:#}");
@@ -323,9 +323,7 @@ impl App {
             "signin" | "login" => self.copilot_signin(),
             "signout" | "logout" => self.copilot_signout(),
             other => {
-                self.push_toast(Toast::error(format!(
-                    "unknown copilot subcommand: {other}"
-                )));
+                self.push_toast(Toast::error(format!("unknown copilot subcommand: {other}")));
             }
         }
     }
@@ -358,8 +356,7 @@ impl App {
         }
         let Some(copilot) = self.copilot.as_mut() else {
             self.push_toast(Toast::error(
-                "Copilot: server not running (install copilot-language-server)"
-                    .to_string(),
+                "Copilot: server not running (install copilot-language-server)".to_string(),
             ));
             return;
         };
@@ -384,8 +381,7 @@ impl App {
         };
         match copilot.sign_out() {
             Ok(id) => {
-                self.copilot_pending
-                    .insert(id, CopilotRequestKind::SignOut);
+                self.copilot_pending.insert(id, CopilotRequestKind::SignOut);
             }
             Err(e) => {
                 vlog!("copilot signOut send failed: {e:#}");
@@ -471,7 +467,9 @@ impl App {
                 ));
             }
             Some(CheckStatus::NotAuthorized { reason }) => {
-                self.copilot_auth = CopilotAuthState::NotAuthorized { reason: reason.clone() };
+                self.copilot_auth = CopilotAuthState::NotAuthorized {
+                    reason: reason.clone(),
+                };
                 self.push_toast(Toast::error(format!(
                     "Copilot signin: not authorized ({})",
                     reason.as_deref().unwrap_or("no entitlement")
@@ -546,10 +544,7 @@ impl App {
         // toasts.
         match &new_state {
             CopilotAuthState::SignedIn { user } => {
-                vlog!(
-                    "copilot signed in user={}",
-                    user.as_deref().unwrap_or("?")
-                );
+                vlog!("copilot signed in user={}", user.as_deref().unwrap_or("?"));
             }
             CopilotAuthState::NotSignedIn => {
                 vlog!("copilot not signed in");

@@ -420,9 +420,7 @@ impl LspCoordinator {
             .open_uris
             .get(&uri)
             .is_some_and(|keys| keys.iter().any(|k| k == client_key));
-        if !already_open
-            && let Some(client) = self.clients.get_mut(client_key)
-        {
+        if !already_open && let Some(client) = self.clients.get_mut(client_key) {
             client.did_open(&uri, text)?;
             self.open_uris
                 .entry(uri.clone())

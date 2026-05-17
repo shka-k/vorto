@@ -100,12 +100,8 @@ impl App {
             KeyCode::Char('Y') => self.visual_yank_lines(),
             // `u` / `U` — lowercase / uppercase the selection. Vim
             // semantics: bare `u` in visual is *not* undo, it lowercases.
-            KeyCode::Char('u') => {
-                self.transform_case_selection(crate::editor::to_lower_keep_width)
-            }
-            KeyCode::Char('U') => {
-                self.transform_case_selection(crate::editor::to_upper_keep_width)
-            }
+            KeyCode::Char('u') => self.transform_case_selection(crate::editor::to_lower_keep_width),
+            KeyCode::Char('U') => self.transform_case_selection(crate::editor::to_upper_keep_width),
             KeyCode::Char('~') => self.toggle_case_selection(),
             KeyCode::Char('J') => self.join_selection_lines(),
             KeyCode::Char('>') => self.indent_selection(true),

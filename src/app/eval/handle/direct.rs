@@ -15,12 +15,7 @@ use crate::editor::Cursor;
 use crate::effect::{Cmd, ScrollAnchor};
 use crate::mode::Mode;
 
-pub(super) fn handle_direct(
-    app: &mut App,
-    kind: DirectKind,
-    count: u32,
-    ctx: Ctx,
-) -> Vec<Cmd> {
+pub(super) fn handle_direct(app: &mut App, kind: DirectKind, count: u32, ctx: Ctx) -> Vec<Cmd> {
     use DirectKind as D;
     let mut cmds = Vec::new();
     match kind {

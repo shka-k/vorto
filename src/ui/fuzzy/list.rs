@@ -87,12 +87,7 @@ pub(super) fn draw_fuzzy_list(f: &mut Frame, finder: &Finder, area: Rect) {
 /// dimmed; the line number is cyan. Matching is against line content
 /// but we don't reproduce the content in the row — the preview pane on
 /// the right already shows it under a target band.
-fn render_workspace_match<'a>(
-    path: &'a str,
-    row: usize,
-    selected: bool,
-    width: usize,
-) -> Line<'a> {
+fn render_workspace_match<'a>(path: &'a str, row: usize, selected: bool, width: usize) -> Line<'a> {
     let base = if selected {
         Style::default()
             .bg(Color::DarkGray)
@@ -226,10 +221,7 @@ fn render_match<'a>(
     let mut spans = Vec::new();
     let pinned_prefix = match kind {
         FuzzyKind::Diagnostics { .. }
-            if chars.len() >= 4
-                && chars[0] == '['
-                && chars[2] == ']'
-                && chars[3] == ' ' =>
+            if chars.len() >= 4 && chars[0] == '[' && chars[2] == ']' && chars[3] == ' ' =>
         {
             4
         }
