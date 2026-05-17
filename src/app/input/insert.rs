@@ -66,7 +66,7 @@ impl App {
                 }
             }
             self.update_signature_help_on_char(c);
-            self.update_inline_suggestion_stub();
+            self.update_inline_suggestion();
             return Ok(());
         }
         match key.code {

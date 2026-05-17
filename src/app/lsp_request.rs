@@ -393,16 +393,25 @@ impl App {
         }
     }
 
-    /// Send `didChange` if the buffer has been mutated since the last
-    /// sync. Called from the main loop after every key handled.
+    /// Sync the active buffer to every language server / Copilot that
+    /// hasn't seen the latest content. Called from the main loop after
+    /// every key handled; pays for the `lines.join` snapshot only when
+    /// at least one consumer needs it.
     pub fn sync_buffer_if_dirty(&mut self) {
-        if self.buffer.version == self.lsp.last_synced_version() {
+        let needs_lsp = self.buffer.version != self.lsp.last_synced_version();
+        let needs_copilot = self.copilot_needs_sync();
+        if !needs_lsp && !needs_copilot {
             return;
         }
-        self.lsp.set_last_synced_version(self.buffer.version);
         let text = self.buffer.lines.join("\n");
-        if let Err(e) = self.lsp.did_change(&text) {
-            self.push_toast(Toast::error(format!("lsp didChange: {}", root_cause(&e))));
+        if needs_lsp {
+            self.lsp.set_last_synced_version(self.buffer.version);
+            if let Err(e) = self.lsp.did_change(&text) {
+                self.push_toast(Toast::error(format!("lsp didChange: {}", root_cause(&e))));
+            }
+        }
+        if needs_copilot {
+            self.sync_buffer_to_copilot(&text);
         }
     }
 }

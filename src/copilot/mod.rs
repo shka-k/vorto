@@ -5,16 +5,20 @@
 //! lives in [`crate::lsp::codec`]. This module owns the Copilot-specific
 //! pieces: spawn + handshake with the `editorInfo` /
 //! `editorPluginInfo` initialization options it expects, a single
-//! workspace-wide instance (no per-language fan-out), and silent
-//! degradation when the binary isn't on `PATH` — vorto stays usable
-//! either way, the user just doesn't get ghost-text completions.
+//! workspace-wide instance (no per-language fan-out), document sync,
+//! `textDocument/inlineCompletion` requests, and silent degradation
+//! when the binary isn't on `PATH` — vorto stays usable either way,
+//! the user just doesn't get ghost-text completions.
 //!
-//! Phase 1 ships only spawn + handshake + a reader thread that surfaces
-//! server messages and fatal errors. Document sync, sign-in, and the
-//! actual `textDocument/inlineCompletion` request/response land in
-//! follow-up commits — keeping each layer small enough to verify in
-//! isolation.
+//! Routing model: the reader thread is intentionally dumb. All
+//! responses to client-initiated requests are forwarded as
+//! [`CopilotEvent::Response`] with the raw `result` / `error` JSON;
+//! the App layer matches the request id against its own pending-kind
+//! map and parses accordingly. Keeps protocol-shape knowledge in one
+//! place (App) and avoids leaking inline-completion / sign-in types
+//! into the codec layer.
 
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -42,24 +46,43 @@ const SHUTDOWN_REPLY_WAIT: Duration = Duration::from_millis(500);
 const EXIT_DRAIN_WAIT: Duration = Duration::from_millis(300);
 
 /// Events emitted by the reader thread for the main loop to consume.
-/// Inline-completion responses and sign-in status updates will join
-/// this enum as the corresponding request paths land — for Phase 1
-/// only the cross-cutting message / error cases exist.
 #[derive(Debug)]
 pub enum CopilotEvent {
     /// `window/showMessage` or `window/logMessage` from the server.
     /// `level` follows the LSP severity numbering (1=error, 4=log).
     Message { level: u8, text: String },
+    /// Response to a client-initiated request. Routed by id at the App
+    /// layer against its pending-kind map; the raw JSON is forwarded
+    /// so this module doesn't need to know about every request shape.
+    Response {
+        id: u64,
+        result: Option<Value>,
+        error: Option<String>,
+    },
     /// Reader thread exited (EOF, parse failure, …). The client is
     /// effectively dead from this point — the App should drop its
     /// handle so a future request triggers a re-spawn attempt.
     Error { message: String },
 }
 
+/// Per-document sync bookkeeping. `lsp_version` is the i32 the
+/// server expects on `didChange`; `buffer_version` is the editor-side
+/// `Buffer::version` snapshot we last pushed — lets the caller's
+/// dirty-check stay a single field comparison without parallel
+/// per-URI tracking on the App side.
+#[derive(Debug, Clone, Copy)]
+struct DocState {
+    lsp_version: i32,
+    buffer_version: u64,
+}
+
 pub struct CopilotClient {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: u64,
+    /// URI → tracked document state. Entries cleared on
+    /// [`Self::did_close`].
+    docs: HashMap<String, DocState>,
 }
 
 impl CopilotClient {
@@ -148,7 +171,109 @@ impl CopilotClient {
             child,
             stdin,
             next_id: 2,
+            docs: HashMap::new(),
         }))
+    }
+
+    /// True when the server's view of `uri` is out of date with
+    /// `current_buffer_version` (or the URI has never been opened).
+    /// Lets the App's dirty-flush path stay a single check that
+    /// handles both "first sight" and "subsequent edit" without
+    /// parallel App-side per-URI tracking.
+    pub fn needs_sync(&self, uri: &str, current_buffer_version: u64) -> bool {
+        match self.docs.get(uri) {
+            Some(state) => state.buffer_version != current_buffer_version,
+            None => true,
+        }
+    }
+
+    /// Whether `uri` has already received a `didOpen`. Lets the
+    /// caller decide between `did_open` and `did_change` when both
+    /// would be valid.
+    pub fn is_open(&self, uri: &str) -> bool {
+        self.docs.contains_key(uri)
+    }
+
+    /// Send `textDocument/didOpen` and start tracking the document.
+    /// No-op when already open — re-opens are silently skipped so a
+    /// buffer switch can call this unconditionally as part of the
+    /// sync gate.
+    pub fn did_open(
+        &mut self,
+        uri: &str,
+        language_id: &str,
+        text: &str,
+        buffer_version: u64,
+    ) -> Result<()> {
+        if self.docs.contains_key(uri) {
+            return Ok(());
+        }
+        self.docs.insert(
+            uri.to_string(),
+            DocState {
+                lsp_version: 1,
+                buffer_version,
+            },
+        );
+        let params = json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": text,
+            }
+        });
+        write_framed(&self.stdin, &notification("textDocument/didOpen", params))
+    }
+
+    /// Full-document sync. Bumps the per-doc LSP version and records
+    /// the buffer-version watermark so a future [`Self::needs_sync`]
+    /// short-circuits when nothing changed.
+    pub fn did_change(&mut self, uri: &str, text: &str, buffer_version: u64) -> Result<()> {
+        let lsp_version = match self.docs.get_mut(uri) {
+            Some(state) => {
+                state.lsp_version += 1;
+                state.buffer_version = buffer_version;
+                state.lsp_version
+            }
+            None => return Ok(()),
+        };
+        let params = json!({
+            "textDocument": { "uri": uri, "version": lsp_version },
+            "contentChanges": [ { "text": text } ],
+        });
+        write_framed(&self.stdin, &notification("textDocument/didChange", params))
+    }
+
+    pub fn did_close(&mut self, uri: &str) -> Result<()> {
+        if self.docs.remove(uri).is_none() {
+            return Ok(());
+        }
+        let params = json!({ "textDocument": { "uri": uri } });
+        write_framed(&self.stdin, &notification("textDocument/didClose", params))
+    }
+
+    /// Fire `textDocument/inlineCompletion` for the given cursor
+    /// position. Returns the request id so the caller can match the
+    /// response against its pending-kind map.
+    ///
+    /// `line` and `character` are 0-based, per LSP. Triggered by
+    /// `Invoked` (kind=1) for now — `Automatic` (kind=2) would be the
+    /// signal when typed text triggered the request, but Copilot
+    /// treats them identically in practice.
+    pub fn inline_completion(&mut self, uri: &str, line: u32, character: u32) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "context": { "triggerKind": 1 }
+        });
+        write_framed(
+            &self.stdin,
+            &request(id, "textDocument/inlineCompletion", params),
+        )?;
+        Ok(id)
     }
 }
 
@@ -213,10 +338,15 @@ fn reader_loop(
             handle_server_request(&stdin, &msg);
             continue;
         }
-        // Responses to requests we sent: nothing to dispatch yet —
-        // Phase 1 only sends `initialize` (consumed synchronously)
-        // and `shutdown` (fire-and-forget from `Drop`).
-        if msg.get("method").is_none() {
+        let is_response = msg.get("method").is_none();
+        if is_response && let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
+            let result = msg.get("result").cloned().filter(|v| !v.is_null());
+            let error = msg
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            emit(CopilotEvent::Response { id, result, error });
             continue;
         }
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
@@ -238,5 +368,125 @@ fn reader_loop(
                 // editor has no UI for Copilot progress yet.
             }
         }
+    }
+}
+
+/// Range of text the server wants the client to replace when the
+/// inline suggestion is accepted. LSP positions are 0-based, half-open
+/// at `end`. Treated as char counts here for parity with the rest of
+/// the editor's cursor model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplaceRange {
+    pub start_line: u32,
+    pub start_character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+}
+
+/// First inline-completion item from a `textDocument/inlineCompletion`
+/// response. `text` is the full server-side insertion verbatim — it
+/// often *includes* characters the user has already typed, so the
+/// caller pairs it with [`Self::range`] to compute the suffix to paint
+/// as ghost text.
+#[derive(Debug, Clone)]
+pub struct InlineCompletionRaw {
+    pub text: String,
+    pub range: Option<ReplaceRange>,
+}
+
+/// Parse a `textDocument/inlineCompletion` response body into the
+/// first item's `insertText` + `range`. Returns `None` when the
+/// response carried no items or when the first item has no usable
+/// `insertText`. The renderer / accept paths split work between the
+/// two fields.
+pub fn parse_inline_completion(result: &Value) -> Option<InlineCompletionRaw> {
+    // The server can answer with either the raw item list (older
+    // Copilot revisions) or `{items: [...]}` (current LSP 3.18 shape).
+    let items = result
+        .get("items")
+        .and_then(|v| v.as_array())
+        .or_else(|| result.as_array())?;
+    let first = items.first()?;
+    let text = first.get("insertText")?.as_str()?;
+    if text.is_empty() {
+        return None;
+    }
+    let range = first.get("range").and_then(parse_range);
+    Some(InlineCompletionRaw {
+        text: text.to_string(),
+        range,
+    })
+}
+
+fn parse_range(v: &Value) -> Option<ReplaceRange> {
+    let start = v.get("start")?;
+    let end = v.get("end")?;
+    Some(ReplaceRange {
+        start_line: start.get("line")?.as_u64()? as u32,
+        start_character: start.get("character")?.as_u64()? as u32,
+        end_line: end.get("line")?.as_u64()? as u32,
+        end_character: end.get("character")?.as_u64()? as u32,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_picks_first_item_text() {
+        let v = json!({
+            "items": [
+                { "insertText": "hello" },
+                { "insertText": "world" }
+            ]
+        });
+        let raw = parse_inline_completion(&v).expect("first item");
+        assert_eq!(raw.text, "hello");
+        assert!(raw.range.is_none());
+    }
+
+    #[test]
+    fn parse_handles_bare_array() {
+        let v = json!([{ "insertText": "abc" }]);
+        assert_eq!(parse_inline_completion(&v).unwrap().text, "abc");
+    }
+
+    #[test]
+    fn parse_none_on_empty_list() {
+        let v = json!({ "items": [] });
+        assert!(parse_inline_completion(&v).is_none());
+    }
+
+    #[test]
+    fn parse_none_on_empty_text() {
+        let v = json!({ "items": [{ "insertText": "" }] });
+        assert!(parse_inline_completion(&v).is_none());
+    }
+
+    #[test]
+    fn parse_none_on_missing_insert_text() {
+        let v = json!({ "items": [{ "label": "foo" }] });
+        assert!(parse_inline_completion(&v).is_none());
+    }
+
+    #[test]
+    fn parse_extracts_range_when_present() {
+        let v = json!({
+            "items": [{
+                "insertText": "fn hello() {}",
+                "range": {
+                    "start": { "line": 3, "character": 0 },
+                    "end":   { "line": 3, "character": 8 }
+                }
+            }]
+        });
+        let raw = parse_inline_completion(&v).unwrap();
+        assert_eq!(raw.text, "fn hello() {}");
+        let range = raw.range.unwrap();
+        assert_eq!(range.start_line, 3);
+        assert_eq!(range.start_character, 0);
+        assert_eq!(range.end_line, 3);
+        assert_eq!(range.end_character, 8);
     }
 }
