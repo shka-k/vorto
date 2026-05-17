@@ -833,6 +833,14 @@ impl Keymap {
             KeySig::new(KeyCode::Char('-'), none),
             Direct(D::MultiCursorPop),
         );
+        // Shift+Down adds a cursor on the line below (VS Code style).
+        // Distinguishable from a plain Down only when the terminal
+        // supports the Kitty `DISAMBIGUATE_ESCAPE_CODES` protocol —
+        // which `main.rs` enables at startup.
+        self.bind_initial(
+            KeySig::new(KeyCode::Down, KeyModifiers::SHIFT),
+            Direct(D::MultiCursorAddBelow),
+        );
 
         // Leader bindings — single source of truth in LEADER_DEFAULTS.
         for b in LEADER_DEFAULTS {

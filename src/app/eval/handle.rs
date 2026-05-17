@@ -25,6 +25,7 @@ use crate::action::{
 };
 use crate::app::App;
 use crate::buffer_ref::BufferRef;
+use crate::editor::Cursor;
 use crate::effect::{Cmd, ScrollAnchor};
 use crate::mode::Mode;
 
@@ -235,6 +236,7 @@ impl App {
             }
             D::Substitute => run_substitute(self, ctx.rest, &mut cmds),
             D::MultiCursorAddNext => add_next_cursor(self, &mut cmds),
+            D::MultiCursorAddBelow => add_cursor_below(self, &mut cmds),
             D::MultiCursorPop => {
                 if let Some(c) = self.buffer.extra_cursors.pop() {
                     self.buffer.cursor = c;
@@ -665,6 +667,33 @@ fn add_next_cursor(app: &mut App, cmds: &mut Vec<Cmd>) {
         pattern: word,
         forward: true,
     });
+    let n = app.buffer.extra_cursors.len() + 1;
+    cmds.push(Cmd::ToastInfo(format!("{n} cursors")));
+}
+
+/// Push the current primary into `extra_cursors` and move primary one
+/// row down at the same column (clamped to the new line's length).
+/// No-ops with a toast when already on the last line, or when the
+/// landing cursor would collide with primary or an existing extra.
+fn add_cursor_below(app: &mut App, cmds: &mut Vec<Cmd>) {
+    let primary = app.buffer.cursor;
+    if primary.row + 1 >= app.buffer.lines.len() {
+        cmds.push(Cmd::ToastError("no line below".into()));
+        return;
+    }
+    let next_row = primary.row + 1;
+    let next_line_len = app.buffer.lines[next_row].chars().count();
+    let next_col = primary.col.min(next_line_len.saturating_sub(1));
+    let next = Cursor {
+        row: next_row,
+        col: next_col,
+    };
+    if next == primary || app.buffer.extra_cursors.contains(&next) {
+        cmds.push(Cmd::ToastInfo("cursor already there".into()));
+        return;
+    }
+    app.buffer.extra_cursors.push(primary);
+    app.buffer.cursor = next;
     let n = app.buffer.extra_cursors.len() + 1;
     cmds.push(Cmd::ToastInfo(format!("{n} cursors")));
 }

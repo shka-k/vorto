@@ -303,6 +303,12 @@ pub enum DirectKind {
     /// jump primary to the match. Also seeds the search pattern so
     /// `n` / `N` walk the same matches.
     MultiCursorAddNext,
+    /// `Shift+Down` — multi-cursor: push the current primary into
+    /// `extra_cursors` and move primary one row down (same column,
+    /// clamped to the new line's length). No-op on the last line.
+    /// Requires a terminal that reports Shift+Down distinctly from a
+    /// plain Down (Kitty `DISAMBIGUATE_ESCAPE_CODES`, enabled at boot).
+    MultiCursorAddBelow,
     /// `-` — pop the most recently added extra cursor and move primary
     /// back to its position. No-op when there are no extras.
     MultiCursorPop,
