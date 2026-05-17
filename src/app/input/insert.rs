@@ -9,7 +9,7 @@ use crate::action::{InsertKey, LastChange};
 use crate::app::App;
 use crate::app::SignatureTrigger;
 use crate::app::completion::is_ident_continue;
-use crate::editor::Cursor;
+use crate::editor::{Buffer, Cursor};
 use crate::mode::Mode;
 
 impl App {
@@ -138,30 +138,32 @@ impl App {
             }
             // Arrow keys break vim's `.` recording — drop the in-flight
             // session so the next `.` replays only the typing up to here.
+            // Extra cursors follow the same motion as the primary; coincident
+            // cursors are merged by `scatter_cursors`.
             KeyCode::Left => {
                 self.recording = None;
-                self.buffer.move_left();
+                self.fan_out_move(|b| b.move_left());
                 self.cancel_completion();
                 self.update_signature_help_on_edit();
                 self.cancel_inline_suggestion();
             }
             KeyCode::Right => {
                 self.recording = None;
-                self.buffer.move_right(true);
+                self.fan_out_move(|b| b.move_right(true));
                 self.cancel_completion();
                 self.update_signature_help_on_edit();
                 self.cancel_inline_suggestion();
             }
             KeyCode::Up => {
                 self.recording = None;
-                self.buffer.move_up();
+                self.fan_out_move(|b| b.move_up());
                 self.cancel_completion();
                 self.cancel_signature_help();
                 self.cancel_inline_suggestion();
             }
             KeyCode::Down => {
                 self.recording = None;
-                self.buffer.move_down();
+                self.fan_out_move(|b| b.move_down());
                 self.cancel_completion();
                 self.cancel_signature_help();
                 self.cancel_inline_suggestion();
@@ -348,6 +350,24 @@ impl App {
                 row: pos.row,
                 col: pos.col.saturating_sub(n),
             };
+        }
+        scatter_cursors(self, new_positions);
+    }
+
+    /// Apply a cursor motion at the primary cursor and every extra
+    /// cursor. Each cursor moves independently; coincident results are
+    /// merged by `scatter_cursors`.
+    fn fan_out_move(&mut self, mut f: impl FnMut(&mut Buffer)) {
+        if self.buffer.extra_cursors.is_empty() {
+            f(&mut self.buffer);
+            return;
+        }
+        let all = collect_cursors(self);
+        let mut new_positions = vec![Cursor::default(); all.len()];
+        for (orig_idx, pos) in &all {
+            self.buffer.cursor = *pos;
+            f(&mut self.buffer);
+            new_positions[*orig_idx] = self.buffer.cursor;
         }
         scatter_cursors(self, new_positions);
     }
