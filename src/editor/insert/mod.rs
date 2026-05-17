@@ -7,8 +7,21 @@
 //! input layer uses; the multi-cursor fan-out drives raw
 //! [`Buffer::insert_char`] / [`Buffer::delete_char_before`] directly so
 //! the per-cursor `col` shift bookkeeping stays valid.
+//!
+//! The pure helpers are split out so this file stays focused on the
+//! buffer-mutating logic:
+//!
+//! - [`autopair`] — opener→closer mapping and the should-pair gate.
+//! - [`indent_calc`] — indent-string arithmetic (extend / trim / build).
+
+mod autopair;
+mod indent_calc;
 
 use super::{Buffer, IndentSettings, char_to_byte};
+use autopair::{auto_pair_closer, is_auto_pair_closer, should_auto_pair};
+use indent_calc::{
+    add_one_indent_level, compute_new_line_indent, copy_leading_indent, strip_one_indent_level,
+};
 
 impl Buffer {
     pub fn insert_char(&mut self, c: char) {
@@ -403,134 +416,6 @@ impl Buffer {
         }
         self.delete_char_before();
     }
-}
-
-/// Maps an auto-pair opener to its closer. Quotes are self-paired
-/// (closer == opener). Returns `None` for any non-opener.
-fn auto_pair_closer(c: char) -> Option<char> {
-    match c {
-        '(' => Some(')'),
-        '[' => Some(']'),
-        '{' => Some('}'),
-        '"' => Some('"'),
-        '\'' => Some('\''),
-        '`' => Some('`'),
-        _ => None,
-    }
-}
-
-/// True when `c` is a closer that participates in skip-over (typing it
-/// where the same char already sits just advances the cursor).
-fn is_auto_pair_closer(c: char) -> bool {
-    matches!(c, ')' | ']' | '}' | '"' | '\'' | '`')
-}
-
-/// Decide whether typing `opener` should also insert its closer, given
-/// the chars to either side of the cursor. Brackets only check the
-/// right side (don't capture an existing identifier); quotes also gate
-/// on the left side to dodge apostrophes inside words and the inner
-/// edge of an existing quoted region.
-fn should_auto_pair(opener: char, prev: Option<char>, next: Option<char>) -> bool {
-    if let Some(n) = next
-        && (n.is_alphanumeric() || n == '_')
-    {
-        return false;
-    }
-    if matches!(opener, '"' | '\'' | '`')
-        && let Some(p) = prev
-        && (p.is_alphanumeric() || p == '_' || p == opener)
-    {
-        return false;
-    }
-    true
-}
-
-/// Remove one indent level from the end of `indent` (which must be
-/// pure leading whitespace). Tab-terminated runs drop one `\t`;
-/// space-terminated runs round *down* to the nearest multiple of
-/// `settings.width` strictly below the current count — same rules
-/// `dedent_current_line` applies to a buffer row.
-fn strip_one_indent_level(indent: &str, settings: IndentSettings) -> String {
-    if indent.is_empty() {
-        return String::new();
-    }
-    if indent.ends_with('\t') {
-        let mut out = indent.to_string();
-        out.pop();
-        return out;
-    }
-    let trailing_spaces = indent.chars().rev().take_while(|c| *c == ' ').count();
-    if trailing_spaces == 0 {
-        return indent.to_string();
-    }
-    let w = settings.width.max(1);
-    let target = (trailing_spaces.saturating_sub(1) / w) * w;
-    let remove = trailing_spaces - target;
-    indent[..indent.len() - remove].to_string()
-}
-
-/// Leading-whitespace prefix of `line`, copied verbatim so the new
-/// line preserves whatever tabs-vs-spaces mix the reference uses.
-fn copy_leading_indent(line: &str, _settings: IndentSettings) -> String {
-    line.chars()
-        .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect()
-}
-
-/// Build the indent string for a brand-new line that sits *after*
-/// `ref_row` in the buffer (vim's `o` / `O`). Strategy:
-///
-/// 1. Copy `reference_line`'s existing leading whitespace — the basic
-///    vim `autoindent` behaviour, used when nothing else fires.
-/// 2. Add one extra indent level when either signal fires:
-///    - tree-sitter `indents.scm` reports an `@indent.begin` node
-///      opening on `ref_row` (and spanning past it), or
-///    - the reference line's last non-whitespace char is `{` / `(`
-///      / `[`. Universal fallback for languages without indents.scm.
-///
-/// `insert_newline` deliberately uses a narrower rule (see inline)
-/// — pressing Enter on `func main() {` shouldn't auto-indent, but
-/// `o` on the same line should land in the body.
-fn compute_new_line_indent(
-    reference_line: &str,
-    ref_row: usize,
-    highlighter: &Option<crate::syntax::Highlighter>,
-    settings: IndentSettings,
-) -> String {
-    let base = copy_leading_indent(reference_line, settings);
-    let ts_begin = highlighter
-        .as_ref()
-        .is_some_and(|h| h.indent_begins_at(ref_row));
-    let trailing_opener = reference_line
-        .trim_end()
-        .chars()
-        .last()
-        .is_some_and(|c| matches!(c, '{' | '(' | '['));
-    if ts_begin || trailing_opener {
-        add_one_indent_level(&base, settings)
-    } else {
-        base
-    }
-}
-
-/// Append one indent level to `base`. Tab-indented bases get an extra
-/// `\t`; space-indented (or empty) bases get `settings.width` spaces,
-/// honoring `settings.use_tabs` only when there's nothing to mimic.
-fn add_one_indent_level(base: &str, settings: IndentSettings) -> String {
-    let use_tabs = if base.is_empty() {
-        settings.use_tabs
-    } else {
-        base.contains('\t')
-    };
-    let mut out = base.to_string();
-    if use_tabs {
-        out.push('\t');
-    } else {
-        for _ in 0..settings.width.max(1) {
-            out.push(' ');
-        }
-    }
-    out
 }
 
 #[cfg(test)]
