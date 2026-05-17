@@ -25,7 +25,7 @@ mod types;
 mod workers;
 
 pub use completion::CompletionState;
-pub use copilot::CopilotPending;
+pub use copilot::{CopilotAuthState, CopilotPending};
 
 pub use jump::JumpState;
 pub use lsp_coordinator::{LspCoordinator, LspEventOutcome};
@@ -118,6 +118,10 @@ pub struct App {
     /// thread surface generic [`crate::copilot::CopilotEvent::Response`]
     /// events without leaking response shapes into the codec layer.
     pub copilot_pending: CopilotPending,
+    /// Most recent Copilot auth state, learned from `checkStatus`
+    /// replies. `Unknown` until the first reply lands; inline
+    /// completion is suppressed until `SignedIn`.
+    pub copilot_auth: CopilotAuthState,
     /// Shared event channel — kept on `App` so `open_path` can spawn
     /// worker threads that report `HighlighterReady` / `LspReady` back
     /// to the main loop without going through the LSP coordinator.
@@ -263,6 +267,7 @@ impl App {
             lsp,
             copilot: None,
             copilot_pending: CopilotPending::default(),
+            copilot_auth: CopilotAuthState::default(),
             event_tx,
             open_gen: 0,
             // Pre-seed with Scratch so the picker always offers a way

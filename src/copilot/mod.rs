@@ -253,6 +253,22 @@ impl CopilotClient {
         write_framed(&self.stdin, &notification("textDocument/didClose", params))
     }
 
+    /// Fire `checkStatus` to learn whether the server has a usable
+    /// auth token. Returns the request id; the response parses
+    /// through [`parse_check_status`].
+    ///
+    /// `local_checks_only` (`true`) avoids a network round-trip to
+    /// GitHub — fine for the post-spawn "is the user signed in?"
+    /// check. Set `false` to force a full token validation against
+    /// the API.
+    pub fn check_status(&mut self, local_checks_only: bool) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let params = json!({ "options": { "localChecksOnly": local_checks_only } });
+        write_framed(&self.stdin, &request(id, "checkStatus", params))?;
+        Ok(id)
+    }
+
     /// Fire `textDocument/inlineCompletion` for the given cursor
     /// position. Returns the request id so the caller can match the
     /// response against its pending-kind map.
@@ -418,6 +434,42 @@ pub fn parse_inline_completion(result: &Value) -> Option<InlineCompletionRaw> {
     })
 }
 
+/// Outcome of a `checkStatus` reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckStatus {
+    /// Token present and accepted — inline completion can fire.
+    SignedIn { user: Option<String> },
+    /// No token saved or the saved one is invalid. User needs to run
+    /// the sign-in flow.
+    NotSignedIn,
+    /// Token present but the account isn't entitled to Copilot (no
+    /// subscription, blocked by org policy, etc.). Same UX as
+    /// not-signed-in for our purposes — completions won't fire.
+    NotAuthorized { reason: Option<String> },
+    /// Anything else the server reports. Treated as "don't request
+    /// completions" to be safe.
+    Other(String),
+}
+
+pub fn parse_check_status(result: &Value) -> Option<CheckStatus> {
+    let status = result.get("status")?.as_str()?;
+    let user = result
+        .get("user")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    Some(match status {
+        "OK" | "MaybeOK" => CheckStatus::SignedIn { user },
+        "NotSignedIn" => CheckStatus::NotSignedIn,
+        "NotAuthorized" => CheckStatus::NotAuthorized {
+            reason: result
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        },
+        other => CheckStatus::Other(other.to_string()),
+    })
+}
+
 fn parse_range(v: &Value) -> Option<ReplaceRange> {
     let start = v.get("start")?;
     let end = v.get("end")?;
@@ -468,6 +520,53 @@ mod tests {
     fn parse_none_on_missing_insert_text() {
         let v = json!({ "items": [{ "label": "foo" }] });
         assert!(parse_inline_completion(&v).is_none());
+    }
+
+    #[test]
+    fn parse_check_status_signed_in() {
+        let v = json!({ "status": "OK", "user": "octocat" });
+        let s = parse_check_status(&v).unwrap();
+        assert_eq!(s, CheckStatus::SignedIn { user: Some("octocat".into()) });
+    }
+
+    #[test]
+    fn parse_check_status_maybeok_treated_as_signed_in() {
+        let v = json!({ "status": "MaybeOK" });
+        let s = parse_check_status(&v).unwrap();
+        assert!(matches!(s, CheckStatus::SignedIn { user: None }));
+    }
+
+    #[test]
+    fn parse_check_status_not_signed_in() {
+        let v = json!({ "status": "NotSignedIn" });
+        assert_eq!(parse_check_status(&v).unwrap(), CheckStatus::NotSignedIn);
+    }
+
+    #[test]
+    fn parse_check_status_not_authorized_keeps_reason() {
+        let v = json!({ "status": "NotAuthorized", "message": "no entitlement" });
+        let s = parse_check_status(&v).unwrap();
+        assert_eq!(
+            s,
+            CheckStatus::NotAuthorized {
+                reason: Some("no entitlement".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_check_status_unknown_status_falls_into_other() {
+        let v = json!({ "status": "WeirdNewState" });
+        assert_eq!(
+            parse_check_status(&v).unwrap(),
+            CheckStatus::Other("WeirdNewState".into())
+        );
+    }
+
+    #[test]
+    fn parse_check_status_none_on_missing_status() {
+        let v = json!({});
+        assert!(parse_check_status(&v).is_none());
     }
 
     #[test]

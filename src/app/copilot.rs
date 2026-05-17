@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 
 use crate::app::App;
-use crate::copilot::{self, CopilotClient, CopilotEvent, InlineCompletionRaw};
+use crate::app::toast::Toast;
+use crate::copilot::{self, CheckStatus, CopilotClient, CopilotEvent, InlineCompletionRaw};
 use crate::editor::{Cursor, RequestId, Suggestion, SuggestionState};
 use crate::event::AppEvent;
 use crate::lsp::path_to_uri;
@@ -58,12 +59,37 @@ fn strip_already_typed(
     }
 }
 
-/// What an outstanding Copilot request was for. Phase-1.5 only has
-/// inline-completion; sign-in / checkStatus variants land in
-/// follow-up commits.
+/// What an outstanding Copilot request was for. Routed against the
+/// reader thread's generic `Response{id, result, error}` event so
+/// each kind can fan out to its own dispatcher.
 #[derive(Debug, Clone, Copy)]
 pub enum CopilotRequestKind {
     InlineCompletion,
+    CheckStatus,
+}
+
+/// Known auth state for the Copilot client. `Unknown` is the initial
+/// value between spawn and the first `checkStatus` reply; until we
+/// know the user is signed in we don't bother sending
+/// `inlineCompletion` requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopilotAuthState {
+    Unknown,
+    SignedIn { user: Option<String> },
+    NotSignedIn,
+    NotAuthorized { reason: Option<String> },
+}
+
+impl Default for CopilotAuthState {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl CopilotAuthState {
+    fn signed_in(&self) -> bool {
+        matches!(self, Self::SignedIn { .. })
+    }
 }
 
 /// Pending-request map used to route generic
@@ -103,7 +129,18 @@ impl App {
                 let _ = tx.send(AppEvent::Copilot(ev));
             });
         match CopilotClient::spawn(&root_uri, emit) {
-            Ok(Some(client)) => {
+            Ok(Some(mut client)) => {
+                // Fire checkStatus immediately so the App knows whether
+                // inline completion requests should be skipped (no
+                // point asking when the user is signed out). The reply
+                // lands asynchronously via handle_copilot_event.
+                match client.check_status(true) {
+                    Ok(id) => {
+                        self.copilot_pending
+                            .insert(id, CopilotRequestKind::CheckStatus);
+                    }
+                    Err(e) => vlog!("copilot checkStatus send failed: {e:#}"),
+                }
                 self.copilot = Some(client);
             }
             Ok(None) => {
@@ -157,6 +194,9 @@ impl App {
     /// went out. Caller should call `cancel_inline_suggestion` ahead
     /// of time if it wants the dismissal-on-no-request path.
     pub(super) fn request_copilot_inline_completion(&mut self) -> bool {
+        if !self.copilot_auth.signed_in() {
+            return false;
+        }
         let Some(uri) = self.copilot_active_uri() else {
             return false;
         };
@@ -240,6 +280,9 @@ impl App {
                     CopilotRequestKind::InlineCompletion => {
                         self.handle_copilot_inline_completion(id, result, error);
                     }
+                    CopilotRequestKind::CheckStatus => {
+                        self.handle_copilot_check_status(result, error);
+                    }
                 }
             }
             CopilotEvent::Error { message } => {
@@ -253,6 +296,62 @@ impl App {
                 self.inline_suggestion.dismiss();
             }
         }
+    }
+
+    fn handle_copilot_check_status(
+        &mut self,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        if let Some(msg) = error {
+            vlog!("copilot checkStatus error: {msg}");
+            self.copilot_auth = CopilotAuthState::Unknown;
+            return;
+        }
+        let status = result.as_ref().and_then(copilot::parse_check_status);
+        let new_state = match status {
+            Some(CheckStatus::SignedIn { user }) => CopilotAuthState::SignedIn { user },
+            Some(CheckStatus::NotSignedIn) => CopilotAuthState::NotSignedIn,
+            Some(CheckStatus::NotAuthorized { reason }) => {
+                CopilotAuthState::NotAuthorized { reason }
+            }
+            Some(CheckStatus::Other(s)) => {
+                vlog!("copilot checkStatus unrecognised status: {s}");
+                CopilotAuthState::Unknown
+            }
+            None => {
+                vlog!("copilot checkStatus: missing/unparseable result");
+                CopilotAuthState::Unknown
+            }
+        };
+        // Only surface a toast on the *transition* into an unsigned
+        // state, not on every checkStatus reply. Avoids spam when the
+        // user re-checks status manually.
+        let just_logged_out = !matches!(self.copilot_auth, CopilotAuthState::NotSignedIn)
+            && matches!(new_state, CopilotAuthState::NotSignedIn);
+        let just_unauthorized = !matches!(self.copilot_auth, CopilotAuthState::NotAuthorized { .. })
+            && matches!(new_state, CopilotAuthState::NotAuthorized { .. });
+        match &new_state {
+            CopilotAuthState::SignedIn { user } => {
+                vlog!(
+                    "copilot signed in user={}",
+                    user.as_deref().unwrap_or("?")
+                );
+            }
+            CopilotAuthState::NotSignedIn if just_logged_out => {
+                self.push_toast(Toast::warn(
+                    "Copilot: not signed in — run :copilot signin".to_string(),
+                ));
+            }
+            CopilotAuthState::NotAuthorized { reason } if just_unauthorized => {
+                let msg = reason
+                    .clone()
+                    .unwrap_or_else(|| "no Copilot entitlement on this account".to_string());
+                self.push_toast(Toast::warn(format!("Copilot: not authorized ({msg})")));
+            }
+            _ => {}
+        }
+        self.copilot_auth = new_state;
     }
 
     fn handle_copilot_inline_completion(
