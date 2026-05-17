@@ -32,6 +32,13 @@ const SEARCH_HIT_BG: Color = Color::DarkGray;
 /// even when it sits inside a selection or a search match.
 const EXTRA_CURSOR_BG: Color = Color::Rgb(160, 110, 60);
 
+/// Foreground used to mark the bracket pair when the cursor sits on
+/// one half of `()`, `[]`, or `{}`. Combined with `BOLD` rather than a
+/// background fill so the highlight remains legible on top of any
+/// other layer (search hit, selection, syntax bg) without competing
+/// for the same channel.
+const MATCH_BRACKET_FG: Color = Color::Yellow;
+
 /// Foreground used for `gw` jump labels. Bright magenta on a near-black
 /// background so the label always pops over surrounding syntax.
 const JUMP_LABEL_FG: Color = Color::Rgb(255, 100, 200);
@@ -75,9 +82,22 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let row_severity = build_row_severity(app, scroll, last_visible);
     let vcs_statuses = app.buffer.vcs_statuses();
     let cursor_row = app.buffer.cursor.row;
+    let cursor_col = app.buffer.cursor.col;
     let extras = &app.buffer.extra_cursors;
     let search_query = &app.search.query;
     let jump_overlay = build_jump_overlay(app.jump_state.as_ref());
+    // Tree-sitter–driven matching-bracket highlight. Yields the two
+    // cells to paint (cursor's bracket + its mate) only when the
+    // cursor sits on a syntactic bracket token; brackets inside
+    // strings/comments resolve to the containing literal node and
+    // naturally don't match here.
+    let bracket_pair: Vec<(usize, usize)> = app
+        .buffer
+        .highlighter
+        .as_ref()
+        .and_then(|h| h.matching_bracket(cursor_row, cursor_col))
+        .map(|mate| vec![(cursor_row, cursor_col), mate])
+        .unwrap_or_default();
     let eff = app.effective_editor();
     let tab_width = eff.tab_width.max(1);
     let show_whitespace = eff.show_whitespace;
@@ -124,6 +144,10 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter_map(|(pos, ch)| if pos.0 == i { Some((pos.1, *ch)) } else { None })
             .collect();
+        let row_bracket_cols: Vec<usize> = bracket_pair
+            .iter()
+            .filter_map(|(r, c)| if *r == i { Some(*c) } else { None })
+            .collect();
         spans.extend(render_line(
             i,
             line,
@@ -132,6 +156,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             &extra_cols,
             &hits,
             &row_jumps,
+            &row_bracket_cols,
             tab_width,
             col_scroll,
             inner_text_width,
@@ -274,6 +299,7 @@ fn render_line(
     extra_cols: &[usize],
     search_hits: &[(usize, usize)],
     jump_labels: &[(usize, char)],
+    bracket_cols: &[usize],
     tab_width: usize,
     col_scroll: usize,
     viewport_width: usize,
@@ -282,6 +308,7 @@ fn render_line(
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
         |col: usize| -> bool { search_hits.iter().any(|(lo, hi)| col >= *lo && col < *hi) };
+    let is_match_bracket = |col: usize| -> bool { bracket_cols.contains(&col) };
     let jump_label_at = |col: usize| -> Option<char> {
         jump_labels
             .iter()
@@ -358,6 +385,9 @@ fn render_line(
     // Backgrounds layered from least to most specific: search hit →
     // visual selection → extra cursor (which uses an outline modifier
     // rather than a fill, so it sits on top of any underlying bg).
+    // Matching-bracket is a fg/bold overlay applied last so the pair
+    // remains identifiable even when sitting inside a selection or
+    // search match.
     let style_at = |col: usize| -> Style {
         let mut s = base[col];
         if is_search_hit(col) {
@@ -368,6 +398,11 @@ fn render_line(
         }
         if is_extra_cursor(col) {
             s = extra_cursor_style(s);
+        }
+        if is_match_bracket(col) {
+            s = s
+                .fg(MATCH_BRACKET_FG)
+                .add_modifier(ratatui::style::Modifier::BOLD);
         }
         s
     };
@@ -789,6 +824,7 @@ pub(super) fn draw_buffer_inactive(f: &mut Frame, buf: &Buffer, eff: &EditorConf
             line,
             None,
             &captures,
+            &[],
             &[],
             &[],
             &[],

@@ -349,6 +349,67 @@ impl Highlighter {
             byte_to_char_col(&self.source, c.end.0, c.end.1),
         ))
     }
+
+    /// Find the bracket-pair mate of the character at `(row, col_chars)`.
+    ///
+    /// Returns `Some((row, char_col))` of the matching bracket when the
+    /// cursor sits on one of `()[]{}` *as a syntactic token* — i.e.
+    /// tree-sitter resolved it to a bracket node, not to a containing
+    /// `string`/`comment`/etc. literal. That naturally excludes
+    /// brackets inside string and comment text without any extra
+    /// bookkeeping.
+    ///
+    /// Returns `None` when no tree is parsed yet, when the character is
+    /// not a bracket token, or when the parent node has no matching
+    /// counterpart (broken syntax, parse error recovery).
+    pub fn matching_bracket(&self, row: usize, col_chars: usize) -> Option<(usize, usize)> {
+        let tree = self.tree.as_ref()?;
+        let line = self.source.lines().nth(row)?;
+        let byte_col = char_to_byte_col(&self.source, row, col_chars);
+        let ch_byte_len = line
+            .get(byte_col..)
+            .and_then(|s| s.chars().next())
+            .map(char::len_utf8)?;
+        let start = Point {
+            row,
+            column: byte_col,
+        };
+        let end = Point {
+            row,
+            column: byte_col + ch_byte_len,
+        };
+        let node = tree.root_node().descendant_for_point_range(start, end)?;
+        let (target, want_last) = match node.kind() {
+            "(" => (")", true),
+            "[" => ("]", true),
+            "{" => ("}", true),
+            ")" => ("(", false),
+            "]" => ("[", false),
+            "}" => ("{", false),
+            _ => return None,
+        };
+        let parent = node.parent()?;
+        // Opener → matching close is the *last* matching-kind child of
+        // the parent (in case of nested same-kind tokens within one
+        // parent, which is unusual but cheap to guard against). Closer
+        // → first matching-kind child (the opener).
+        let mut found: Option<tree_sitter::Node> = None;
+        let mut walk = parent.walk();
+        for child in parent.children(&mut walk) {
+            if child.kind() == target {
+                found = Some(child);
+                if !want_last {
+                    break;
+                }
+            }
+        }
+        let m = found?;
+        let pos = m.start_position();
+        Some((
+            pos.row,
+            byte_to_char_col(&self.source, pos.row, pos.column),
+        ))
+    }
 }
 
 /// Candidate text-object range during the inner search. Keeps both
