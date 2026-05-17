@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, JumpState, Selection};
-use crate::config::EditorConfig;
+use crate::config::{EditorConfig, IndentGuideStyle};
 use crate::editor::Buffer;
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
@@ -48,6 +48,15 @@ const JUMP_LABEL_BG: Color = Color::Rgb(40, 0, 40);
 /// tab arrow) when `show_whitespace` is enabled. Dim enough to fade
 /// into the background but still legible.
 const WHITESPACE_FG: Color = Color::DarkGray;
+
+/// Foreground used for inactive indent-guide bars. Dim so the guides
+/// stay readable as structural hints without competing with code.
+const INDENT_GUIDE_FG: Color = Color::Rgb(60, 60, 70);
+
+/// Default glyph for indent-guide cells. Light vertical box-drawing
+/// line. Used as the per-cell glyph unless a specific guide
+/// (`p10k` corners/arrow) carries its own.
+const INDENT_GUIDE_CHAR: char = '│';
 
 /// Width of the gutter prefix (severity sign + space). Kept in sync with
 /// [`place_cursor`] so the cursor lands on the right column.
@@ -101,6 +110,19 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
     let eff = app.effective_editor();
     let tab_width = eff.tab_width.max(1);
     let show_whitespace = eff.show_whitespace;
+    let indent_guides = if eff.indent_guides {
+        compute_indent_guides(
+            app,
+            scroll,
+            last_visible,
+            tab_width,
+            eff.indent_width,
+            eff.indent_guides_skip_levels,
+            eff.indent_guide_style,
+        )
+    } else {
+        GuideMap::new()
+    };
 
     // Interleave one virtual diagnostic line below each source row that
     // has any diagnostics. Stop accumulating once we've consumed
@@ -148,6 +170,10 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter_map(|(r, c)| if *r == i { Some(*c) } else { None })
             .collect();
+        let row_guides: &[IndentGuide] = indent_guides
+            .get(&i)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         spans.extend(render_line(
             i,
             line,
@@ -157,6 +183,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             &hits,
             &row_jumps,
             &row_bracket_cols,
+            row_guides,
             tab_width,
             col_scroll,
             inner_text_width,
@@ -213,6 +240,382 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     // rendered cursor row.
     let y = buf_area.y + app.buffer.cursor_visual_y.get();
     f.set_cursor_position((x, y));
+}
+
+/// Visual column occupied by the first non-whitespace character of
+/// `line`, with tabs expanded to `tab_width`-aligned stops. For a line
+/// that is entirely whitespace (or empty), returns the visual width of
+/// the whole line — callers treat that as "no content, defer to
+/// neighbouring rows for guide layout".
+fn leading_indent_visual(line: &str, tab_width: usize) -> Option<usize> {
+    let mut v = 0usize;
+    for ch in line.chars() {
+        if ch == ' ' {
+            v += 1;
+        } else if ch == '\t' {
+            v += tab_width - (v % tab_width);
+        } else {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// One indent-guide cell to paint on a row: the visual column it
+/// lives at, the glyph drawn there, and whether it belongs to the
+/// active scope (→ distinct color/bold).
+#[derive(Debug, Clone, Copy)]
+struct IndentGuide {
+    col: usize,
+    glyph: char,
+    active: bool,
+}
+
+/// Per-source-row guide list for the visible window. Keyed by row
+/// index; rows with no guides are absent from the map.
+type GuideMap = HashMap<usize, Vec<IndentGuide>>;
+
+/// Compute indent guides for `[scroll, last_visible)`.
+///
+/// Drawing is tree-sitter–driven: every `@indent.begin` scope from
+/// the language's `indents.scm` becomes one vertical bar, positioned
+/// at the **header row's own indent column** (not the body indent).
+/// That choice keeps the bar in the leading-whitespace area of every
+/// body row instead of colliding with content at the body's indent
+/// — which would otherwise force the guide to be skipped on the
+/// rows that need it most.
+///
+/// Active marking is scoped to the innermost `@indent.begin` node
+/// containing the cursor — its column lights up only on rows that
+/// belong to that scope's body, so sibling scopes at the same column
+/// stay quiet.
+///
+/// When no tree-sitter highlighter is loaded (plain-text buffer or a
+/// language without `indents.scm`), drawing falls back to a uniform
+/// leading-whitespace stair-step at multiples of `indent_width`.
+fn compute_indent_guides(
+    app: &App,
+    scroll: usize,
+    last_visible: usize,
+    tab_width: usize,
+    indent_width: usize,
+    skip_levels: usize,
+    style: IndentGuideStyle,
+) -> GuideMap {
+    let mut map: GuideMap = HashMap::new();
+    if last_visible <= scroll || indent_width == 0 {
+        return map;
+    }
+    let cursor_row = app.buffer.cursor.row;
+    let lines = &app.buffer.lines;
+    let line_count = lines.len();
+    if line_count == 0 {
+        return map;
+    }
+
+    // Collect every scope intersecting the visible window, plus the
+    // scope chain around the cursor — needed so a tall scope whose
+    // header sits above the viewport still contributes its bar to
+    // visible body rows.
+    let scopes: Vec<(usize, usize, usize)> = app
+        .buffer
+        .highlighter
+        .as_ref()
+        .map(|h| {
+            h.indent_scopes_in_rows(scroll, last_visible.saturating_sub(1))
+                .into_iter()
+                .filter_map(|(s, e)| {
+                    let col = leading_indent_visual(&lines[s], tab_width)?;
+                    if col == 0 { None } else { Some((s, e, col)) }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !scopes.is_empty() {
+        for (s, e, col) in &scopes {
+            let lo = (s + 1).max(scroll);
+            let hi = (*e)
+                .min(last_visible.saturating_sub(1))
+                .min(line_count.saturating_sub(1));
+            if lo > hi {
+                continue;
+            }
+            for (row, line) in lines.iter().enumerate().take(hi + 1).skip(lo) {
+                // Skip non-blank rows whose own indent is at or
+                // shallower than the guide column — those are the
+                // closing brace, an outdented sibling (`else:`),
+                // or just outside the body. Blank rows keep the
+                // guide so vertical bars stay continuous through
+                // empty lines.
+                if let Some(ri) = leading_indent_visual(line, tab_width)
+                    && ri <= *col
+                {
+                    continue;
+                }
+                push_unique_guide(
+                    &mut map,
+                    row,
+                    IndentGuide {
+                        col: *col,
+                        glyph: INDENT_GUIDE_CHAR,
+                        active: false,
+                    },
+                );
+            }
+        }
+    } else {
+        // No tree-sitter — fall back to the uniform stair-step so
+        // plain-text buffers still get a useful structure hint.
+        let resolve_indent = |row: usize| -> usize {
+            match leading_indent_visual(&lines[row], tab_width) {
+                Some(v) => v,
+                None => {
+                    let above = (0..row)
+                        .rev()
+                        .find_map(|r| leading_indent_visual(&lines[r], tab_width))
+                        .unwrap_or(0);
+                    let below = (row + 1..line_count)
+                        .find_map(|r| leading_indent_visual(&lines[r], tab_width))
+                        .unwrap_or(0);
+                    above.min(below)
+                }
+            }
+        };
+        for row in scroll..last_visible.min(line_count) {
+            let indent = resolve_indent(row);
+            let mut col = indent_width;
+            while col < indent {
+                push_unique_guide(
+                    &mut map,
+                    row,
+                    IndentGuide {
+                        col,
+                        glyph: INDENT_GUIDE_CHAR,
+                        active: false,
+                    },
+                );
+                col += indent_width;
+            }
+        }
+    }
+
+    // Skip the `skip_levels` shallowest unique guide columns across
+    // the visible window. Cuts globally (not per-row) so every row
+    // anchors to the same boundaries — per-row trimming would let
+    // one row keep a column its neighbour drops, producing a broken
+    // ladder.
+    if skip_levels > 0 {
+        let mut unique_cols: Vec<usize> = map
+            .values()
+            .flatten()
+            .map(|g| g.col)
+            .collect();
+        unique_cols.sort_unstable();
+        unique_cols.dedup();
+        let drop_set: std::collections::HashSet<usize> = unique_cols
+            .into_iter()
+            .take(skip_levels)
+            .collect();
+        for guides in map.values_mut() {
+            guides.retain(|g| !drop_set.contains(&g.col));
+        }
+    }
+
+    // Active marking & (in p10k mode) bracket decoration.
+    let active = active_scope_range(app, cursor_row, lines, tab_width, indent_width);
+    if let Some((lo_active, hi_active, ac)) = active {
+        match style {
+            IndentGuideStyle::Line => {
+                // Line mode: just mark the existing `│` cells at
+                // the scope's body column.
+                let lo = lo_active.max(scroll);
+                let hi = hi_active
+                    .min(last_visible.saturating_sub(1))
+                    .min(line_count.saturating_sub(1));
+                if lo <= hi {
+                    for row in lo..=hi {
+                        if let Some(guides) = map.get_mut(&row) {
+                            for g in guides.iter_mut() {
+                                if g.col == ac {
+                                    g.active = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            IndentGuideStyle::P10k => {
+                // p10k bracket spans the *whole* scope, drawn one
+                // indent step shallower than the scope's header so
+                // the corner cells land in the start-row's leading
+                // whitespace. `s` = the scope's actual header row
+                // (one above the first body row).
+                let s = lo_active.saturating_sub(1);
+                let p10k_col = ac.saturating_sub(indent_width);
+                if p10k_col == 0 {
+                    // The scope's header sits at the buffer's left
+                    // edge — no whitespace column to bracket from.
+                    return map;
+                }
+                let row_lo = s.max(scroll);
+                let row_hi = hi_active
+                    .min(last_visible.saturating_sub(1))
+                    .min(line_count.saturating_sub(1));
+                if row_lo > row_hi {
+                    return map;
+                }
+                for row in row_lo..=row_hi {
+                    let glyph = if row == s {
+                        '╭'
+                    } else if row == hi_active {
+                        '╰'
+                    } else {
+                        INDENT_GUIDE_CHAR
+                    };
+                    push_unique_guide(
+                        &mut map,
+                        row,
+                        IndentGuide {
+                            col: p10k_col,
+                            glyph,
+                            active: true,
+                        },
+                    );
+                }
+                // Horizontal extensions on the corner rows. Cells
+                // past `p10k_col` only land on whitespace —
+                // `render_line` silently drops the override when
+                // content sits there, so we don't need to measure.
+                let in_view = |row: usize| -> bool {
+                    row >= scroll && row < last_visible && row < line_count
+                };
+                if in_view(s) {
+                    push_unique_guide(
+                        &mut map,
+                        s,
+                        IndentGuide {
+                            col: p10k_col + 1,
+                            glyph: '─',
+                            active: true,
+                        },
+                    );
+                }
+                if in_view(hi_active) {
+                    // `╰>` (2 cells) rather than `╰─>` (3) so the
+                    // arrow lands in whitespace at the common
+                    // `indent_width = 2` setting — the third cell
+                    // there is already content and would silently
+                    // drop the `>`.
+                    push_unique_guide(
+                        &mut map,
+                        hi_active,
+                        IndentGuide {
+                            col: p10k_col + 1,
+                            glyph: '>',
+                            active: true,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Active scope range as `(first_body_row, last_body_row,
+/// active_col)`. Tree-sitter innermost scope containing the cursor
+/// when available; synthetic indent-run otherwise.
+fn active_scope_range(
+    app: &App,
+    cursor_row: usize,
+    lines: &[String],
+    tab_width: usize,
+    indent_width: usize,
+) -> Option<(usize, usize, usize)> {
+    if let Some(h) = app.buffer.highlighter.as_ref() {
+        let scopes = h.indent_scopes_in_rows(cursor_row, cursor_row);
+        // Innermost = smallest span containing the cursor. Header
+        // (start) row counts as inside so moving from `if y:` into
+        // its body doesn't reassign which level is active.
+        let mut best: Option<(usize, usize)> = None;
+        for (s, e) in scopes {
+            if cursor_row >= s && cursor_row <= e {
+                match best {
+                    None => best = Some((s, e)),
+                    Some((bs, be)) if (e - s) < (be - bs) => best = Some((s, e)),
+                    _ => {}
+                }
+            }
+        }
+        if let Some((s, e)) = best {
+            let col = leading_indent_visual(&lines[s], tab_width).unwrap_or(0);
+            if col > 0 {
+                return Some((s + 1, e, col));
+            }
+        }
+    }
+
+    // Synthetic fallback: contiguous run of rows at or below the
+    // cursor's indent level. Used for plain-text buffers and for
+    // tree-sitter buffers whose innermost containing scope is at
+    // column 0 (top-level).
+    let cursor_indent = match leading_indent_visual(&lines[cursor_row], tab_width) {
+        Some(v) => v,
+        None => {
+            let above = (0..cursor_row)
+                .rev()
+                .find_map(|r| leading_indent_visual(&lines[r], tab_width))
+                .unwrap_or(0);
+            let below = (cursor_row + 1..lines.len())
+                .find_map(|r| leading_indent_visual(&lines[r], tab_width))
+                .unwrap_or(0);
+            above.min(below)
+        }
+    };
+    if cursor_indent < indent_width {
+        return None;
+    }
+    let active_col = ((cursor_indent - 1) / indent_width) * indent_width;
+    if active_col == 0 {
+        return None;
+    }
+    let threshold = active_col + indent_width;
+    let n = lines.len();
+    let mut s = cursor_row;
+    while s > 0 {
+        match leading_indent_visual(&lines[s - 1], tab_width) {
+            Some(i) if i >= threshold => s -= 1,
+            None => s -= 1,
+            _ => break,
+        }
+    }
+    let mut e = cursor_row;
+    while e + 1 < n {
+        match leading_indent_visual(&lines[e + 1], tab_width) {
+            Some(i) if i >= threshold => e += 1,
+            None => e += 1,
+            _ => break,
+        }
+    }
+    Some((s, e, active_col))
+}
+
+fn push_unique_guide(map: &mut GuideMap, row: usize, guide: IndentGuide) {
+    let entry = map.entry(row).or_default();
+    // When two scopes report the same column the later one wins on
+    // active flag and on glyph — the p10k decorator passes through
+    // here to upgrade plain `│` cells into corner/arrow glyphs.
+    if let Some(existing) = entry.iter_mut().find(|g| g.col == guide.col) {
+        if guide.active {
+            existing.active = true;
+        }
+        if guide.glyph != INDENT_GUIDE_CHAR {
+            existing.glyph = guide.glyph;
+        }
+        return;
+    }
+    entry.push(guide);
 }
 
 /// Convert a character index on `line` into the visual column the
@@ -300,11 +703,27 @@ fn render_line(
     search_hits: &[(usize, usize)],
     jump_labels: &[(usize, char)],
     bracket_cols: &[usize],
+    indent_guides: &[IndentGuide],
     tab_width: usize,
     col_scroll: usize,
     viewport_width: usize,
     show_whitespace: bool,
 ) -> Vec<Span<'static>> {
+    // Look up a guide at visual column `vc`; cached by closure so the
+    // tight per-cell loop stays branch-light.
+    let guide_at = |vc: usize| -> Option<IndentGuide> {
+        indent_guides.iter().find(|g| g.col == vc).copied()
+    };
+    let guide_style = |g: IndentGuide| -> Style {
+        if g.active {
+            // Active uses the terminal's default foreground + bold so
+            // the bar is the same hue as code (no extra palette
+            // assumption) but visibly stands out from inactive guides.
+            Style::default().add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(INDENT_GUIDE_FG)
+        }
+    };
     let is_extra_cursor = |col: usize| -> bool { extra_cols.contains(&col) };
     let is_search_hit =
         |col: usize| -> bool { search_hits.iter().any(|(lo, hi)| col >= *lo && col < *hi) };
@@ -335,23 +754,58 @@ fn render_line(
 
     let chars: Vec<char> = line.chars().collect();
     let viewport_right = col_scroll.saturating_add(viewport_width);
+    // Max guide visual column — used to pad past EOL when guides need
+    // to extend beyond the line content (blank lines inside a scope,
+    // or lines shorter than the deepest scope's column).
+    let max_guide_col = indent_guides.iter().map(|g| g.col).max();
     if chars.is_empty() {
-        // The empty-line cursor/selection cell lives at visual col 0;
-        // if we've scrolled past it, there's nothing to paint.
-        if col_scroll > 0 {
+        let cursor_cell_style = {
+            let mut style = Style::default();
+            if is_selected(0) {
+                style = style.bg(SEL_BG);
+            }
+            if is_extra_cursor(0) {
+                style = extra_cursor_style(style);
+            }
+            style
+        };
+        let emit_until = max_guide_col
+            .map(|m| m + 1)
+            .unwrap_or(0)
+            .max(if cursor_cell_style != Style::default() { 1 } else { 0 });
+        if emit_until == 0 || col_scroll >= emit_until {
             return Vec::new();
         }
-        let mut style = Style::default();
-        if is_selected(0) {
-            style = style.bg(SEL_BG);
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut buf_style = Style::default();
+        let mut started = false;
+        for vc in col_scroll..emit_until {
+            if viewport_width > 0 && vc >= viewport_right {
+                break;
+            }
+            let (ch, style) = if let Some(g) = guide_at(vc) {
+                (g.glyph, guide_style(g))
+            } else if vc == 0 {
+                (' ', cursor_cell_style)
+            } else {
+                (' ', Style::default())
+            };
+            if !started {
+                buf_style = style;
+                started = true;
+            } else if style != buf_style {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+                }
+                buf_style = style;
+            }
+            buf.push(ch);
         }
-        if is_extra_cursor(0) {
-            style = extra_cursor_style(style);
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, buf_style));
         }
-        if style == Style::default() {
-            return Vec::new();
-        }
-        return vec![Span::styled(" ".to_string(), style)];
+        return spans;
     }
 
     // Build the per-character base (highlight) style. Captures are
@@ -439,11 +893,28 @@ fn render_line(
     // spaces so its background style (selection / search hit / extra
     // cursor) covers the entire run, and `visual_col` tracks the running
     // cell position so each tab measures from where it actually sits.
-    let mut spans = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
     let mut buf_style = Style::default();
     let mut visual_col = 0usize;
     let mut started = false;
+    let push_cell = |spans: &mut Vec<Span<'static>>,
+                         buf: &mut String,
+                         buf_style: &mut Style,
+                         started: &mut bool,
+                         ch: char,
+                         style: Style| {
+        if !*started {
+            *buf_style = style;
+            *started = true;
+        } else if style != *buf_style {
+            if !buf.is_empty() {
+                spans.push(Span::styled(std::mem::take(buf), *buf_style));
+            }
+            *buf_style = style;
+        }
+        buf.push(ch);
+    };
     for (col, &original) in chars.iter().enumerate() {
         let (ch, style) = cell_at(col);
         let width = if original == '\t' {
@@ -465,34 +936,73 @@ fn render_line(
         if cell_end <= col_scroll {
             continue;
         }
-        let left_skip = col_scroll.saturating_sub(cell_start);
-        let emit_width = width - left_skip;
-
-        if !started {
-            buf_style = style;
-            started = true;
-        } else if style != buf_style {
-            if !buf.is_empty() {
-                spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
+        let is_ws = original == ' ' || original == '\t';
+        // Per-cell emission so a tab spanning multiple cells can have
+        // any subset overridden by an indent-guide glyph at that
+        // exact visual column.
+        for k in 0..width {
+            let vc = cell_start + k;
+            if vc < col_scroll {
+                continue;
             }
-            buf_style = style;
-        }
-        if original == '\t' {
-            // A jump label can overlay the tab at its leading cell. If
-            // the left clip ate that cell, only spaces survive.
-            if ch != '\t' && left_skip == 0 {
-                buf.push(ch);
-                for _ in 1..emit_width {
-                    buf.push(' ');
+            if viewport_width > 0 && vc >= viewport_right {
+                break;
+            }
+            // Guide override: only on whitespace cells, and never on
+            // the leading cell of a tab when it carries a jump label
+            // or whitespace-marker glyph.
+            let leading_tab_with_marker = original == '\t' && k == 0 && ch != '\t';
+            let guide = if is_ws && !leading_tab_with_marker {
+                guide_at(vc)
+            } else {
+                None
+            };
+            let (out_ch, out_style) = if let Some(g) = guide {
+                (g.glyph, guide_style(g))
+            } else if original == '\t' {
+                if k == 0 && ch != '\t' {
+                    (ch, style)
+                } else {
+                    (' ', style)
                 }
             } else {
-                for _ in 0..emit_width {
-                    buf.push(' ');
-                }
-            }
-        } else {
-            buf.push(ch);
+                (ch, style)
+            };
+            push_cell(
+                &mut spans,
+                &mut buf,
+                &mut buf_style,
+                &mut started,
+                out_ch,
+                out_style,
+            );
         }
+    }
+    // Pad past EOL with guide cells when a scope's guide column
+    // lives to the right of the last char on this line (typical for
+    // a body row that's shorter than its enclosing scope's column,
+    // e.g. a comment with less indent inside a deeper block).
+    if let Some(m) = max_guide_col
+        && visual_col <= m
+    {
+        for vc in visual_col.max(col_scroll)..=m {
+            if viewport_width > 0 && vc >= viewport_right {
+                break;
+            }
+            let (ch, style) = match guide_at(vc) {
+                Some(g) => (g.glyph, guide_style(g)),
+                None => (' ', Style::default()),
+            };
+            push_cell(
+                &mut spans,
+                &mut buf,
+                &mut buf_style,
+                &mut started,
+                ch,
+                style,
+            );
+        }
+        visual_col = visual_col.max(m + 1);
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));
@@ -824,6 +1334,7 @@ pub(super) fn draw_buffer_inactive(f: &mut Frame, buf: &Buffer, eff: &EditorConf
             line,
             None,
             &captures,
+            &[],
             &[],
             &[],
             &[],

@@ -12,6 +12,20 @@ use serde::Deserialize;
 const DEFAULT_INDENT_WIDTH: usize = 2;
 const DEFAULT_TAB_WIDTH: usize = 4;
 
+/// Visual style for the indent-guide bars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum IndentGuideStyle {
+    /// Plain vertical bar (`│`) on every guide cell. The active
+    /// scope's bar is bold.
+    #[serde(rename = "line")]
+    Line,
+    /// powerlevel10k–style: the active scope gets a top corner
+    /// (`╭─`) at its first body row and a turn-arrow (`╰─>`) at
+    /// the cursor row, with `│` connecting them.
+    #[serde(rename = "p10k")]
+    P10k,
+}
+
 /// Raw, optional fields as parsed from TOML. Used both for the global
 /// `[editor]` table and (via `#[serde(flatten)]`) inside each
 /// `[languages.<name>]` table for per-language overrides.
@@ -38,6 +52,19 @@ pub struct EditorToml {
     /// to `true`. Per-language overrides flatten the same field into the
     /// `[languages.<name>]` table.
     pub format_on_save: Option<bool>,
+    /// When `true`, draws vertical guide lines at each indentation level
+    /// in the buffer. The level containing the cursor is painted in a
+    /// distinct color. Falls back to `true`.
+    pub indent_guides: Option<bool>,
+    /// Number of shallowest indent levels to suppress when drawing
+    /// guides. `1` (the default) hides the leftmost guide on each row
+    /// so top-level code reads cleanly; `0` shows every level; `2`
+    /// hides the two shallowest levels, etc.
+    pub indent_guides_skip_levels: Option<usize>,
+    /// Visual style for indent guides. `"line"` (the default) draws
+    /// `│` everywhere; `"p10k"` decorates the active scope with
+    /// powerlevel10k–style corner/arrow glyphs.
+    pub indent_guide_style: Option<IndentGuideStyle>,
 }
 
 /// Fully-resolved editor settings — what the runtime actually reads
@@ -49,6 +76,9 @@ pub struct EditorConfig {
     pub use_tabs: bool,
     pub show_whitespace: bool,
     pub format_on_save: bool,
+    pub indent_guides: bool,
+    pub indent_guides_skip_levels: usize,
+    pub indent_guide_style: IndentGuideStyle,
 }
 
 impl Default for EditorConfig {
@@ -59,6 +89,9 @@ impl Default for EditorConfig {
             use_tabs: false,
             show_whitespace: false,
             format_on_save: true,
+            indent_guides: true,
+            indent_guides_skip_levels: 1,
+            indent_guide_style: IndentGuideStyle::Line,
         }
     }
 }
@@ -74,6 +107,11 @@ impl EditorConfig {
             use_tabs: user.use_tabs.unwrap_or(self.use_tabs),
             show_whitespace: user.show_whitespace.unwrap_or(self.show_whitespace),
             format_on_save: user.format_on_save.unwrap_or(self.format_on_save),
+            indent_guides: user.indent_guides.unwrap_or(self.indent_guides),
+            indent_guides_skip_levels: user
+                .indent_guides_skip_levels
+                .unwrap_or(self.indent_guides_skip_levels),
+            indent_guide_style: user.indent_guide_style.unwrap_or(self.indent_guide_style),
         }
     }
 }
@@ -97,6 +135,9 @@ mod tests {
             use_tabs: false,
             show_whitespace: false,
             format_on_save: true,
+            indent_guides: true,
+            indent_guides_skip_levels: 1,
+            indent_guide_style: IndentGuideStyle::Line,
         };
         let eff = base.overlay(&EditorToml {
             tab_width: Some(8),

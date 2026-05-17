@@ -37,7 +37,7 @@ use serde::Deserialize;
 
 pub use command::{COMMAND_BINDS, CommandBind};
 pub use cursor::{CursorShape, CursorShapes};
-pub use editor::{EditorConfig, EditorToml};
+pub use editor::{EditorConfig, EditorToml, IndentGuideStyle};
 pub use keymap::{
     BRACKET_NEXT_BINDINGS, BRACKET_PREV_BINDINGS, CTRL_W_BINDINGS, GOTO_BINDINGS, KeySig, Keymap,
     LEADER_DEFAULTS, OBJECT_BINDINGS, OP_PENDING_BINDINGS, WINDOW_BINDINGS, Z_BINDINGS,

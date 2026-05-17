@@ -233,6 +233,57 @@ impl Highlighter {
         false
     }
 
+    /// Indent scopes intersecting the visible window `[start_row, end_row]`.
+    ///
+    /// Each scope corresponds to an `@indent.begin` node from the
+    /// language's `indents.scm`. The returned tuple is
+    /// `(scope_start_row, scope_end_row)` in source-row coordinates,
+    /// inclusive on both ends. Same-row scopes (an unfilled header like
+    /// `def f():` with an empty body) are dropped — they contribute no
+    /// body rows to draw a guide on.
+    ///
+    /// Callers convert each scope's start-row leading whitespace into a
+    /// visual column to position the guide line.
+    pub fn indent_scopes_in_rows(&self, start_row: usize, end_row: usize) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let Some(tree) = self.tree.as_ref() else {
+            return out;
+        };
+        let Some(query) = self.indents.as_ref() else {
+            return out;
+        };
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), self.source.as_bytes());
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = self
+                    .indent_capture_names
+                    .get(cap.index as usize)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if name != "indent.begin" {
+                    continue;
+                }
+                let node = cap.node;
+                let s = node.start_position().row;
+                let e = node.end_position().row;
+                if e <= s {
+                    continue;
+                }
+                if e < start_row || s > end_row {
+                    continue;
+                }
+                out.push((s, e));
+            }
+        }
+        // Sort by start row, then by *descending* end row so an enclosing
+        // scope precedes its children — the renderer iterates in order
+        // and the cursor's "innermost containing" pick is just the last
+        // scope that contains it.
+        out.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        out
+    }
+
     /// Find the smallest text-object range matching `target` (a query
     /// capture name like `"function.outer"`) that contains the cursor.
     /// Returns `None` when no `textobjects.scm` is loaded, the tree

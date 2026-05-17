@@ -255,6 +255,9 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
                 use_tabs: Some(true),
                 show_whitespace: None,
                 format_on_save: None,
+                indent_guides: None,
+                indent_guides_skip_levels: None,
+                indent_guide_style: None,
             },
             lsp: lsp(&["gopls"]),
             formatter: Some(FormatterToml {
