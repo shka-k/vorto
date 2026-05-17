@@ -10,7 +10,9 @@ use std::collections::HashMap;
 
 use crate::app::App;
 use crate::app::toast::Toast;
-use crate::copilot::{self, CheckStatus, CopilotClient, CopilotEvent, InlineCompletionRaw};
+use crate::copilot::{
+    self, CheckStatus, CopilotClient, CopilotEvent, InlineCompletionRaw, SignInInitiate,
+};
 use crate::editor::{Cursor, RequestId, Suggestion, SuggestionState};
 use crate::event::AppEvent;
 use crate::lsp::path_to_uri;
@@ -66,24 +68,22 @@ fn strip_already_typed(
 pub enum CopilotRequestKind {
     InlineCompletion,
     CheckStatus,
+    SignInInitiate,
+    SignInConfirm,
+    SignOut,
 }
 
 /// Known auth state for the Copilot client. `Unknown` is the initial
 /// value between spawn and the first `checkStatus` reply; until we
 /// know the user is signed in we don't bother sending
 /// `inlineCompletion` requests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum CopilotAuthState {
+    #[default]
     Unknown,
     SignedIn { user: Option<String> },
     NotSignedIn,
     NotAuthorized { reason: Option<String> },
-}
-
-impl Default for CopilotAuthState {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl CopilotAuthState {
@@ -268,10 +268,6 @@ impl App {
     /// Handle a reader-thread event from the Copilot client.
     pub fn handle_copilot_event(&mut self, ev: CopilotEvent) {
         match ev {
-            CopilotEvent::Message { .. } => {
-                // Reader thread already logged the wire-level message;
-                // nothing app-side to do with it yet.
-            }
             CopilotEvent::Response { id, result, error } => {
                 let Some(kind) = self.copilot_pending.take(id) else {
                     return;
@@ -282,6 +278,15 @@ impl App {
                     }
                     CopilotRequestKind::CheckStatus => {
                         self.handle_copilot_check_status(result, error);
+                    }
+                    CopilotRequestKind::SignInInitiate => {
+                        self.handle_copilot_sign_in_initiate(result, error);
+                    }
+                    CopilotRequestKind::SignInConfirm => {
+                        self.handle_copilot_sign_in_confirm(result, error);
+                    }
+                    CopilotRequestKind::SignOut => {
+                        self.handle_copilot_sign_out(result, error);
                     }
                 }
             }
@@ -295,6 +300,208 @@ impl App {
                 self.copilot_pending = CopilotPending::default();
                 self.inline_suggestion.dismiss();
             }
+        }
+    }
+
+    /// `:copilot <sub>` dispatcher. Returns `Ok(())` after pushing
+    /// the appropriate toast — callers don't need to distinguish
+    /// "succeeded" from "told the user something" because both end up
+    /// as a status message anyway.
+    pub(super) fn run_copilot_command(&mut self, sub: &str) {
+        let sub = sub.trim();
+        // Default (`:copilot`) shows status — matches the convention of
+        // `:git`, `:fugitive`, etc.
+        match sub {
+            "" | "status" => self.copilot_status_toast(),
+            "signin" | "login" => self.copilot_signin(),
+            "signout" | "logout" => self.copilot_signout(),
+            other => {
+                self.push_toast(Toast::error(format!(
+                    "unknown copilot subcommand: {other}"
+                )));
+            }
+        }
+    }
+
+    fn copilot_status_toast(&mut self) {
+        let msg = match &self.copilot_auth {
+            CopilotAuthState::Unknown => match &self.copilot {
+                None => "Copilot: not running (binary missing?)".to_string(),
+                Some(_) => "Copilot: checking status...".to_string(),
+            },
+            CopilotAuthState::SignedIn { user } => format!(
+                "Copilot: signed in as {}",
+                user.as_deref().unwrap_or("(unknown user)")
+            ),
+            CopilotAuthState::NotSignedIn => {
+                "Copilot: not signed in — run :copilot signin".to_string()
+            }
+            CopilotAuthState::NotAuthorized { reason } => format!(
+                "Copilot: not authorized ({})",
+                reason.as_deref().unwrap_or("no entitlement")
+            ),
+        };
+        self.push_toast(Toast::info(msg));
+    }
+
+    fn copilot_signin(&mut self) {
+        if matches!(self.copilot_auth, CopilotAuthState::SignedIn { .. }) {
+            self.push_toast(Toast::info("Copilot: already signed in".to_string()));
+            return;
+        }
+        let Some(copilot) = self.copilot.as_mut() else {
+            self.push_toast(Toast::error(
+                "Copilot: server not running (install copilot-language-server)"
+                    .to_string(),
+            ));
+            return;
+        };
+        match copilot.sign_in_initiate() {
+            Ok(id) => {
+                self.copilot_pending
+                    .insert(id, CopilotRequestKind::SignInInitiate);
+            }
+            Err(e) => {
+                vlog!("copilot signInInitiate send failed: {e:#}");
+                self.push_toast(Toast::error(format!(
+                    "Copilot: signin failed to start ({e})"
+                )));
+            }
+        }
+    }
+
+    fn copilot_signout(&mut self) {
+        let Some(copilot) = self.copilot.as_mut() else {
+            self.push_toast(Toast::error("Copilot: server not running".to_string()));
+            return;
+        };
+        match copilot.sign_out() {
+            Ok(id) => {
+                self.copilot_pending
+                    .insert(id, CopilotRequestKind::SignOut);
+            }
+            Err(e) => {
+                vlog!("copilot signOut send failed: {e:#}");
+                self.push_toast(Toast::error(format!("Copilot: signout failed ({e})")));
+            }
+        }
+    }
+
+    fn handle_copilot_sign_in_initiate(
+        &mut self,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        if let Some(msg) = error {
+            vlog!("copilot signInInitiate error: {msg}");
+            self.push_toast(Toast::error(format!("Copilot signin: {msg}")));
+            return;
+        }
+        let parsed = result.as_ref().and_then(copilot::parse_sign_in_initiate);
+        match parsed {
+            Some(SignInInitiate::AlreadySignedIn { user }) => {
+                self.copilot_auth = CopilotAuthState::SignedIn { user };
+                self.push_toast(Toast::info("Copilot: already signed in".to_string()));
+            }
+            Some(SignInInitiate::PromptDeviceFlow {
+                user_code,
+                verification_uri,
+            }) => {
+                // Copy the code to the OS clipboard so a paste in the
+                // browser is one keystroke away.
+                self.sync_text_to_clipboard(&user_code);
+                self.push_toast(Toast::fatal(format!(
+                    "Copilot: visit {verification_uri} and enter code {user_code} \
+                     (copied) — press Esc to dismiss"
+                )));
+                // Auto-fire signInConfirm. The server holds the response
+                // until the user authorizes or it times out — our reader
+                // thread surfaces the reply asynchronously, the editor
+                // stays interactive.
+                if let Some(copilot) = self.copilot.as_mut() {
+                    match copilot.sign_in_confirm(&user_code) {
+                        Ok(id) => {
+                            self.copilot_pending
+                                .insert(id, CopilotRequestKind::SignInConfirm);
+                        }
+                        Err(e) => vlog!("copilot signInConfirm send failed: {e:#}"),
+                    }
+                }
+            }
+            None => {
+                vlog!("copilot signInInitiate: unparseable result {result:?}");
+                self.push_toast(Toast::error(
+                    "Copilot signin: unexpected response from server".to_string(),
+                ));
+            }
+        }
+    }
+
+    fn handle_copilot_sign_in_confirm(
+        &mut self,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        if let Some(msg) = error {
+            vlog!("copilot signInConfirm error: {msg}");
+            self.push_toast(Toast::error(format!("Copilot signin: {msg}")));
+            return;
+        }
+        // Reuse the checkStatus parser — the confirm reply shares the
+        // status/user shape.
+        let status = result.as_ref().and_then(copilot::parse_check_status);
+        match status {
+            Some(CheckStatus::SignedIn { user }) => {
+                self.copilot_auth = CopilotAuthState::SignedIn { user: user.clone() };
+                self.push_toast(Toast::info(format!(
+                    "Copilot: signed in as {}",
+                    user.as_deref().unwrap_or("(unknown user)")
+                )));
+            }
+            Some(CheckStatus::NotSignedIn) | None => {
+                self.push_toast(Toast::error(
+                    "Copilot signin: not completed (timed out or rejected)".to_string(),
+                ));
+            }
+            Some(CheckStatus::NotAuthorized { reason }) => {
+                self.copilot_auth = CopilotAuthState::NotAuthorized { reason: reason.clone() };
+                self.push_toast(Toast::error(format!(
+                    "Copilot signin: not authorized ({})",
+                    reason.as_deref().unwrap_or("no entitlement")
+                )));
+            }
+            Some(CheckStatus::Other(s)) => {
+                vlog!("copilot signInConfirm unexpected status: {s}");
+                self.push_toast(Toast::error(format!("Copilot signin: {s}")));
+            }
+        }
+    }
+
+    fn handle_copilot_sign_out(
+        &mut self,
+        _result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        if let Some(msg) = error {
+            vlog!("copilot signOut error: {msg}");
+            self.push_toast(Toast::error(format!("Copilot signout: {msg}")));
+            return;
+        }
+        self.copilot_auth = CopilotAuthState::NotSignedIn;
+        self.inline_suggestion.dismiss();
+        self.push_toast(Toast::info("Copilot: signed out".to_string()));
+    }
+
+    /// Push `text` onto the OS clipboard. Mirrors
+    /// [`Self::sync_yank_to_clipboard`] but takes an explicit value so
+    /// callers (sign-in code paste) don't have to thread through the
+    /// buffer's yank register.
+    fn sync_text_to_clipboard(&mut self, text: &str) {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        if let Some(cb) = self.clipboard.as_mut() {
+            let _ = cb.set_text(text.to_string());
         }
     }
 

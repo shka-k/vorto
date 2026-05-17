@@ -47,6 +47,11 @@ pub enum SuggestionState {
         anchor: Cursor,
     },
     Showing {
+        /// Request id of the response that produced this suggestion.
+        /// Currently unread but kept so future telemetry
+        /// (`didShowCompletion` / `didPartiallyAccept`) can identify
+        /// the originating request without an extra lookup.
+        #[allow(dead_code)]
         id: RequestId,
         suggestion: Suggestion,
     },

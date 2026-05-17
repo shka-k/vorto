@@ -46,11 +46,11 @@ const SHUTDOWN_REPLY_WAIT: Duration = Duration::from_millis(500);
 const EXIT_DRAIN_WAIT: Duration = Duration::from_millis(300);
 
 /// Events emitted by the reader thread for the main loop to consume.
+/// Reader-side already logs server messages via [`vlog!`] before
+/// emitting, so this enum only carries variants the App needs to act
+/// on; informational `window/logMessage` traffic doesn't round-trip.
 #[derive(Debug)]
 pub enum CopilotEvent {
-    /// `window/showMessage` or `window/logMessage` from the server.
-    /// `level` follows the LSP severity numbering (1=error, 4=log).
-    Message { level: u8, text: String },
     /// Response to a client-initiated request. Routed by id at the App
     /// layer against its pending-kind map; the raw JSON is forwarded
     /// so this module doesn't need to know about every request shape.
@@ -245,6 +245,12 @@ impl CopilotClient {
         write_framed(&self.stdin, &notification("textDocument/didChange", params))
     }
 
+    /// Reserved for the upcoming buffer-close hook — currently never
+    /// fires (Copilot leaks doc state for buffers we drop, which is
+    /// harmless until a long session with many opens), but keeping the
+    /// method here means the close path lands in one file when it's
+    /// wired.
+    #[allow(dead_code)]
     pub fn did_close(&mut self, uri: &str) -> Result<()> {
         if self.docs.remove(uri).is_none() {
             return Ok(());
@@ -266,6 +272,34 @@ impl CopilotClient {
         self.next_id += 1;
         let params = json!({ "options": { "localChecksOnly": local_checks_only } });
         write_framed(&self.stdin, &request(id, "checkStatus", params))?;
+        Ok(id)
+    }
+
+    /// Start a device-flow sign-in. Server replies with a userCode and
+    /// verificationUri the user pastes into a browser. After showing
+    /// those to the user, call [`Self::sign_in_confirm`] with the
+    /// userCode — Copilot's confirm reply blocks server-side until the
+    /// user authorizes (or it times out, typically ~15 min), so the
+    /// response arrives asynchronously through the reader thread.
+    pub fn sign_in_initiate(&mut self) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        write_framed(&self.stdin, &request(id, "signInInitiate", json!({})))?;
+        Ok(id)
+    }
+
+    pub fn sign_in_confirm(&mut self, user_code: &str) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let params = json!({ "userCode": user_code });
+        write_framed(&self.stdin, &request(id, "signInConfirm", params))?;
+        Ok(id)
+    }
+
+    pub fn sign_out(&mut self) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        write_framed(&self.stdin, &request(id, "signOut", json!({})))?;
         Ok(id)
     }
 
@@ -369,14 +403,12 @@ fn reader_loop(
         match method {
             "window/showMessage" | "window/logMessage" => {
                 if let Some(params) = msg.get("params") {
-                    let level = params.get("type").and_then(|v| v.as_u64()).unwrap_or(3) as u8;
+                    let level = params.get("type").and_then(|v| v.as_u64()).unwrap_or(3);
                     let text = params
                         .get("message")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                        .unwrap_or("");
                     vlog!("copilot {} level={} {}", method, level, text);
-                    emit(CopilotEvent::Message { level, text });
                 }
             }
             _ => {
@@ -432,6 +464,44 @@ pub fn parse_inline_completion(result: &Value) -> Option<InlineCompletionRaw> {
         text: text.to_string(),
         range,
     })
+}
+
+/// Outcome of a `signInInitiate` reply. Either the device-flow code
+/// the user has to paste into the browser, or "already signed in" —
+/// Copilot uses the same method for both, gated on whether a valid
+/// token is already present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInInitiate {
+    PromptDeviceFlow {
+        user_code: String,
+        verification_uri: String,
+    },
+    AlreadySignedIn {
+        user: Option<String>,
+    },
+}
+
+pub fn parse_sign_in_initiate(result: &Value) -> Option<SignInInitiate> {
+    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    match status {
+        "AlreadySignedIn" | "OK" => Some(SignInInitiate::AlreadySignedIn {
+            user: result
+                .get("user")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        }),
+        // Default to device-flow when the server hands back the code
+        // even if the status string is something we don't recognise —
+        // the userCode is the load-bearing piece.
+        _ => {
+            let user_code = result.get("userCode")?.as_str()?.to_owned();
+            let verification_uri = result.get("verificationUri")?.as_str()?.to_owned();
+            Some(SignInInitiate::PromptDeviceFlow {
+                user_code,
+                verification_uri,
+            })
+        }
+    }
 }
 
 /// Outcome of a `checkStatus` reply.
@@ -520,6 +590,54 @@ mod tests {
     fn parse_none_on_missing_insert_text() {
         let v = json!({ "items": [{ "label": "foo" }] });
         assert!(parse_inline_completion(&v).is_none());
+    }
+
+    #[test]
+    fn parse_sign_in_initiate_device_flow() {
+        let v = json!({
+            "status": "PromptUserDeviceFlow",
+            "userCode": "ABCD-1234",
+            "verificationUri": "https://github.com/login/device",
+            "expiresIn": 900,
+            "interval": 5
+        });
+        let s = parse_sign_in_initiate(&v).unwrap();
+        assert_eq!(
+            s,
+            SignInInitiate::PromptDeviceFlow {
+                user_code: "ABCD-1234".into(),
+                verification_uri: "https://github.com/login/device".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_sign_in_initiate_already_signed_in() {
+        let v = json!({ "status": "AlreadySignedIn", "user": "octocat" });
+        let s = parse_sign_in_initiate(&v).unwrap();
+        assert_eq!(
+            s,
+            SignInInitiate::AlreadySignedIn {
+                user: Some("octocat".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_sign_in_initiate_falls_back_to_device_flow_on_unknown_status() {
+        let v = json!({
+            "status": "SomethingNew",
+            "userCode": "X",
+            "verificationUri": "y"
+        });
+        let s = parse_sign_in_initiate(&v).unwrap();
+        assert!(matches!(s, SignInInitiate::PromptDeviceFlow { .. }));
+    }
+
+    #[test]
+    fn parse_sign_in_initiate_none_without_code() {
+        let v = json!({ "status": "Other" });
+        assert!(parse_sign_in_initiate(&v).is_none());
     }
 
     #[test]

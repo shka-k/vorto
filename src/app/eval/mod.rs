@@ -52,6 +52,19 @@ impl App {
             );
         }
 
+        // `:copilot [status|signin|signout|...]` — handled inline
+        // rather than via CommandBind because the subcommand argument
+        // routes to entirely different code paths and doesn't fit the
+        // single-DirectKind shape the bind table assumes.
+        if cmd == "copilot" {
+            self.run_copilot_command("");
+            return Ok(());
+        }
+        if let Some(rest) = cmd.strip_prefix("copilot ") {
+            self.run_copilot_command(rest);
+            return Ok(());
+        }
+
         let (head, rest) = match cmd.split_once(' ') {
             Some((h, r)) => (h, r.trim()),
             None => (cmd, ""),
