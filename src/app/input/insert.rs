@@ -8,7 +8,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::action::{InsertKey, LastChange};
 use crate::app::App;
 use crate::app::SignatureTrigger;
-use crate::app::completion::is_ident_continue;
+use crate::app::completion::{
+    AUTO_TRIGGER_MIN_PREFIX_LEN, identifier_prefix_start, is_ident_continue,
+};
 use crate::editor::{Buffer, Cursor};
 use crate::mode::Mode;
 
@@ -61,7 +63,13 @@ impl App {
                     // codepath (rust-analyzer needs this to surface
                     // path completions after `::`).
                     self.lsp_completion_triggered(c);
-                } else if is_ident_continue(c) {
+                } else if is_ident_continue(c)
+                    && self.typed_prefix_len() >= AUTO_TRIGGER_MIN_PREFIX_LEN
+                {
+                    // Hold off on the request until the user has typed
+                    // enough of an identifier to narrow things down —
+                    // firing on the first keystroke just dumps the
+                    // server's full identifier table into the popup.
                     self.lsp_completion();
                 }
             }
@@ -417,6 +425,18 @@ impl App {
             return;
         }
         self.lsp_signature_help(SignatureTrigger::ContentChange(None));
+    }
+
+    /// Length, in chars, of the identifier run that ends at the
+    /// primary cursor — i.e. how many ident-continue chars sit
+    /// immediately before the cursor on its row. Drives the
+    /// auto-trigger floor so we don't fire `textDocument/completion`
+    /// on a single-letter prefix.
+    fn typed_prefix_len(&self) -> usize {
+        let cursor = self.buffer.cursor;
+        let line = &self.buffer.lines[cursor.row];
+        let start = identifier_prefix_start(line, cursor.col);
+        cursor.col.saturating_sub(start)
     }
 
     /// Move the in-flight recording into `last_change`. Called on Esc

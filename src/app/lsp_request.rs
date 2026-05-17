@@ -105,6 +105,15 @@ impl App {
         }
         let line = &self.buffer.lines[cursor.row];
         let prefix = prefix_slice(line, state.prefix_start.col, cursor.col);
+        // Close once the user has backspaced below the popup's
+        // open-time threshold (2 for ident auto-trigger, 0 for
+        // trigger-character popups). Without this an ident-triggered
+        // popup keeps surfacing the whole identifier table at 0–1
+        // chars, which is just noise.
+        if prefix.chars().count() < state.min_prefix_len {
+            self.completion = None;
+            return;
+        }
         state.refilter(&prefix);
         if state.is_empty() {
             self.completion = None;

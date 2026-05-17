@@ -22,6 +22,13 @@
 use crate::editor::Cursor;
 use crate::lsp::CompletionItem;
 
+/// Minimum identifier-prefix length required to auto-trigger completion
+/// while typing, and the threshold the popup closes at if the user
+/// backspaces below it. Trigger-character popups (`.` / `::`) open with
+/// an empty prefix and aren't subject to this floor — see
+/// `CompletionState::min_prefix_len`.
+pub const AUTO_TRIGGER_MIN_PREFIX_LEN: usize = 2;
+
 /// Active completion popup. `None` on `App` when nothing is showing.
 pub struct CompletionState {
     /// Where the identifier being completed starts. Filtering compares
@@ -54,6 +61,18 @@ pub struct CompletionState {
     /// continued typing never accidentally "steals" focus into the
     /// popup.
     pub selecting: bool,
+    /// Smallest typed-prefix length we'll keep the popup open at.
+    /// `update_completion_filter` closes the popup when the live
+    /// prefix shrinks below this. Set from the initial prefix length
+    /// at open time (capped to `AUTO_TRIGGER_MIN_PREFIX_LEN`) so:
+    ///
+    /// - ident-auto-trigger popups (opened with 2+ chars) close once
+    ///   the user backspaces below 2;
+    /// - trigger-character popups (opened with prefix=0 after `.` /
+    ///   `::`) keep their 0 threshold and don't disappear the instant
+    ///   the user starts typing into them;
+    /// - manual `<C-Space>` with a 1-char prefix sticks at 1.
+    pub min_prefix_len: usize,
 }
 
 impl CompletionState {
@@ -63,6 +82,7 @@ impl CompletionState {
     /// flashing the full list and then collapsing on the next keystroke.
     pub fn new(prefix_start: Cursor, items: Vec<CompletionItem>, prefix: &str) -> Self {
         let resolved = vec![false; items.len()];
+        let min_prefix_len = prefix.chars().count().min(AUTO_TRIGGER_MIN_PREFIX_LEN);
         let mut s = Self {
             prefix_start,
             items,
@@ -70,6 +90,7 @@ impl CompletionState {
             selected: 0,
             resolved,
             selecting: false,
+            min_prefix_len,
         };
         s.refilter(prefix);
         s
