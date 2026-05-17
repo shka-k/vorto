@@ -1,6 +1,6 @@
 [package]
 name = "vorto"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 description = "A terminal text editor with tree-sitter syntax highlighting and LSP support"
 license = "MIT OR Apache-2.0"
