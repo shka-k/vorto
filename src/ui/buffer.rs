@@ -137,6 +137,24 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             inner_text_width,
             show_whitespace,
         ));
+        // Inline suggestion (ghost text) — Phase 0 only paints
+        // single-line suggestions at end of the cursor row. The stub
+        // provider only fires when the cursor is at EOL, so appending
+        // after the rendered line lands the ghost spans flush against
+        // the cursor cell. Multi-line continuation and mid-line
+        // overlay come later.
+        if i == cursor_row
+            && app.completion.is_none()
+            && let Some(s) = app.inline_suggestion.showing()
+            && s.is_anchored_at(app.buffer.cursor)
+        {
+            let style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(ratatui::style::Modifier::ITALIC);
+            if let Some(first) = s.text.lines().next() {
+                spans.push(Span::styled(first.to_string(), style));
+            }
+        }
         visible.push(Line::from(spans));
         visual_y += 1;
         if visual_y as usize >= height {

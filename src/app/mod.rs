@@ -53,7 +53,7 @@ pub struct InsertRecording {
 }
 use crate::config::{Config, EditorConfig};
 use crate::editor::SearchState;
-use crate::editor::{Buffer, Cursor};
+use crate::editor::{Buffer, Cursor, RequestId, Suggestion, SuggestionState};
 use crate::event::AppEvent;
 use crate::finder::{self, PreviewLru};
 use crate::mode::Mode;
@@ -170,6 +170,13 @@ pub struct App {
     /// server returning `null` (no longer inside a call), the cursor
     /// crossing rows, or Esc.
     pub signature: Option<SignatureState>,
+    /// In-flight or showing inline (ghost-text) completion. Phase 0
+    /// uses a stub provider that fires only at EOL; later phases drive
+    /// this from Copilot LSP / Anthropic API.
+    pub inline_suggestion: SuggestionState,
+    /// Monotonic source for [`RequestId`]s minted when a new
+    /// inline-completion request is dispatched.
+    inline_suggestion_seq: u64,
     /// System clipboard handle, initialized lazily on first yank.
     /// `None` means we haven't tried yet *or* the platform refused to
     /// give us one (Wayland without a compositor, headless CI, …); the
@@ -262,6 +269,8 @@ impl App {
             jump_state: None,
             completion: None,
             signature: None,
+            inline_suggestion: SuggestionState::default(),
+            inline_suggestion_seq: 0,
             clipboard: None,
             layout: PaneLayout::Leaf(pane::INITIAL_PANE_ID),
             active_pane: pane::INITIAL_PANE_ID,
@@ -390,6 +399,73 @@ impl App {
             }
         }
         Some(y)
+    }
+
+    /// Mint the next [`RequestId`] for an inline-completion request.
+    /// The monotonic counter is internal; callers only see the id.
+    pub(super) fn next_inline_suggestion_id(&mut self) -> RequestId {
+        self.inline_suggestion_seq = self.inline_suggestion_seq.wrapping_add(1);
+        RequestId(self.inline_suggestion_seq)
+    }
+
+    /// Drop any in-flight or shown inline suggestion. Cheap to call on
+    /// every cursor-moving / mode-exiting key event so stale ghost text
+    /// never paints against a shifted cursor.
+    pub(super) fn cancel_inline_suggestion(&mut self) {
+        self.inline_suggestion.dismiss();
+    }
+
+    /// Phase-0 stub provider: synchronously install a placeholder
+    /// suggestion when the cursor sits at end-of-line and no popup is
+    /// open. Real providers will replace the body with a debounced
+    /// async request — the call-site contract (insert-mode, post-edit)
+    /// stays the same.
+    pub(super) fn update_inline_suggestion_stub(&mut self) {
+        if self.completion.is_some() {
+            self.inline_suggestion.dismiss();
+            return;
+        }
+        let cursor = self.buffer.cursor;
+        let row_len = self
+            .buffer
+            .lines
+            .get(cursor.row)
+            .map(|l| l.chars().count())
+            .unwrap_or(0);
+        if cursor.col != row_len {
+            self.inline_suggestion.dismiss();
+            return;
+        }
+        let id = self.next_inline_suggestion_id();
+        self.inline_suggestion = SuggestionState::Showing {
+            id,
+            suggestion: Suggestion {
+                text: " // hello from stub".to_string(),
+                anchor: cursor,
+            },
+        };
+    }
+
+    /// Accept the currently-showing inline suggestion at the cursor.
+    /// Returns `true` when a suggestion was applied (so the caller can
+    /// short-circuit other key handling); `false` when nothing was
+    /// showing or the anchor no longer matches the cursor (stale).
+    pub(super) fn accept_inline_suggestion(&mut self) -> bool {
+        let text = match self.inline_suggestion.showing() {
+            Some(s) if s.is_anchored_at(self.buffer.cursor) => s.text.clone(),
+            _ => {
+                self.inline_suggestion.dismiss();
+                return false;
+            }
+        };
+        self.inline_suggestion.dismiss();
+        // Raw `insert_char` per char — no auto-pair / no recording.
+        // Accepted ghost text shouldn't replay through `.`, and the
+        // suggestion is already a final string the provider chose.
+        for c in text.chars() {
+            self.buffer.insert_char(c);
+        }
+        true
     }
 
     /// `IndentSettings` derived from the active buffer's effective

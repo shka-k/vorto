@@ -32,6 +32,13 @@ impl App {
             self.lsp_completion();
             return Ok(());
         }
+        // `<C-y>` accepts the inline (ghost-text) suggestion when one is
+        // showing. With nothing to accept it falls through to the no-op
+        // `_ => {}` arm below — no literal `y` is inserted because the
+        // bare-char fast path gates on `no_ctrl`.
+        if ctrl && key.code == KeyCode::Char('y') && self.accept_inline_suggestion() {
+            return Ok(());
+        }
 
         let no_ctrl = !key.modifiers.contains(KeyModifiers::CONTROL);
         if no_ctrl && let KeyCode::Char(c) = key.code {
@@ -59,12 +66,14 @@ impl App {
                 }
             }
             self.update_signature_help_on_char(c);
+            self.update_inline_suggestion_stub();
             return Ok(());
         }
         match key.code {
             KeyCode::Esc => {
                 self.finalize_insert_recording();
                 self.cancel_signature_help();
+                self.cancel_inline_suggestion();
                 self.enter_mode(Mode::Normal);
             }
             KeyCode::Enter => {
@@ -81,12 +90,14 @@ impl App {
                 // in any language the popup targets) — close rather
                 // than retrigger.
                 self.cancel_signature_help();
+                self.cancel_inline_suggestion();
             }
             KeyCode::Backspace => {
                 self.fan_out_backspace();
                 self.record_insert_key(InsertKey::Backspace);
                 self.update_completion_filter();
                 self.update_signature_help_on_edit();
+                self.cancel_inline_suggestion();
             }
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 // Some terminals (e.g. macOS Terminal.app) report
@@ -132,24 +143,28 @@ impl App {
                 self.buffer.move_left();
                 self.cancel_completion();
                 self.update_signature_help_on_edit();
+                self.cancel_inline_suggestion();
             }
             KeyCode::Right => {
                 self.recording = None;
                 self.buffer.move_right(true);
                 self.cancel_completion();
                 self.update_signature_help_on_edit();
+                self.cancel_inline_suggestion();
             }
             KeyCode::Up => {
                 self.recording = None;
                 self.buffer.move_up();
                 self.cancel_completion();
                 self.cancel_signature_help();
+                self.cancel_inline_suggestion();
             }
             KeyCode::Down => {
                 self.recording = None;
                 self.buffer.move_down();
                 self.cancel_completion();
                 self.cancel_signature_help();
+                self.cancel_inline_suggestion();
             }
             _ => {}
         }
