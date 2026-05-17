@@ -8,6 +8,7 @@
 
 mod buffer_list;
 mod completion;
+mod copilot;
 mod eval;
 mod input;
 mod jump;
@@ -108,6 +109,10 @@ pub struct App {
     /// All LSP state — clients, current document, diagnostics, pending
     /// requests, sync version, root anchor. See [`LspCoordinator`].
     pub lsp: LspCoordinator,
+    /// Copilot LSP client. `None` while not yet spawned or after a
+    /// reader-thread error tore it down; future requests trigger a
+    /// re-spawn attempt. See [`crate::copilot`].
+    pub copilot: Option<crate::copilot::CopilotClient>,
     /// Shared event channel — kept on `App` so `open_path` can spawn
     /// worker threads that report `HighlighterReady` / `LspReady` back
     /// to the main loop without going through the LSP coordinator.
@@ -253,6 +258,7 @@ impl App {
             last_preview_request: RefCell::new(None),
             startup_cwd,
             lsp,
+            copilot: None,
             event_tx,
             open_gen: 0,
             // Pre-seed with Scratch so the picker always offers a way

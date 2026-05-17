@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 use crate::config::LspConfig;
 use crate::vlog;
 
-mod codec;
+pub(crate) mod codec;
 mod edits;
 mod parse;
 mod root;

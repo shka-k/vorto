@@ -15,11 +15,11 @@ use super::types::{Diagnostic, LspEvent, Position, Range, Severity};
 use super::{BlockingPending, BlockingReply};
 use crate::vlog;
 
-pub(super) fn request(id: u64, method: &str, params: Value) -> Value {
+pub(crate) fn request(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
 
-pub(super) fn notification(method: &str, params: Value) -> Value {
+pub(crate) fn notification(method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "method": method, "params": params })
 }
 
@@ -34,12 +34,12 @@ fn write_message<W: Write>(w: &mut W, msg: &Value) -> Result<()> {
 /// Write a framed message through a locked stdin. Both the App thread
 /// and the reader thread call this, so the lock guarantees that the
 /// header + body of one message can't be interleaved with another's.
-pub(super) fn write_framed(stdin: &Arc<Mutex<ChildStdin>>, msg: &Value) -> Result<()> {
+pub(crate) fn write_framed(stdin: &Arc<Mutex<ChildStdin>>, msg: &Value) -> Result<()> {
     let mut guard = stdin.lock().map_err(|_| anyhow!("lsp stdin poisoned"))?;
     write_message(&mut *guard, msg)
 }
 
-pub(super) fn read_message<R: BufRead>(r: &mut R) -> Result<Value> {
+pub(crate) fn read_message<R: BufRead>(r: &mut R) -> Result<Value> {
     let mut content_length: Option<usize> = None;
     let mut header = String::new();
     loop {
@@ -159,7 +159,7 @@ pub(super) fn reader_loop(
 /// `workspace/configuration`, and `window/workDoneProgress/create`
 /// requests so that flycheck / file watching can proceed. Servers that
 /// genuinely need a structured response will degrade gracefully.
-pub(super) fn handle_server_request(stdin: &Arc<Mutex<ChildStdin>>, msg: &Value) {
+pub(crate) fn handle_server_request(stdin: &Arc<Mutex<ChildStdin>>, msg: &Value) {
     let Some(id) = msg.get("id") else { return };
     let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
     // `workspace/configuration` expects an array of items mirroring the

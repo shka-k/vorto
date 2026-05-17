@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crossterm::event::Event;
 
+use crate::copilot::CopilotEvent;
 use crate::finder::PreviewEntry;
 use crate::lsp::{LspClient, LspEvent};
 use crate::syntax::Highlighter;
@@ -15,6 +16,9 @@ use crate::syntax::Highlighter;
 pub enum AppEvent {
     Term(Event),
     Lsp(LspEvent),
+    /// Reader-thread event from the Copilot LSP client. The main loop
+    /// hands these to [`crate::app::App::handle_copilot_event`].
+    Copilot(CopilotEvent),
     /// A worker thread spawned by `open_path` finished building a
     /// tree-sitter highlighter (grammar dlopen + query compile + initial
     /// parse). `gen` is the generation the worker was spawned for — the

@@ -2,6 +2,7 @@ mod action;
 mod app;
 mod buffer_ref;
 mod config;
+mod copilot;
 mod editor;
 mod effect;
 mod event;
@@ -156,6 +157,10 @@ fn main() -> Result<()> {
     });
 
     let mut app = App::new(cfg, loader, event_tx, startup_cwd);
+    // Best-effort: spawn Copilot eagerly so ghost-text completions are
+    // ready by the time the user starts typing. Silent no-op when the
+    // server binary isn't installed.
+    app.spawn_copilot_if_needed();
     if let Some(p) = file_arg {
         app.open_path(std::path::Path::new(&p))?;
     } else if dir_arg {
@@ -249,6 +254,7 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
         }
         event::AppEvent::Term(_) => {}
         event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
+        event::AppEvent::Copilot(cp_ev) => app.handle_copilot_event(cp_ev),
         event::AppEvent::HighlighterReady { generation, result } => {
             app.handle_highlighter_ready(generation, result);
         }
