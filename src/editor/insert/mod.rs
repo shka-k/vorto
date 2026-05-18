@@ -280,6 +280,50 @@ impl Buffer {
         self.touch();
     }
 
+    /// Insert `s` at the cursor verbatim, treating any of `\n`, `\r\n`,
+    /// or bare `\r` as a line break. No auto-indent, no auto-pair, no
+    /// dedent-on-close — this is the bracketed-paste path, so the
+    /// pasted text's existing indentation must survive intact. The
+    /// cursor lands at the end of the inserted run.
+    ///
+    /// Why all three separators: bracketed paste hands us whatever the
+    /// terminal forwards, and the convention differs by emulator —
+    /// xterm and macOS Terminal.app use bare `\r`, Linux terminals use
+    /// `\n`, Windows-attached sessions use `\r\n`. Splitting on only
+    /// one leaves embedded control bytes in the buffer and the user
+    /// sees `^M` artifacts on screen.
+    pub fn insert_text_raw(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
+        let segments: Vec<&str> = normalized.split('\n').collect();
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        let byte_idx = char_to_byte(&self.lines[row], col);
+        if segments.len() == 1 {
+            self.lines[row].insert_str(byte_idx, segments[0]);
+            self.cursor.col += segments[0].chars().count();
+        } else {
+            let tail = self.lines[row].split_off(byte_idx);
+            self.lines[row].push_str(segments[0]);
+            let last_idx = segments.len() - 1;
+            for (i, seg) in segments.iter().enumerate().skip(1) {
+                let mut new_line = String::with_capacity(
+                    seg.len() + if i == last_idx { tail.len() } else { 0 },
+                );
+                new_line.push_str(seg);
+                if i == last_idx {
+                    new_line.push_str(&tail);
+                }
+                self.lines.insert(row + i, new_line);
+            }
+            self.cursor.row = row + last_idx;
+            self.cursor.col = segments[last_idx].chars().count();
+        }
+        self.touch();
+    }
+
     pub fn insert_line_below(&mut self, indent: IndentSettings) {
         let reference = self.lines[self.cursor.row].clone();
         let new_indent =
@@ -1037,5 +1081,70 @@ mod tests {
         b.delete_char_before_smart(settings());
         assert_eq!(b.lines[0], "foo");
         assert_eq!(b.cursor.col, 0);
+    }
+
+    #[test]
+    fn insert_text_raw_single_line_splices_at_cursor() {
+        let mut b = Buffer::new();
+        b.lines = vec!["abef".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 2;
+        b.insert_text_raw("cd");
+        assert_eq!(b.lines[0], "abcdef");
+        assert_eq!(b.cursor.col, 4);
+    }
+
+    #[test]
+    fn insert_text_raw_multiline_preserves_indent_verbatim() {
+        // Pasting pre-indented text must not have auto-indent stacked on
+        // top — each line lands exactly as it appeared in the payload.
+        let mut b = Buffer::new();
+        b.lines = vec!["    pub fn foo() {".into(), "    }".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 18; // end of line 0
+        b.insert_text_raw("\n        let x = 1;\n        let y = 2;");
+        assert_eq!(b.lines[0], "    pub fn foo() {");
+        assert_eq!(b.lines[1], "        let x = 1;");
+        assert_eq!(b.lines[2], "        let y = 2;");
+        assert_eq!(b.lines[3], "    }");
+        assert_eq!(b.cursor.row, 2);
+        assert_eq!(b.cursor.col, 18);
+    }
+
+    #[test]
+    fn insert_text_raw_normalizes_crlf() {
+        let mut b = Buffer::new();
+        b.lines = vec!["".into()];
+        b.insert_text_raw("foo\r\nbar");
+        assert_eq!(b.lines, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn insert_text_raw_normalizes_bare_cr() {
+        // xterm / macOS Terminal.app deliver bracketed-paste line
+        // breaks as bare `\r`. Without normalization the CRs end up
+        // embedded in a single line and the renderer surfaces them as
+        // `^M`-style artifacts.
+        let mut b = Buffer::new();
+        b.lines = vec!["".into()];
+        b.insert_text_raw("foo\rbar\rbaz");
+        assert_eq!(
+            b.lines,
+            vec!["foo".to_string(), "bar".to_string(), "baz".to_string()]
+        );
+    }
+
+    #[test]
+    fn insert_text_raw_splits_existing_tail_onto_last_line() {
+        // Mid-line paste: anything after the cursor on the original row
+        // rides the last pasted segment.
+        let mut b = Buffer::new();
+        b.lines = vec!["abcXYZ".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 3;
+        b.insert_text_raw("1\n2\n3");
+        assert_eq!(b.lines, vec!["abc1", "2", "3XYZ"]);
+        assert_eq!(b.cursor.row, 2);
+        assert_eq!(b.cursor.col, 1);
     }
 }

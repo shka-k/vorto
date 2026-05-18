@@ -390,6 +390,23 @@ impl App {
         scatter_cursors(self, new_positions);
     }
 
+    /// Apply a bracketed-paste payload at the primary cursor. Bypasses
+    /// the auto-indent / auto-pair / completion machinery so the pasted
+    /// text's own indentation survives intact (otherwise every `\n`
+    /// fires the Enter handler and the per-line indent stacks on top
+    /// of what's already there). Extras stay put — paste fans out the
+    /// way newlines do, primary only, for the same bookkeeping reason.
+    pub(super) fn insert_pasted_text(&mut self, s: String) {
+        if s.is_empty() {
+            return;
+        }
+        self.cancel_completion();
+        self.cancel_signature_help();
+        self.cancel_inline_suggestion();
+        self.buffer.insert_text_raw(&s);
+        self.record_insert_key(InsertKey::Paste(s));
+    }
+
     fn record_insert_key(&mut self, k: InsertKey) {
         if let Some(r) = self.recording.as_mut() {
             r.keys.push(k);

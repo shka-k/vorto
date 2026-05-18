@@ -27,6 +27,31 @@ use crate::buffer_ref::BufferRef;
 use super::{App, eval};
 
 impl App {
+    /// Bracketed-paste payload from the terminal. Routed past the
+    /// per-key dispatchers because we want the text inserted verbatim:
+    /// no auto-indent on `\n`, no auto-pair on `(`, no completion
+    /// triggers on identifier chars. Each context has its own destination:
+    ///   - Prompt open: feed each char into the prompt's line input,
+    ///     dropping line breaks (the prompt is single-line).
+    ///   - Insert mode: splice the text in via `insert_text_raw` and
+    ///     record it as one `InsertKey::Paste` for `.` replay.
+    ///   - Normal / Visual: ignore — vim has no built-in "paste here"
+    ///     gesture without an explicit register, and synthesizing one
+    ///     would surprise the user.
+    pub fn handle_paste(&mut self, s: String) {
+        if self.prompt.is_open() {
+            let filtered: String = s.chars().filter(|&c| c != '\n' && c != '\r').collect();
+            for c in filtered.chars() {
+                let ev = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                let _ = self.handle_prompt_key(ev);
+            }
+            return;
+        }
+        if matches!(self.mode, Mode::Insert) {
+            self.insert_pasted_text(s);
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if self.prompt.is_open() {
             return self.handle_prompt_key(key);

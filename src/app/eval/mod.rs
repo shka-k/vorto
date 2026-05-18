@@ -160,6 +160,7 @@ impl App {
                         InsertKey::Newline => self.buffer.insert_newline(indent),
                         InsertKey::Backspace => self.buffer.delete_char_before(),
                         InsertKey::Dedent => self.buffer.dedent_current_line(indent),
+                        InsertKey::Paste(s) => self.buffer.insert_text_raw(&s),
                     }
                 }
                 self.enter_mode(Mode::Normal);

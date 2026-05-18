@@ -415,12 +415,15 @@ pub enum LastChange {
 
 /// Replay-able Insert-mode keystrokes. Cursor motions (arrow keys) end
 /// the recording in vim; we follow that by simply not recording them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertKey {
     Char(char),
     Newline,
     Backspace,
     Dedent,
+    /// A bracketed-paste payload — replayed as raw text without firing
+    /// auto-indent or auto-pair, matching how it was originally inserted.
+    Paste(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

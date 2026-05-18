@@ -23,8 +23,8 @@ use std::thread;
 
 use anyhow::Result;
 use crossterm::event::{
-    self as crossterm_event, Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self as crossterm_event, DisableBracketedPaste, EnableBracketedPaste, Event,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -104,6 +104,12 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste: the terminal wraps pasted text in `\x1b[200~` …
+    // `\x1b[201~` so crossterm can surface it as `Event::Paste(String)`
+    // instead of a stream of synthesized key events. Without this, every
+    // `\n` in the paste fires the Enter handler and auto-indent compounds
+    // on the indent the pasted text already carries.
+    execute!(stdout, EnableBracketedPaste)?;
     // Kitty keyboard protocol: with `DISAMBIGUATE_ESCAPE_CODES`, the
     // terminal reports Shift+Tab, Ctrl+modified keys, etc. as distinct
     // events instead of collapsing them onto plain ASCII codes. Without
@@ -182,6 +188,7 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, &mut app, &event_rx);
 
     disable_raw_mode()?;
+    let _ = execute!(terminal.backend_mut(), DisableBracketedPaste);
     if kbd_enhanced {
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     }
@@ -285,6 +292,7 @@ fn dispatch(app: &mut App, ev: event::AppEvent) -> Result<()> {
             log_key_event(&key);
             app.handle_key(key)?;
         }
+        event::AppEvent::Term(Event::Paste(s)) => app.handle_paste(s),
         event::AppEvent::Term(_) => {}
         event::AppEvent::Lsp(lsp_ev) => app.handle_lsp_event(lsp_ev),
         event::AppEvent::Copilot(cp_ev) => app.handle_copilot_event(cp_ev),
