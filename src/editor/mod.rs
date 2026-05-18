@@ -37,11 +37,7 @@ mod vcs_link;
 /// `scope_key = (start_row, end_row, col)` is enough to detect a
 /// scope change without holding a reference to the tree.
 /// `anchor_row` is the cursor row at animation start.
-pub type IndentAnimState = (
-    Option<std::time::Instant>,
-    (usize, usize, usize),
-    usize,
-);
+pub type IndentAnimState = (Option<std::time::Instant>, (usize, usize, usize), usize);
 
 pub use inline_suggestion::{RequestId, Suggestion, SuggestionState};
 pub use ops::{flip_case_char_keep_width, to_lower_keep_width, to_upper_keep_width};

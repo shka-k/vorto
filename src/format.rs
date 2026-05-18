@@ -82,7 +82,9 @@ fn has_rustfmt_config(cwd: &Path) -> bool {
 /// for any other formatter.
 fn effective_args(formatter: &FormatterConfig, cwd: &Path) -> Vec<String> {
     let mut args = formatter.args.clone();
-    let is_rustfmt = Path::new(&formatter.command).file_stem().and_then(|s| s.to_str())
+    let is_rustfmt = Path::new(&formatter.command)
+        .file_stem()
+        .and_then(|s| s.to_str())
         == Some("rustfmt");
     if is_rustfmt
         && !args
@@ -282,7 +284,10 @@ mod tests {
             command: "rustfmt".into(),
             args: vec![],
         };
-        assert_eq!(effective_args(&f, &root), vec!["--edition=2024".to_string()]);
+        assert_eq!(
+            effective_args(&f, &root),
+            vec!["--edition=2024".to_string()]
+        );
     }
 
     #[test]
@@ -298,7 +303,10 @@ mod tests {
             args: vec!["--edition=2021".into()],
         };
         // User-supplied --edition wins; we don't append our own.
-        assert_eq!(effective_args(&f, &root), vec!["--edition=2021".to_string()]);
+        assert_eq!(
+            effective_args(&f, &root),
+            vec!["--edition=2021".to_string()]
+        );
     }
 
     #[test]

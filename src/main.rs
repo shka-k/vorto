@@ -29,11 +29,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::action::PromptKind;
 use crate::app::App;
@@ -162,14 +162,16 @@ fn main() -> Result<()> {
     // that pushes `Event::Term`; LSP reader threads push `Event::Lsp`.
     let (event_tx, event_rx) = mpsc::channel::<event::AppEvent>();
     let input_tx = event_tx.clone();
-    thread::spawn(move || loop {
-        match crossterm_event::read() {
-            Ok(ev) => {
-                if input_tx.send(event::AppEvent::Term(ev)).is_err() {
-                    return;
+    thread::spawn(move || {
+        loop {
+            match crossterm_event::read() {
+                Ok(ev) => {
+                    if input_tx.send(event::AppEvent::Term(ev)).is_err() {
+                        return;
+                    }
                 }
+                Err(_) => return,
             }
-            Err(_) => return,
         }
     });
 

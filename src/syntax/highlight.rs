@@ -456,10 +456,7 @@ impl Highlighter {
         }
         let m = found?;
         let pos = m.start_position();
-        Some((
-            pos.row,
-            byte_to_char_col(&self.source, pos.row, pos.column),
-        ))
+        Some((pos.row, byte_to_char_col(&self.source, pos.row, pos.column)))
     }
 }
 

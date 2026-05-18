@@ -173,10 +173,7 @@ pub(super) fn draw_buffer(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter_map(|(r, c)| if *r == i { Some(*c) } else { None })
             .collect();
-        let row_guides: &[IndentGuide] = indent_guides
-            .get(&i)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+        let row_guides: &[IndentGuide] = indent_guides.get(&i).map(Vec::as_slice).unwrap_or(&[]);
         spans.extend(render_line(
             i,
             line,
@@ -757,9 +754,8 @@ fn render_line(
 ) -> Vec<Span<'static>> {
     // Look up a guide at visual column `vc`; cached by closure so the
     // tight per-cell loop stays branch-light.
-    let guide_at = |vc: usize| -> Option<IndentGuide> {
-        indent_guides.iter().find(|g| g.col == vc).copied()
-    };
+    let guide_at =
+        |vc: usize| -> Option<IndentGuide> { indent_guides.iter().find(|g| g.col == vc).copied() };
     let guide_style = |g: IndentGuide| -> Style {
         if g.active {
             // Active uses the terminal's default foreground + bold so
@@ -815,10 +811,13 @@ fn render_line(
             }
             style
         };
-        let emit_until = max_guide_col
-            .map(|m| m + 1)
-            .unwrap_or(0)
-            .max(if cursor_cell_style != Style::default() { 1 } else { 0 });
+        let emit_until = max_guide_col.map(|m| m + 1).unwrap_or(0).max(
+            if cursor_cell_style != Style::default() {
+                1
+            } else {
+                0
+            },
+        );
         if emit_until == 0 || col_scroll >= emit_until {
             return Vec::new();
         }
@@ -945,11 +944,11 @@ fn render_line(
     let mut visual_col = 0usize;
     let mut started = false;
     let push_cell = |spans: &mut Vec<Span<'static>>,
-                         buf: &mut String,
-                         buf_style: &mut Style,
-                         started: &mut bool,
-                         ch: char,
-                         style: Style| {
+                     buf: &mut String,
+                     buf_style: &mut Style,
+                     started: &mut bool,
+                     ch: char,
+                     style: Style| {
         if !*started {
             *buf_style = style;
             *started = true;
@@ -1001,10 +1000,8 @@ fn render_line(
             // whitespace marker (`→`) yields to a guide so
             // `show_whitespace = true` doesn't hide the bar on
             // the leading tab cell.
-            let jump_lead = original == '\t'
-                && k == 0
-                && ch != '\t'
-                && jump_label_at(col).is_some();
+            let jump_lead =
+                original == '\t' && k == 0 && ch != '\t' && jump_label_at(col).is_some();
             let guide = if is_ws && !jump_lead {
                 guide_at(vc)
             } else {

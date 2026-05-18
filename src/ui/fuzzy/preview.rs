@@ -423,7 +423,13 @@ mod tests {
         let buf = terminal.backend().buffer();
         for x in 0..30 {
             let cell = &buf[(x, 0)];
-            eprintln!("cell[{:2}]: symbol={:?} fg={:?} bg={:?}", x, cell.symbol(), cell.fg, cell.bg);
+            eprintln!(
+                "cell[{:2}]: symbol={:?} fg={:?} bg={:?}",
+                x,
+                cell.symbol(),
+                cell.fg,
+                cell.bg
+            );
         }
         let row: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
         eprintln!("rendered row: {:?}", row);

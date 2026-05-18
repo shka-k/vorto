@@ -350,9 +350,8 @@ impl Buffer {
             self.lines[row].push_str(segments[0]);
             let last_idx = segments.len() - 1;
             for (i, seg) in segments.iter().enumerate().skip(1) {
-                let mut new_line = String::with_capacity(
-                    seg.len() + if i == last_idx { tail.len() } else { 0 },
-                );
+                let mut new_line =
+                    String::with_capacity(seg.len() + if i == last_idx { tail.len() } else { 0 });
                 new_line.push_str(seg);
                 if i == last_idx {
                     new_line.push_str(&tail);
