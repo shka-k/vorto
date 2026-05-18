@@ -399,6 +399,14 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         },
     );
     m.insert(
+        "sql".into(),
+        LanguageConfig {
+            extensions: Some(vec!["sql".into()]),
+            comment_token: Some("--".into()),
+            ..Default::default()
+        },
+    );
+    m.insert(
         "zig".into(),
         LanguageConfig {
             extensions: Some(vec!["zig".into(), "zon".into()]),

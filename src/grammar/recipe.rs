@@ -161,6 +161,12 @@ pub fn builtin_recipes() -> Vec<GrammarRecipe> {
             subpath: None,
             rev: None,
         },
+        GrammarRecipe {
+            name: "sql",
+            repo: "https://github.com/DerekStride/tree-sitter-sql",
+            subpath: None,
+            rev: None,
+        },
     ]
 }
 
