@@ -175,6 +175,35 @@ pub fn builtin_lsp() -> HashMap<String, LspConfig> {
     m
 }
 
+/// Per-extension LSP `languageId` overrides. The LSP spec fixes the id
+/// names (e.g. `.tsx` ↔ `"typescriptreact"`, `.jsx` ↔ `"javascriptreact"`),
+/// but our internal language *names* don't have to match — `.tsx` is
+/// routed through the `tsx` language so it picks up the JSX-aware
+/// grammar and queries. This table is the bridge: extensions listed
+/// here win over the language-name fallback at `didOpen` time.
+/// Extensions not listed fall through to the language name, which is
+/// already the right answer for `.ts` / `.py` / `.rs` / etc.
+pub fn builtin_extension_language_ids() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    let mut add = |ext: &str, id: &str| {
+        m.insert(ext.to_string(), id.to_string());
+    };
+    add("tsx", "typescriptreact");
+    add("jsx", "javascriptreact");
+    add("mjs", "javascript");
+    add("cjs", "javascript");
+    add("mts", "typescript");
+    add("cts", "typescript");
+    add("h", "c");
+    add("hpp", "cpp");
+    add("hh", "cpp");
+    add("hxx", "cpp");
+    add("htm", "html");
+    add("mdx", "markdown");
+    add("yml", "yaml");
+    m
+}
+
 /// Built-in `[languages.<name>]` defaults. To support a new language
 /// out-of-the-box, add it here. Users can override every field via
 /// `[languages.<name>]` in their config, and they can add entirely new
@@ -233,7 +262,24 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
     m.insert(
         "typescript".into(),
         LanguageConfig {
-            extensions: Some(vec!["ts".into(), "tsx".into()]),
+            extensions: Some(vec!["ts".into()]),
+            comment_token: Some("//".into()),
+            editor: EditorToml {
+                indent_width: Some(2),
+                tab_width: Some(2),
+                ..Default::default()
+            },
+            lsp: lsp(&["vtsls", "typescript-language-server"]),
+            ..Default::default()
+        },
+    );
+    // `.tsx` gets its own language entry (grammar `tsx`, query dir
+    // `tsx/`) so JSX-aware indents.scm / highlights.scm fire — the
+    // plain `typescript` grammar doesn't parse JSX nodes.
+    m.insert(
+        "tsx".into(),
+        LanguageConfig {
+            extensions: Some(vec!["tsx".into()]),
             comment_token: Some("//".into()),
             editor: EditorToml {
                 indent_width: Some(2),

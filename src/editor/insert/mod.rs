@@ -18,7 +18,9 @@ mod autopair;
 mod indent_calc;
 
 use super::{Buffer, IndentSettings, char_to_byte};
-use autopair::{auto_pair_closer, is_auto_pair_closer, should_auto_pair};
+use autopair::{
+    TagAutopair, auto_pair_closer, detect_open_tag, is_auto_pair_closer, should_auto_pair,
+};
 use indent_calc::{
     add_one_indent_level, compute_new_line_indent, copy_leading_indent, strip_one_indent_level,
 };
@@ -62,6 +64,25 @@ impl Buffer {
             return;
         }
 
+        // Tag autopair: typing `>` in JSX/HTML/etc. drops in a matching
+        // `</tag>` after the cursor when an open tag precedes us. Has
+        // to run *before* `insert_char(c)` so `detect_open_tag` sees
+        // the line as it was when the user pressed `>`.
+        if c == '>'
+            && let Some(tag) = self.tag_autopair_close()
+        {
+            self.insert_char('>');
+            let closing: String = match tag {
+                TagAutopair::Close(name) => format!("</{}>", name),
+            };
+            let back = closing.chars().count();
+            for ch in closing.chars() {
+                self.insert_char(ch);
+            }
+            self.cursor.col -= back;
+            return;
+        }
+
         if matches!(c, '}' | ')' | ']') && self.line_is_blank_before_cursor() {
             self.dedent_current_line(indent);
         }
@@ -74,6 +95,19 @@ impl Buffer {
             self.insert_char(closer);
             self.cursor.col -= 1;
         }
+    }
+
+    /// `Some(_)` when a `>` typed at the cursor would close an open tag
+    /// (JSX / HTML / XML / Vue / Svelte / Astro / MDX, gated by file
+    /// extension). The buffer side just calls this and acts on the
+    /// payload; the scan lives in [`autopair::detect_open_tag`].
+    fn tag_autopair_close(&self) -> Option<TagAutopair> {
+        let ext = self
+            .path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str());
+        detect_open_tag(&self.lines[self.cursor.row], self.cursor.col, ext)
     }
 
     /// Char at the cursor's logical position, or `None` past end-of-line.
@@ -245,10 +279,17 @@ impl Buffer {
         // the closer would ride the inner indent and look like
         // `    }` inside `fn foo() {`, which the user expects to snap
         // back to column 0.
-        let is_empty_pair = match (prev, next_ch) {
-            (Some(p), Some(n)) => auto_pair_closer(p) == Some(n),
-            _ => false,
-        };
+        // Same three-line spread for an empty tag pair: cursor sits
+        // between `>` of the opener and `</…>` of the closer (the
+        // shape `tag_autopair_close` leaves behind, or any hand-typed
+        // `<div>|</div>`). We don't verify the names match — the
+        // user pressed Enter inside the pair, that's intent enough.
+        let is_empty_tag_pair = prev == Some('>') && right_owned.starts_with("</");
+        let is_empty_pair = is_empty_tag_pair
+            || match (prev, next_ch) {
+                (Some(p), Some(n)) => auto_pair_closer(p) == Some(n),
+                _ => false,
+            };
         if is_empty_pair {
             let base_indent = copy_leading_indent(&left_owned, indent);
             let mut closer_line = base_indent.clone();
@@ -1132,6 +1173,84 @@ mod tests {
             b.lines,
             vec!["foo".to_string(), "bar".to_string(), "baz".to_string()]
         );
+    }
+
+    #[test]
+    fn tag_autopair_closes_on_gt_in_tsx() {
+        let mut b = Buffer::new();
+        b.path = Some(std::path::PathBuf::from("app.tsx"));
+        b.lines = vec!["<div".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 4;
+        b.insert_char_smart('>', settings());
+        assert_eq!(b.lines[0], "<div></div>");
+        // Cursor lands between `>` and `</div>`.
+        assert_eq!(b.cursor.col, 5);
+    }
+
+    #[test]
+    fn tag_autopair_fragment_in_tsx() {
+        let mut b = Buffer::new();
+        b.path = Some(std::path::PathBuf::from("c.tsx"));
+        b.lines = vec!["<".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 1;
+        b.insert_char_smart('>', settings());
+        assert_eq!(b.lines[0], "<></>");
+        assert_eq!(b.cursor.col, 2);
+    }
+
+    #[test]
+    fn tag_autopair_skipped_outside_supported_ext() {
+        let mut b = Buffer::new();
+        b.path = Some(std::path::PathBuf::from("a.rs"));
+        b.lines = vec!["if x <y".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 7;
+        b.insert_char_smart('>', settings());
+        // No tag close — `>` just lands plainly.
+        assert_eq!(b.lines[0], "if x <y>");
+        assert_eq!(b.cursor.col, 8);
+    }
+
+    #[test]
+    fn tag_autopair_self_closing_left_alone() {
+        let mut b = Buffer::new();
+        b.path = Some(std::path::PathBuf::from("a.tsx"));
+        b.lines = vec!["<img /".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 6;
+        b.insert_char_smart('>', settings());
+        assert_eq!(b.lines[0], "<img />");
+        assert_eq!(b.cursor.col, 7);
+    }
+
+    #[test]
+    fn newline_inside_empty_tag_pair_spreads_three_lines() {
+        let mut b = Buffer::new();
+        b.lines = vec!["    <div></div>".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 9; // between `>` and `</div>`
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "    <div>");
+        assert_eq!(b.lines[1], "        ");
+        assert_eq!(b.lines[2], "    </div>");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 8);
+    }
+
+    #[test]
+    fn newline_inside_empty_fragment_spreads_three_lines() {
+        let mut b = Buffer::new();
+        b.lines = vec!["<></>".into()];
+        b.cursor.row = 0;
+        b.cursor.col = 2; // between `>` and `</>`
+        b.insert_newline(settings());
+        assert_eq!(b.lines[0], "<>");
+        assert_eq!(b.lines[1], "    ");
+        assert_eq!(b.lines[2], "</>");
+        assert_eq!(b.cursor.row, 1);
+        assert_eq!(b.cursor.col, 4);
     }
 
     #[test]

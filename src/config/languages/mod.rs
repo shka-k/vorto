@@ -254,6 +254,12 @@ pub struct Language {
 pub struct LanguageRegistry {
     by_name: HashMap<String, Language>,
     extension_to_name: HashMap<String, String>,
+    /// LSP `languageId` per file extension. Distinct from the language
+    /// name because the LSP protocol's id space is fixed by spec —
+    /// `.tsx` must announce `"typescriptreact"` even though we route
+    /// it through our own `tsx` language entry. Extensions missing
+    /// here fall back to the language name at `didOpen` time.
+    extension_to_language_id: HashMap<String, String>,
 }
 
 impl LanguageRegistry {
@@ -271,6 +277,7 @@ impl LanguageRegistry {
         Ok(Self {
             by_name,
             extension_to_name,
+            extension_to_language_id: builtins::builtin_extension_language_ids(),
         })
     }
 
@@ -279,6 +286,12 @@ impl LanguageRegistry {
     pub fn by_extension(&self, ext: &str) -> Option<&Language> {
         let name = self.extension_to_name.get(ext)?;
         self.by_name.get(name)
+    }
+
+    /// LSP `languageId` for this file extension. `None` means "no
+    /// override — let the LSP layer default to the language name."
+    pub fn language_id_for_extension(&self, ext: &str) -> Option<&str> {
+        self.extension_to_language_id.get(ext).map(String::as_str)
     }
 }
 

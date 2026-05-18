@@ -76,8 +76,20 @@ impl App {
             return;
         }
         let lang_name = spec.name.clone();
+        // Per-extension `languageId` override — e.g. `.tsx` advertises
+        // `"typescriptreact"` even though our internal language name
+        // is `"tsx"`. When the table has nothing for this extension,
+        // the LSP layer falls back to the language name.
+        let language_id_override = self
+            .config
+            .languages
+            .language_id_for_extension(&ext)
+            .map(str::to_string);
 
-        for lsp_cfg in spec.lsp {
+        for mut lsp_cfg in spec.lsp {
+            if let Some(ref id) = language_id_override {
+                lsp_cfg.language_id = Some(id.clone());
+            }
             let key = client_key(&lang_name, &lsp_cfg.name);
 
             if self.lsp.has_client(&key) {
