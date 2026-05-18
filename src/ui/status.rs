@@ -109,10 +109,10 @@ pub(super) fn draw_command_line(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(text), area);
 
     // Park the terminal cursor at the input's insertion point so the
-    // user can see where typing/backspace will land. All prefixes are
-    // single-cell and typical input chars are too, so char count maps
-    // straight to cell column.
-    let col = (prefix.chars().count() + input.cursor()) as u16;
+    // user can see where typing/backspace will land. Cell width — not
+    // char count — so fullwidth input (CJK, emoji) still parks the
+    // caret on the right column.
+    let col = (crate::text_width::str_cell_width(prefix) + input.cursor_cell_col()) as u16;
     let x = area.x + col.min(area.width.saturating_sub(1));
     f.set_cursor_position((x, area.y));
 }

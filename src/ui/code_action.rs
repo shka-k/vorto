@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding};
 
 use crate::app::{App, Prompt};
+use crate::text_width::{prefix_byte_len_for_width, str_cell_width};
 
 /// Width budget for the popup. Long titles are truncated with an
 /// ellipsis so a single absurd title can't widen the box past this.
@@ -35,15 +36,16 @@ pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     };
     // Mirror buffer::place_cursor: 1-char severity sign + 5-char line
-    // number column, then the cursor's column. We don't import the
-    // constants from buffer.rs to keep ui submodules self-contained.
+    // number column, then the cursor's *visual* column. We don't
+    // import the constants from buffer.rs to keep ui submodules
+    // self-contained.
     let gutter_width: u16 = 1 + 5;
-    let cursor_x = buf_area.x + gutter_width + app.buffer.cursor.col as u16;
+    let cursor_x = buf_area.x + gutter_width + app.cursor_visual_col() as u16;
     let cursor_y = buf_area.y + rel_y;
 
     let inner_w = actions
         .iter()
-        .map(|a| a.title.chars().count() as u16)
+        .map(|a| str_cell_width(&a.title) as u16)
         .max()
         .unwrap_or(0)
         .min(MAX_WIDTH);
@@ -116,16 +118,19 @@ pub(super) fn draw_code_action_menu(f: &mut Frame, app: &App, buf_area: Rect) {
     f.render_widget(List::new(items), inner);
 }
 
-/// Visual-width truncation: keep the first `max` chars and replace the
-/// tail with `…` when something was dropped.
+/// Visual-width truncation: keep as many leading chars as fit within
+/// `max` terminal cells, replacing the tail with `…` when something
+/// was dropped.
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
     if max == 0 {
         return String::new();
     }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    if str_cell_width(s) <= max {
+        return s.to_string();
+    }
+    let cut = prefix_byte_len_for_width(s, max.saturating_sub(1));
+    let mut out = String::with_capacity(cut + 3);
+    out.push_str(&s[..cut]);
     out.push('…');
     out
 }

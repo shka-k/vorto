@@ -13,6 +13,7 @@ use crate::config::{EditorConfig, IndentGuideStyle};
 use crate::editor::{Buffer, IndentAnimState};
 use crate::lsp::Severity;
 use crate::syntax::{self, Capture};
+use crate::text_width::{char_cell_width, visual_col_of};
 use crate::vcs::LineStatus;
 
 use std::collections::HashMap;
@@ -231,7 +232,7 @@ pub(super) fn place_cursor(f: &mut Frame, app: &App, buf_area: Rect) {
     let line_no_width: u16 = 5;
     let tab_width = app.effective_editor().tab_width.max(1);
     let line = &app.buffer.lines[app.buffer.cursor.row];
-    let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
+    let visual_col = visual_col_of(line, app.buffer.cursor.col, tab_width);
     let col_scroll = app.buffer.col_scroll.get();
     let on_screen_col = visual_col.saturating_sub(col_scroll);
     let x =
@@ -679,22 +680,6 @@ fn push_unique_guide(map: &mut GuideMap, row: usize, guide: IndentGuide) {
     entry.push(guide);
 }
 
-/// Convert a character index on `line` into the visual column the
-/// character lands in once tabs have been expanded to `tab_width`-aligned
-/// stops. Walks the prefix exactly the way [`render_line`] does, so the
-/// cursor stays glued to the rendered char.
-fn char_col_to_visual(line: &str, char_col: usize, tab_width: usize) -> usize {
-    let mut v = 0usize;
-    for ch in line.chars().take(char_col) {
-        if ch == '\t' {
-            v += tab_width - (v % tab_width);
-        } else {
-            v += 1;
-        }
-    }
-    v
-}
-
 /// Build a `row → highest severity` lookup for the visible window. Rows
 /// outside `[scroll, last)` are skipped, multi-line diagnostics fill all
 /// rows they span, and the most severe diagnostic wins per row.
@@ -981,7 +966,7 @@ fn render_line(
         let width = if original == '\t' {
             tab_width - (visual_col % tab_width)
         } else {
-            1
+            char_cell_width(original)
         };
         let cell_start = visual_col;
         let cell_end = visual_col + width;
@@ -1033,8 +1018,19 @@ fn render_line(
                 } else {
                     (' ', style)
                 }
-            } else {
+            } else if k == 0 {
                 (ch, style)
+            } else {
+                // Trailing cell of a wide glyph: ratatui renders the
+                // wide char across both cells from a single span entry,
+                // so the leading-cell push above already covers this
+                // column. When the leading cell was clipped on the
+                // left by `col_scroll`, emit a filler space instead so
+                // downstream columns don't shift.
+                if cell_start >= col_scroll {
+                    continue;
+                }
+                (' ', style)
             };
             push_cell(
                 &mut spans,
@@ -1240,7 +1236,7 @@ fn compute_col_scroll(app: &App, width: usize, tab_width: usize) -> usize {
         return 0;
     }
     let line = &app.buffer.lines[app.buffer.cursor.row];
-    let visual_col = char_col_to_visual(line, app.buffer.cursor.col, tab_width);
+    let visual_col = visual_col_of(line, app.buffer.cursor.col, tab_width);
     let mut col_scroll = app.buffer.col_scroll.get();
     if visual_col < col_scroll {
         col_scroll = visual_col;
@@ -1374,7 +1370,7 @@ pub(super) fn draw_buffer_inactive(f: &mut Frame, buf: &Buffer, eff: &EditorConf
     // Track col_scroll on the inactive pane's own cell so horizontal
     // jumps still work when the user re-focuses it.
     let line = buf.lines.get(cur).map(String::as_str).unwrap_or("");
-    let visual_col = char_col_to_visual(line, buf.cursor.col, tab_width);
+    let visual_col = visual_col_of(line, buf.cursor.col, tab_width);
     let mut col_scroll = buf.col_scroll.get();
     if inner_text_width > 0 {
         if visual_col < col_scroll {

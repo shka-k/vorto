@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, Level};
+use crate::text_width::{char_cell_width, prefix_byte_len_for_width, str_cell_width};
 
 /// Render the active toast stack into the bottom-right corner of
 /// `buf_area`. Toasts are skipped entirely while a prompt is open —
@@ -83,14 +84,15 @@ fn layout_toast(
                 continue;
             }
             let mut buf = String::new();
-            let mut count = 0usize;
+            let mut width = 0usize;
             for ch in raw.chars() {
-                buf.push(ch);
-                count += 1;
-                if count >= content_max {
+                let w = char_cell_width(ch);
+                if width + w > content_max && !buf.is_empty() {
                     out.push(std::mem::take(&mut buf));
-                    count = 0;
+                    width = 0;
                 }
+                buf.push(ch);
+                width += w;
             }
             if !buf.is_empty() {
                 out.push(buf);
@@ -99,8 +101,10 @@ fn layout_toast(
         out
     } else {
         let first = msg.lines().next().unwrap_or("");
-        let s = if first.chars().count() > content_max {
-            let mut t: String = first.chars().take(content_max.saturating_sub(1)).collect();
+        let s = if str_cell_width(first) > content_max {
+            let cut = prefix_byte_len_for_width(first, content_max.saturating_sub(1));
+            let mut t = String::with_capacity(cut + 3);
+            t.push_str(&first[..cut]);
             t.push('…');
             t
         } else {
@@ -114,18 +118,18 @@ fn layout_toast(
     if lines.len() > body_cap {
         lines.truncate(body_cap);
         if let Some(last) = lines.last_mut() {
-            let truncated: String = last
-                .chars()
-                .take(content_max.saturating_sub(1))
-                .collect::<String>();
-            *last = format!("{}…", truncated);
+            let cut = prefix_byte_len_for_width(last, content_max.saturating_sub(1));
+            let mut t = String::with_capacity(cut + 3);
+            t.push_str(&last[..cut]);
+            t.push('…');
+            *last = t;
         }
     }
 
-    let body_w = lines.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    let body_w = lines.iter().map(|s| str_cell_width(s)).max().unwrap_or(0);
     let hint_text = "[Esc] dismiss";
     let inner_w = if is_fatal {
-        body_w.max(hint_text.chars().count())
+        body_w.max(str_cell_width(hint_text))
     } else {
         body_w
     };

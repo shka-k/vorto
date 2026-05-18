@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding};
 
 use crate::app::App;
+use crate::text_width::{char_cell_width, prefix_byte_len_for_width, str_cell_width};
 
 const MAX_WIDTH: u16 = 80;
 const MAX_HEIGHT: u16 = 24;
@@ -45,9 +46,12 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     };
     // Same gutter math as the other cursor-anchored popups: 1-char
-    // severity sign + 5-char line number column.
+    // severity sign + 5-char line number column. Use the *visual* col
+    // of the prefix-start position so fullwidth chars on the same line
+    // don't pull the popup left.
     let gutter_width: u16 = 1 + 5;
-    let anchor_x = buf_area.x + gutter_width + state.prefix_start.col as u16;
+    let prefix_visual_col = app.char_col_visual(state.prefix_start.row, state.prefix_start.col);
+    let anchor_x = buf_area.x + gutter_width + prefix_visual_col as u16;
     let anchor_y = buf_area.y + rel_y;
 
     // Width: enough to fit the longest visible label and (if any) its
@@ -57,7 +61,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
     let label_w = state
         .filtered
         .iter()
-        .map(|i| state.items[*i].label.chars().count() as u16)
+        .map(|i| str_cell_width(&state.items[*i].label) as u16)
         .max()
         .unwrap_or(0);
     let detail_w = state
@@ -67,7 +71,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             state.items[*i]
                 .detail
                 .as_deref()
-                .map(|s| s.chars().count() as u16)
+                .map(|s| str_cell_width(s) as u16)
                 .unwrap_or(0)
         })
         .max()
@@ -136,19 +140,21 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             // Layout: "label    detail" — label on the left, detail
             // right-aligned with at least a 2-col gap when both fit;
             // detail elides with `…` only when the popup actually
-            // can't fit it (popup_w is sized to make that rare).
-            let label_chars = item.label.chars().count();
+            // can't fit it (popup_w is sized to make that rare). All
+            // widths are in *cells*, not chars, so CJK labels keep
+            // the layout aligned.
+            let label_cells = str_cell_width(&item.label);
             let detail = item.detail.as_deref().unwrap_or("");
-            let detail_chars = detail.chars().count();
+            let detail_cells = str_cell_width(detail);
 
-            let (label_room, detail_room) = if detail_chars == 0 || label_chars >= inner_w {
+            let (label_room, detail_room) = if detail_cells == 0 || label_cells >= inner_w {
                 (inner_w, 0)
             } else {
                 let max_detail = inner_w
-                    .saturating_sub(label_chars)
+                    .saturating_sub(label_cells)
                     .saturating_sub(2)
                     .min(MAX_DETAIL_WIDTH as usize);
-                (label_chars.min(inner_w), detail_chars.min(max_detail))
+                (label_cells.min(inner_w), detail_cells.min(max_detail))
             };
             let label = truncate(&item.label, label_room);
             let detail_text = truncate(detail, detail_room);
@@ -166,8 +172,8 @@ pub(super) fn draw_completion(f: &mut Frame, app: &App, buf_area: Rect) {
             };
             // Pad between label and detail so detail right-aligns.
             let gap = inner_w
-                .saturating_sub(label.chars().count())
-                .saturating_sub(detail_text.chars().count());
+                .saturating_sub(str_cell_width(&label))
+                .saturating_sub(str_cell_width(&detail_text));
             let mut spans = vec![Span::styled(label, row_style)];
             if !detail_text.is_empty() {
                 spans.push(Span::styled(" ".repeat(gap), row_style));
@@ -297,46 +303,46 @@ fn draw_detail_popup(
 /// `Result<HashMap<String,Vec<u32>>,Error>`).
 fn wrap_text(s: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
+    // Hard-break a token wider than `width` into cell-width chunks. A
+    // fullwidth char straddling the boundary stays on the next line
+    // rather than getting bisected.
+    let hard_break = |word: &str, out: &mut Vec<String>, current: &mut String| {
+        let mut chunk = String::new();
+        let mut chunk_w = 0usize;
+        for c in word.chars() {
+            let cw = char_cell_width(c);
+            if chunk_w + cw > width {
+                out.push(std::mem::take(&mut chunk));
+                chunk_w = 0;
+            }
+            chunk.push(c);
+            chunk_w += cw;
+        }
+        if !chunk.is_empty() {
+            *current = chunk;
+        }
+    };
     for raw_line in s.lines() {
         let mut current = String::new();
         for word in raw_line.split_whitespace() {
-            let word_len = word.chars().count();
+            let word_w = str_cell_width(word);
             if current.is_empty() {
-                if word_len <= width {
+                if word_w <= width {
                     current.push_str(word);
                 } else {
-                    // Hard-break the oversized token.
-                    let mut chunk = String::new();
-                    for c in word.chars() {
-                        chunk.push(c);
-                        if chunk.chars().count() == width {
-                            out.push(std::mem::take(&mut chunk));
-                        }
-                    }
-                    if !chunk.is_empty() {
-                        current = chunk;
-                    }
+                    hard_break(word, &mut out, &mut current);
                 }
             } else {
-                let needed = current.chars().count() + 1 + word_len;
+                let needed = str_cell_width(&current) + 1 + word_w;
                 if needed <= width {
                     current.push(' ');
                     current.push_str(word);
                 } else {
                     out.push(std::mem::take(&mut current));
-                    if word_len <= width {
+                    if word_w <= width {
                         current.push_str(word);
                     } else {
-                        let mut chunk = String::new();
-                        for c in word.chars() {
-                            chunk.push(c);
-                            if chunk.chars().count() == width {
-                                out.push(std::mem::take(&mut chunk));
-                            }
-                        }
-                        if !chunk.is_empty() {
-                            current = chunk;
-                        }
+                        hard_break(word, &mut out, &mut current);
                     }
                 }
             }
@@ -352,13 +358,15 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
     if max == 0 {
         return String::new();
     }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    if str_cell_width(s) <= max {
+        return s.to_string();
+    }
+    let cut = prefix_byte_len_for_width(s, max.saturating_sub(1));
+    let mut out = String::with_capacity(cut + 3);
+    out.push_str(&s[..cut]);
     out.push('…');
     out
 }

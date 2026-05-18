@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 use crate::app::App;
 use crate::lsp::ParameterLabel;
+use crate::text_width::str_cell_width;
 
 const MAX_WIDTH: u16 = 80;
 const MAX_HEIGHT: u16 = 8;
@@ -37,9 +38,11 @@ pub(super) fn draw_signature(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     };
     // Same gutter math as the completion popup: 1-char severity sign +
-    // 5-char line-number column.
+    // 5-char line-number column. Anchor on the cursor's *visual* col
+    // so fullwidth chars to the left push the popup the right number
+    // of cells.
     let gutter_width: u16 = 1 + 5;
-    let anchor_x = buf_area.x + gutter_width + app.buffer.cursor.col as u16;
+    let anchor_x = buf_area.x + gutter_width + app.cursor_visual_col() as u16;
     let anchor_y = buf_area.y + rel_y;
 
     let line = build_signature_line(sig, active_param);
@@ -50,7 +53,7 @@ pub(super) fn draw_signature(f: &mut Frame, app: &App, buf_area: Rect) {
     let text_len: u16 = line
         .spans
         .iter()
-        .map(|s| s.content.chars().count() as u16)
+        .map(|s| str_cell_width(&s.content) as u16)
         .sum();
     let popup_w = (text_len + 4).min(MAX_WIDTH).min(buf_area.width);
 
@@ -172,11 +175,11 @@ fn resolve_param_range(label: &ParameterLabel, signature_label: &str) -> Option<
 }
 
 /// Cheap upper bound on how many rows the styled `line` occupies when
-/// wrapped at `width` columns. Counts total chars (collapsing styled
-/// spans) and divides by width; overcounting by one is fine — it just
-/// reserves an extra empty row inside the popup.
+/// wrapped at `width` columns. Sums the total *cell* width across
+/// styled spans and divides by width; overcounting by one is fine —
+/// it just reserves an extra empty row inside the popup.
 fn wrapped_row_count(line: &Line, width: usize) -> usize {
-    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let total: usize = line.spans.iter().map(|s| str_cell_width(&s.content)).sum();
     if total == 0 {
         return 1;
     }

@@ -385,17 +385,20 @@ impl App {
     /// bar and any other consumer can show a position that matches
     /// where the cursor actually sits.
     pub fn cursor_visual_col(&self) -> usize {
+        self.char_col_visual(self.buffer.cursor.row, self.buffer.cursor.col)
+    }
+
+    /// Visual column for an arbitrary `(row, char_col)`. Resolves the
+    /// effective `tab_width` from config, then defers to
+    /// [`crate::text_width::visual_col_of`] — keep the math in one
+    /// place so cursor placement, status bar, popup anchoring, and the
+    /// renderer all agree.
+    pub fn char_col_visual(&self, row: usize, char_col: usize) -> usize {
         let tab_width = self.effective_editor().tab_width.max(1);
-        let line = &self.buffer.lines[self.buffer.cursor.row];
-        let mut v = 0usize;
-        for ch in line.chars().take(self.buffer.cursor.col) {
-            if ch == '\t' {
-                v += tab_width - (v % tab_width);
-            } else {
-                v += 1;
-            }
-        }
-        v
+        let Some(line) = self.buffer.lines.get(row) else {
+            return 0;
+        };
+        crate::text_width::visual_col_of(line, char_col, tab_width)
     }
 
     /// Visual y (within the buffer viewport) of `row`, given the

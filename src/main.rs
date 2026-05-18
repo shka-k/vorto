@@ -14,6 +14,7 @@ mod lsp;
 mod mode;
 mod prompt;
 mod syntax;
+mod text_width;
 mod ui;
 mod vcs;
 

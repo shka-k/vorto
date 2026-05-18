@@ -30,9 +30,13 @@ impl LineInput {
         &self.buf
     }
 
-    /// Char index of the insertion point.
-    pub fn cursor(&self) -> usize {
-        self.cursor
+    /// Cell-column the insertion point sits at — i.e. the total
+    /// terminal-cell width of the text before the cursor. Status-bar
+    /// placement needs this so the on-screen caret follows fullwidth
+    /// characters correctly (CJK glyphs take two cells, not one).
+    pub fn cursor_cell_col(&self) -> usize {
+        let cut_byte = self.byte_idx(self.cursor);
+        crate::text_width::str_cell_width(&self.buf[..cut_byte])
     }
 
     fn char_len(&self) -> usize {

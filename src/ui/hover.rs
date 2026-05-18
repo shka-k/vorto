@@ -13,6 +13,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::{App, Prompt};
+use crate::text_width::str_cell_width;
 
 /// Width budget for the popup. Wider than the code-action menu because
 /// hover content typically includes function signatures.
@@ -34,9 +35,11 @@ pub(super) fn draw_hover(f: &mut Frame, app: &App, buf_area: Rect) {
         return;
     };
     // Mirror buffer::place_cursor: 1-char severity sign + 5-char line
-    // number column. Same trick as code_action.rs.
+    // number column. Same trick as code_action.rs. Use the cursor's
+    // *visual* column so a fullwidth glyph before the cursor pushes
+    // the popup right by the cells it actually occupies.
     let gutter_width: u16 = 1 + 5;
-    let cursor_x = buf_area.x + gutter_width + app.buffer.cursor.col as u16;
+    let cursor_x = buf_area.x + gutter_width + app.cursor_visual_col() as u16;
     let cursor_y = buf_area.y + rel_y;
 
     // The longest line caps the inner width, but never beyond MAX_WIDTH.
@@ -44,7 +47,7 @@ pub(super) fn draw_hover(f: &mut Frame, app: &App, buf_area: Rect) {
     // terminals.
     let longest = content
         .lines()
-        .map(|l| l.chars().count() as u16)
+        .map(|l| str_cell_width(l) as u16)
         .max()
         .unwrap_or(0);
     let inner_w = longest.min(MAX_WIDTH);
@@ -56,11 +59,11 @@ pub(super) fn draw_hover(f: &mut Frame, app: &App, buf_area: Rect) {
 
     // Estimate wrapped line count so the popup height tracks the actual
     // rendered content. Rough — counts each source line as
-    // `ceil(len / inner_w)`. Empty lines count as 1.
+    // `ceil(cell_width / inner_w)`. Empty lines count as 1.
     let wrapped_lines: usize = content
         .lines()
         .map(|l| {
-            let n = l.chars().count();
+            let n = str_cell_width(l);
             if n == 0 {
                 1
             } else {
