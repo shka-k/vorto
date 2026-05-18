@@ -27,6 +27,18 @@ pub fn style_for(capture: &str) -> Style {
 fn lookup(name: &str) -> Option<Style> {
     let s = match name {
         "keyword" => Style::default().fg(Color::Magenta),
+        // nvim-treesitter-style aliases that some grammars (Kotlin,
+        // Java, etc.) emit as top-level capture names instead of
+        // `keyword.*`. Map them to the same magenta as `keyword` so
+        // `import`, `if/else/when`, `for/while/do`, `try/catch/throw`
+        // get colored consistently.
+        "include" => Style::default().fg(Color::Magenta),
+        "conditional" => Style::default().fg(Color::Magenta),
+        "repeat" => Style::default().fg(Color::Magenta),
+        "exception" => Style::default().fg(Color::Magenta),
+        "namespace" => Style::default().fg(Color::Yellow),
+        "parameter" => Style::default().fg(Color::White),
+        "constructor" => Style::default().fg(Color::Yellow),
         "string" => Style::default().fg(Color::Green),
         "string.escape" => Style::default().fg(Color::LightGreen),
         "character" => Style::default().fg(Color::Green),
