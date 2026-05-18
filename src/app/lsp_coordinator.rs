@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -347,17 +348,33 @@ impl LspCoordinator {
     /// that has it open. Sends `didClose`, removes the URI from
     /// `open_uris`, and drops its diagnostics. Called by `:bd` so the
     /// server can release its copy when the buffer is gone for good.
+    ///
+    /// Once the `didClose` is sent, any client that no longer holds
+    /// *any* URI open is shut down — `:bd`-ing the last Rust file
+    /// reaps rust-analyzer instead of leaving it resident for the rest
+    /// of the session. Sleeping/parked buffers still count as "open"
+    /// here (their URIs stay in `open_uris` across buffer switches by
+    /// design — see [`Self::detach_current`]), so a client only dies
+    /// when every visited buffer for it has been explicitly deleted.
     pub fn close_uri(&mut self, uri: &str) {
-        if let Some(client_keys) = self.open_uris.remove(uri) {
-            for key in &client_keys {
-                if let Some(client) = self.clients.get_mut(key) {
-                    let _ = client.did_close(uri);
-                }
+        let client_keys = self.open_uris.remove(uri).unwrap_or_default();
+        for key in &client_keys {
+            if let Some(client) = self.clients.get_mut(key) {
+                let _ = client.did_close(uri);
             }
         }
         self.diagnostics.remove(uri);
         if self.current_uri.as_deref() == Some(uri) {
             self.detach_current();
+        }
+        for key in &client_keys {
+            let still_holding = self
+                .open_uris
+                .values()
+                .any(|keys| keys.iter().any(|k| k == key));
+            if !still_holding {
+                self.drop_client(key);
+            }
         }
     }
 
@@ -862,6 +879,14 @@ impl LspCoordinator {
                 }
             }
             LspEvent::Error { client, message } => {
+                // Reader-thread EOF after we proactively closed the
+                // last URI for this client (see [`Self::close_uri`])
+                // is expected, not an error. The client is already
+                // gone from `self.clients` at that point — skip both
+                // the redundant drop and the toast.
+                if !self.clients.contains_key(&client) {
+                    return LspEventOutcome::Nothing;
+                }
                 self.drop_client(&client);
                 LspEventOutcome::ErrorMessage(format!("lsp: {}", message))
             }
@@ -910,13 +935,14 @@ impl LspCoordinator {
         LspEventOutcome::Nothing
     }
 
-    /// Drop a client whose reader thread is dead. Pending requests
+    /// Drop a client whose reader thread is dead, or which no URI
+    /// references anymore (see [`Self::close_uri`]). Pending requests
     /// against it count as already-responded (empty); groups that
     /// finalise as a result of this are surfaced via the event channel
     /// so the caller sees the merged outcome without a follow-up
     /// response event.
     fn drop_client(&mut self, client_key: &str) {
-        self.clients.remove(client_key);
+        let removed = self.clients.remove(client_key);
         self.current_clients.retain(|k| k != client_key);
         // Decrement remaining counts for every pending request against
         // this client. Groups that hit zero are dropped on the floor —
@@ -954,6 +980,13 @@ impl LspCoordinator {
             keys.retain(|k| k != client_key);
         }
         self.open_uris.retain(|_, keys| !keys.is_empty());
+        // Dispose off-thread: `LspClient::Drop` does the
+        // `shutdown`/`exit` handshake and reaps the child, which can
+        // block ~800ms for servers like rust-analyzer. Running it
+        // inline would stall `:bd` of the last buffer for a language.
+        if let Some(client) = removed {
+            thread::spawn(move || drop(client));
+        }
     }
 
     pub fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> Result<WorkspaceEditResult> {
