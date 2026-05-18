@@ -72,9 +72,9 @@ pub fn builtin_lsp() -> HashMap<String, LspConfig> {
     add(&mut m, "gopls", "gopls", &[], None, &["go.mod", "go.work"]);
     add(
         &mut m,
-        "kotlin-language-server",
-        "kotlin-language-server",
-        &[],
+        "kotlin-lsp",
+        "kotlin-lsp",
+        &["--stdio"],
         None,
         &[
             "settings.gradle.kts",
@@ -284,7 +284,7 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         LanguageConfig {
             extensions: Some(vec!["kt".into(), "kts".into()]),
             comment_token: Some("//".into()),
-            lsp: lsp(&["kotlin-language-server"]),
+            lsp: lsp(&["kotlin-lsp"]),
             ..Default::default()
         },
     );
