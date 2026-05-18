@@ -190,6 +190,11 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         LanguageConfig {
             extensions: Some(vec!["rs".into()]),
             comment_token: Some("//".into()),
+            editor: EditorToml {
+                indent_width: Some(4),
+                tab_width: Some(4),
+                ..Default::default()
+            },
             lsp: lsp(&["rust-analyzer"]),
             formatter: Some(FormatterToml {
                 command: Some("rustfmt".into()),
@@ -203,6 +208,11 @@ pub fn builtin_languages() -> HashMap<String, LanguageConfig> {
         LanguageConfig {
             extensions: Some(vec!["py".into()]),
             comment_token: Some("#".into()),
+            editor: EditorToml {
+                indent_width: Some(4),
+                tab_width: Some(4),
+                ..Default::default()
+            },
             lsp: lsp(&["pyright"]),
             ..Default::default()
         },

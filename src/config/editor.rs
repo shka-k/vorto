@@ -57,9 +57,12 @@ pub struct EditorToml {
     /// distinct color. Falls back to `true`.
     pub indent_guides: Option<bool>,
     /// Number of shallowest indent levels to suppress when drawing
-    /// guides. `1` (the default) hides the leftmost guide on each row
-    /// so top-level code reads cleanly; `0` shows every level; `2`
-    /// hides the two shallowest levels, etc.
+    /// guides. `0` (the default) shows every level; `1` hides the
+    /// leftmost guide globally; `2` hides the two shallowest, etc.
+    /// Applied per visible window — when the deepest visible
+    /// nesting is shallower than `skip_levels` the file shows no
+    /// guides at all, so prefer `0` for buffers that may stay
+    /// shallow most of the time.
     pub indent_guides_skip_levels: Option<usize>,
     /// Visual style for indent guides. `"line"` (the default) draws
     /// `│` everywhere; `"p10k"` decorates the active scope with
@@ -101,10 +104,10 @@ impl Default for EditorConfig {
             show_whitespace: false,
             format_on_save: true,
             indent_guides: true,
-            indent_guides_skip_levels: 1,
+            indent_guides_skip_levels: 0,
             indent_guide_style: IndentGuideStyle::Line,
             indent_animation: false,
-            indent_animation_ms: 150,
+            indent_animation_ms: 100,
         }
     }
 }
@@ -151,7 +154,7 @@ mod tests {
             show_whitespace: false,
             format_on_save: true,
             indent_guides: true,
-            indent_guides_skip_levels: 1,
+            indent_guides_skip_levels: 0,
             indent_guide_style: IndentGuideStyle::Line,
             indent_animation: false,
             indent_animation_ms: 150,
