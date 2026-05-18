@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::buffer_ref::BufferRef;
 use crate::editor::Buffer;
 
+use super::pane::PaneLayout;
 use super::{App, Toast, root_cause};
 
 impl App {
@@ -142,6 +143,53 @@ impl App {
                 Ok(())
             }
         }
+    }
+
+    /// `:bca` — force-discard every buffer (active, parked, sleeping)
+    /// and land on a fresh scratch. Unsaved edits are dropped without
+    /// confirmation; LSP clients are told to forget every file URI we
+    /// had open. The pane layout is collapsed back to a single leaf
+    /// since the parked buffers backing the inactive panes are gone.
+    pub fn buffer_delete_all(&mut self) -> Result<()> {
+        // Tell every LSP client to release the URIs we had open —
+        // covers the active buffer plus all parked / sleeping file
+        // buffers. Scratch buffers don't have URIs.
+        if let Some(path) = self.buffer.path.clone() {
+            let uri = crate::lsp::path_to_uri(&path);
+            self.lsp.close_uri(&uri);
+        } else {
+            self.lsp.detach_current();
+        }
+        let file_refs: Vec<std::path::PathBuf> = self
+            .parked_buffers
+            .keys()
+            .chain(self.sleeping.keys())
+            .filter_map(|r| match r {
+                BufferRef::File(p) => Some(p.clone()),
+                BufferRef::Scratch(_) => None,
+            })
+            .collect();
+        for path in &file_refs {
+            let uri = crate::lsp::path_to_uri(path);
+            self.lsp.close_uri(&uri);
+        }
+
+        self.parked_buffers.clear();
+        self.pane_refs.clear();
+        self.sleeping.clear();
+        self.opened_paths.clear();
+
+        // Collapse to a single pane displaying the new scratch.
+        self.layout = PaneLayout::Leaf(self.active_pane);
+
+        let id = self.mint_scratch_id();
+        self.install_buffer(Buffer::new());
+        self.current_scratch_id = Some(id);
+        self.open_gen = self.open_gen.wrapping_add(1);
+        self.lsp.set_last_synced_version(self.buffer.version);
+        self.record_opened(BufferRef::Scratch(id));
+        self.push_toast(Toast::info("deleted all buffers"));
+        Ok(())
     }
 
     /// Allocate a fresh scratch id and bump the counter. Never reuses

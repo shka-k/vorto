@@ -120,6 +120,7 @@ pub(super) fn handle_direct(app: &mut App, kind: DirectKind, count: u32, ctx: Ct
         D::BufferPrev => cmds.push(Cmd::BufferCycle { forward: false }),
         D::BufferDelete => cmds.push(Cmd::BufferDelete { force: false }),
         D::BufferDeleteForce => cmds.push(Cmd::BufferDelete { force: true }),
+        D::BufferDeleteAll => cmds.push(Cmd::BufferDeleteAll),
         D::BufferList => {
             cmds.push(Cmd::OpenPrompt(PromptKind::Fuzzy(
                 crate::finder::FuzzyKind::Buffers,

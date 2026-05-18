@@ -63,6 +63,7 @@ impl App {
             Cmd::GotoDiagnostic { forward, count } => self.run_goto_diagnostic(forward, count),
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,
+            Cmd::BufferDeleteAll => self.buffer_delete_all()?,
             Cmd::NewScratchBuffer => {
                 // Always mint a fresh id: `:new` is documented as "give
                 // me a new buffer", which would feel broken if it kept

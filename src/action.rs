@@ -220,8 +220,11 @@ pub enum DirectKind {
     BufferPrev,
     /// `:bd` / `:bdelete` — drop the current buffer (refuse if dirty).
     BufferDelete,
-    /// `:bd!` — force-drop the current buffer (discards unsaved edits).
+    /// `:bd!` / `:bc` — force-drop the current buffer (discards unsaved edits).
     BufferDeleteForce,
+    /// `:bca` — force-drop every buffer and land on a fresh scratch.
+    /// Unsaved edits are discarded.
+    BufferDeleteAll,
     /// `:ls` / `:buffers` — open the buffer picker.
     BufferList,
     /// `:new` — switch to the unnamed scratch buffer. If a sleeping

@@ -117,6 +117,8 @@ pub enum Cmd {
     BufferDelete {
         force: bool,
     },
+    /// `:bca` — discard every buffer (force) and install a fresh scratch.
+    BufferDeleteAll,
     /// `:new` — switch to (or restore) the unnamed scratch buffer.
     NewScratchBuffer,
     /// Tear-down — emitted by `:q` (after the dirty-buffer check has

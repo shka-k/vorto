@@ -97,16 +97,23 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
     },
     CommandBind {
         name: "bd",
-        aliases: &["bdelete", "bc"],
+        aliases: &["bdelete"],
         description: "delete buffer",
         kind: DirectKind::BufferDelete,
         takes_path: false,
     },
     CommandBind {
         name: "bd!",
-        aliases: &["bdelete!", "bc!"],
+        aliases: &["bdelete!", "bc", "bc!"],
         description: "force delete buffer",
         kind: DirectKind::BufferDeleteForce,
+        takes_path: false,
+    },
+    CommandBind {
+        name: "bca",
+        aliases: &["bca!"],
+        description: "force delete all buffers",
+        kind: DirectKind::BufferDeleteAll,
         takes_path: false,
     },
     CommandBind {
