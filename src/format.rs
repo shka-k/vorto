@@ -23,6 +23,79 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::FormatterConfig;
 
+/// Walk up from `cwd` looking for a `Cargo.toml` and return the
+/// declared Rust edition. rustfmt reading from stdin can't infer the
+/// edition from the surrounding crate the way `cargo fmt` can, so it
+/// defaults to 2015 and rejects modern syntax (let chains, `let-else`
+/// in older positions, …). We look this up per-call so a single editor
+/// process formatting files across crates of different editions does
+/// the right thing in each.
+///
+/// Handles inherited editions: a package that says
+/// `edition.workspace = true` causes us to continue walking up until
+/// we hit the workspace's `[workspace.package].edition`.
+fn rust_edition_from_cargo(cwd: &Path) -> Option<String> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        let cargo = d.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&cargo)
+            && let Ok(value) = text.parse::<toml::Value>()
+        {
+            if let Some(ed) = value
+                .get("package")
+                .and_then(|p| p.get("edition"))
+                .and_then(|e| e.as_str())
+            {
+                return Some(ed.to_string());
+            }
+            if let Some(ed) = value
+                .get("workspace")
+                .and_then(|w| w.get("package"))
+                .and_then(|p| p.get("edition"))
+                .and_then(|e| e.as_str())
+            {
+                return Some(ed.to_string());
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// True if any ancestor of `cwd` contains a `rustfmt.toml` or
+/// `.rustfmt.toml`. When present we leave args alone — the user has
+/// declared the edition explicitly and a CLI flag would override it.
+fn has_rustfmt_config(cwd: &Path) -> bool {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if d.join("rustfmt.toml").is_file() || d.join(".rustfmt.toml").is_file() {
+            return true;
+        }
+        dir = d.parent();
+    }
+    false
+}
+
+/// rustfmt-specific arg massaging: inject `--edition=<edition>` from
+/// the nearest Cargo.toml when the user hasn't already specified one
+/// (either via formatter args or a project `rustfmt.toml`). A no-op
+/// for any other formatter.
+fn effective_args(formatter: &FormatterConfig, cwd: &Path) -> Vec<String> {
+    let mut args = formatter.args.clone();
+    let is_rustfmt = Path::new(&formatter.command).file_stem().and_then(|s| s.to_str())
+        == Some("rustfmt");
+    if is_rustfmt
+        && !args
+            .iter()
+            .any(|a| a == "--edition" || a.starts_with("--edition="))
+        && !has_rustfmt_config(cwd)
+        && let Some(edition) = rust_edition_from_cargo(cwd)
+    {
+        args.push(format!("--edition={edition}"));
+    }
+    args
+}
+
 /// Upper bound on how long we'll wait for an external formatter before
 /// reporting failure and saving the un-formatted buffer instead. Most
 /// formatters return in well under a second; a hung process shouldn't
@@ -42,8 +115,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// the user wants to see when their code has a syntax error and
 /// rustfmt refuses to touch it.
 pub fn run_external(formatter: &FormatterConfig, text: &str, cwd: &Path) -> Result<String> {
+    let args = effective_args(formatter, cwd);
     let mut child = Command::new(&formatter.command)
-        .args(&formatter.args)
+        .args(&args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -149,5 +223,113 @@ mod tests {
             args: vec![],
         };
         assert!(run_external(&f, "x", Path::new(".")).is_err());
+    }
+
+    fn fresh_tmp(label: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "vorto-format-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn rust_edition_picked_up_from_package() {
+        let root = fresh_tmp("pkg");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        assert_eq!(rust_edition_from_cargo(&root), Some("2024".into()));
+    }
+
+    #[test]
+    fn rust_edition_inherited_from_workspace() {
+        // Package says `edition.workspace = true`, so we walk up to
+        // the workspace root to resolve it.
+        let root = fresh_tmp("ws");
+        let crate_dir = root.join("crates/inner");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/inner\"]\n\n[workspace.package]\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"inner\"\nedition.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(rust_edition_from_cargo(&crate_dir), Some("2021".into()));
+    }
+
+    #[test]
+    fn effective_args_injects_edition_for_rustfmt() {
+        let root = fresh_tmp("inj");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let f = FormatterConfig {
+            command: "rustfmt".into(),
+            args: vec![],
+        };
+        assert_eq!(effective_args(&f, &root), vec!["--edition=2024".to_string()]);
+    }
+
+    #[test]
+    fn effective_args_respects_user_edition() {
+        let root = fresh_tmp("usr");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let f = FormatterConfig {
+            command: "rustfmt".into(),
+            args: vec!["--edition=2021".into()],
+        };
+        // User-supplied --edition wins; we don't append our own.
+        assert_eq!(effective_args(&f, &root), vec!["--edition=2021".to_string()]);
+    }
+
+    #[test]
+    fn effective_args_backs_off_when_rustfmt_toml_present() {
+        let root = fresh_tmp("cfg");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("rustfmt.toml"), "edition = \"2021\"\n").unwrap();
+        let f = FormatterConfig {
+            command: "rustfmt".into(),
+            args: vec![],
+        };
+        // rustfmt.toml is the source of truth — don't override it.
+        assert!(effective_args(&f, &root).is_empty());
+    }
+
+    #[test]
+    fn effective_args_noop_for_non_rustfmt() {
+        let root = fresh_tmp("other");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let f = FormatterConfig {
+            command: "gofmt".into(),
+            args: vec![],
+        };
+        assert!(effective_args(&f, &root).is_empty());
     }
 }
