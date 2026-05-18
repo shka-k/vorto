@@ -113,37 +113,83 @@ fn install(args: &[String], grammar_dir: &Path, query_dir: &Path) -> Result<()> 
         }
     };
 
-    let mut failures = Vec::new();
+    // Skip already-installed up front so the parallel worker pool
+    // only sees real work. Sequential and noted inline so users see
+    // the skip reason next to the name.
+    let mut pending = Vec::new();
     for r in &recipes {
         if build::is_fully_installed(r.name, grammar_dir, query_dir) {
             eprintln!("==> {} already installed, skipping", r.name);
-            continue;
-        }
-        eprintln!("==> installing {} ({})", r.name, r.repo);
-        match build::install(r, grammar_dir, query_dir) {
-            Ok(report) => {
-                eprintln!("    lib: {}", report.library.display());
-                if report.queries.is_empty() {
-                    eprintln!("    queries: none shipped in upstream `queries/`");
-                } else {
-                    let names: Vec<String> = report
-                        .queries
-                        .iter()
-                        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                        .collect();
-                    eprintln!(
-                        "    queries: {} ({} files)",
-                        names.join(", "),
-                        report.queries.len()
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("    failed: {:#}", e);
-                failures.push(r.name);
-            }
+        } else {
+            pending.push(r.clone());
         }
     }
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    // Worker pool: cap at CPU count and the job count. The per-job
+    // work is mostly cc-bound (the parser is a single ~600k-line
+    // translation unit), so more workers than physical cores just
+    // thrashes the scheduler. Stderr is locked per-recipe so each
+    // grammar's "==> installing"/"lib"/"queries" lines stay grouped.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(pending.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let stderr_lock = std::sync::Mutex::new(());
+    let failures = std::sync::Mutex::new(Vec::<&str>::new());
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= pending.len() {
+                        break;
+                    }
+                    let r = &pending[i];
+                    let result = build::install(r, grammar_dir, query_dir);
+                    let mut buf = String::new();
+                    use std::fmt::Write;
+                    writeln!(buf, "==> installing {} ({})", r.name, r.repo).ok();
+                    match result {
+                        Ok(report) => {
+                            writeln!(buf, "    lib: {}", report.library.display()).ok();
+                            if report.queries.is_empty() {
+                                writeln!(buf, "    queries: none shipped in upstream `queries/`")
+                                    .ok();
+                            } else {
+                                let names: Vec<String> = report
+                                    .queries
+                                    .iter()
+                                    .filter_map(|p| {
+                                        p.file_name().map(|n| n.to_string_lossy().into_owned())
+                                    })
+                                    .collect();
+                                writeln!(
+                                    buf,
+                                    "    queries: {} ({} files)",
+                                    names.join(", "),
+                                    report.queries.len()
+                                )
+                                .ok();
+                            }
+                        }
+                        Err(e) => {
+                            writeln!(buf, "    failed: {:#}", e).ok();
+                            failures.lock().unwrap().push(r.name);
+                        }
+                    }
+                    let _g = stderr_lock.lock().unwrap();
+                    eprint!("{}", buf);
+                }
+            });
+        }
+    });
+
+    let failures = failures.into_inner().unwrap();
     if !failures.is_empty() {
         bail!("failed to install: {}", failures.join(", "));
     }

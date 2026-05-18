@@ -65,7 +65,6 @@ pub fn install(
     grammar_dir: &Path,
     query_dir: &Path,
 ) -> Result<InstallReport> {
-    ensure_tool("git", "git is required to fetch grammar sources")?;
     ensure_tool(
         "tree-sitter",
         "tree-sitter CLI is required to build grammars (try `cargo install tree-sitter-cli` or `npm i -g tree-sitter-cli`)",
@@ -75,11 +74,29 @@ pub fn install(
         .with_context(|| format!("creating grammar dir {}", grammar_dir.display()))?;
 
     let clone_root = tmp_clone_dir(recipe.name);
-    // Wipe any stale leftover from a prior failed run — `git clone` will
-    // refuse to write into a non-empty directory.
+    // Wipe any stale leftover from a prior failed run — both the
+    // tarball extractor and `git clone` refuse to write into a
+    // non-empty directory.
     let _ = std::fs::remove_dir_all(&clone_root);
 
-    clone(recipe, &clone_root)?;
+    // Prefer a release tarball when the upstream publishes one (and
+    // it carries `src/parser.c`) — that saves `tree-sitter generate`,
+    // which is the slow step for grammars whose `grammar.js` does
+    // expensive expansion (SQL takes ~15s). Fall back to `git clone`
+    // when no tarball is available, the URL isn't GitHub-hosted, or
+    // anything goes wrong fetching it.
+    let used_tarball = match try_release_tarball(recipe, &clone_root) {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&clone_root);
+            false
+        }
+    };
+    if !used_tarball {
+        ensure_tool("git", "git is required to fetch grammar sources")?;
+        clone(recipe, &clone_root)?;
+    }
 
     let build_dir = match recipe.subpath {
         Some(sub) => clone_root.join(sub),
@@ -217,9 +234,197 @@ fn tmp_clone_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("vorto-grammar-{}-{}", name, std::process::id()))
 }
 
+/// Try to fetch a release tarball that ships pre-generated parser
+/// sources (and unpack it into `dest`). Returns:
+///
+/// - `Ok(true)` — tarball fetched and extracted, `dest` populated.
+/// - `Ok(false)` — no release / not a GitHub URL / no usable asset.
+///   Caller falls back to `git clone`.
+/// - `Err(_)` — the network call or extraction failed mid-flight.
+///   Caller wipes `dest` and falls back to `git clone`.
+///
+/// "Usable asset" = a `.tar.gz` whose contents contain `src/parser.c`.
+/// We don't check that ahead of time — we just try the most likely
+/// asset and rely on the subsequent build to fail (and fall through
+/// the `Err` path) when the contents aren't what we expected.
+fn try_release_tarball(recipe: &GrammarRecipe, dest: &Path) -> Result<bool> {
+    let Some((owner, repo)) = parse_github_url(recipe.repo) else {
+        return Ok(false);
+    };
+    if which("curl").is_none() || which("tar").is_none() {
+        return Ok(false);
+    }
+    let api_url = match recipe.rev {
+        Some(rev) => format!(
+            "https://api.github.com/repos/{}/{}/releases/tags/{}",
+            owner, repo, rev
+        ),
+        None => format!(
+            "https://api.github.com/repos/{}/{}/releases/latest",
+            owner, repo
+        ),
+    };
+    let json = match curl_text(&api_url) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    let Some(assets) = v.get("assets").and_then(|a| a.as_array()) else {
+        return Ok(false);
+    };
+    let Some(asset_url) = pick_source_tarball(assets, &repo) else {
+        return Ok(false);
+    };
+
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("creating tarball dest {}", dest.display()))?;
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "curl -fsSL '{}' | tar -xz --strip-components=0 -C '{}'",
+            asset_url.replace('\'', "'\\''"),
+            dest.display(),
+        ))
+        .status()
+        .context("spawning curl|tar pipeline")?;
+    if !status.success() {
+        bail!("downloading or extracting tarball {} failed", asset_url);
+    }
+
+    // Tarballs sometimes ship a single top-level directory
+    // (`tree-sitter-sql-v0.3.11/...`). Flatten when we detect that
+    // shape so callers can treat `dest` as the build root.
+    flatten_single_subdir(dest)?;
+    Ok(true)
+}
+
+/// `(owner, repo)` for a `github.com/...` URL, else `None`. `.git`
+/// suffix and trailing slashes are stripped.
+fn parse_github_url(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("git@github.com:"))?;
+    let trimmed = rest.trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = trimmed.splitn(2, '/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+/// GET `url` as text. Errors when curl exits non-zero (404, network
+/// down, etc.) — caller treats that as "no release to use."
+fn curl_text(url: &str) -> Result<String> {
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-fsSL",
+        "-H",
+        "User-Agent: vorto-grammar-installer",
+        "-H",
+        "Accept: application/vnd.github+json",
+    ]);
+    if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
+        && !token.is_empty()
+    {
+        cmd.args(["-H", &format!("Authorization: Bearer {}", token)]);
+    }
+    cmd.arg(url);
+    let output = cmd.output().context("spawning curl")?;
+    if !output.status.success() {
+        bail!("curl {} exited with {}", url, output.status);
+    }
+    String::from_utf8(output.stdout).context("curl output not utf-8")
+}
+
+/// Pick the asset most likely to be a source tarball with the
+/// generated parser sources. Heuristic: prefer `.tar.gz` whose name
+/// contains the repo name; fall back to the first `.tar.gz` in the
+/// list. Returns `None` when no asset looks like a tarball.
+///
+/// We deliberately avoid platform-specific binaries (`.dylib`, `.so`)
+/// — almost no grammar repo ships those, and trying to dlopen
+/// `.node` files (the common Node-Native-Module shape) drags in libnode
+/// dependencies that aren't safe to assume here.
+fn pick_source_tarball(assets: &[serde_json::Value], repo: &str) -> Option<String> {
+    let mut tarballs: Vec<(&str, &str)> = assets
+        .iter()
+        .filter_map(|a| {
+            let name = a.get("name")?.as_str()?;
+            let url = a.get("browser_download_url")?.as_str()?;
+            if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+                Some((name, url))
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Repo-name prefix wins (`tree-sitter-sql-v0.3.11.tar.gz`),
+    // anything else acts as a secondary candidate.
+    tarballs.sort_by_key(|(name, _)| if name.starts_with(repo) { 0 } else { 1 });
+    tarballs.first().map(|(_, url)| url.to_string())
+}
+
+/// If `dir` contains exactly one entry and that entry is a directory,
+/// move its contents up one level so `dir` itself becomes the build
+/// root. No-op otherwise. Some release tarballs nest everything under
+/// `<repo>-<tag>/`, others extract flat — this normalizes the shape.
+fn flatten_single_subdir(dir: &Path) -> Result<()> {
+    let entries: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("listing {}", dir.display()))?;
+    if entries.len() != 1 {
+        return Ok(());
+    }
+    let only = &entries[0];
+    if !only.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        return Ok(());
+    }
+    let inner = only.path();
+    for child in std::fs::read_dir(&inner)? {
+        let child = child?;
+        let from = child.path();
+        let to = dir.join(child.file_name());
+        std::fs::rename(&from, &to)
+            .with_context(|| format!("moving {} -> {}", from.display(), to.display()))?;
+    }
+    std::fs::remove_dir(&inner).ok();
+    Ok(())
+}
+
+/// Locate `name` on `PATH`. Returns the resolved path on hit. Used
+/// for soft tool probes where missing isn't fatal — for the hard
+/// "tool required" check, see [`ensure_tool`].
+fn which(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let suffixes: &[&str] = if cfg!(windows) {
+        &[".exe", ".cmd", ".bat", ""]
+    } else {
+        &[""]
+    };
+    for dir in std::env::split_paths(&path) {
+        for suf in suffixes {
+            let candidate = dir.join(format!("{}{}", name, suf));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 fn clone(recipe: &GrammarRecipe, dest: &Path) -> Result<()> {
     let mut cmd = Command::new("git");
-    cmd.arg("clone");
+    // `--quiet` suppresses the `Cloning into '…'` progress line; with
+    // parallel `--all` running 8 clones at once those lines just
+    // interleave with our own report buffer.
+    cmd.args(["clone", "--quiet"]);
     // Shallow clone for the default-branch case; if a rev is pinned we
     // need full history to check it out by SHA.
     if recipe.rev.is_none() {
@@ -248,10 +453,27 @@ fn clone(recipe: &GrammarRecipe, dest: &Path) -> Result<()> {
 }
 
 fn build(build_dir: &Path, out_path: &Path) -> Result<()> {
-    // `tree-sitter build -o <path>` runs `generate` if needed and then
-    // compiles the parser + scanner into a shared library at the given
-    // path. It looks at `tree-sitter.json` / `grammar.js` in the cwd, so
-    // we run it from `build_dir`.
+    // Generate the C parser source only when it's missing. Most
+    // upstreams commit `src/parser.c` + `src/grammar.json` and we
+    // trust those — regenerating from `grammar.js` is the source of
+    // truth in principle but costs seconds-to-tens-of-seconds for
+    // large grammars (e.g. SQL). The handful of repos that skip the
+    // commit (DerekStride/tree-sitter-sql) get caught by this fallback.
+    if !build_dir.join("src/parser.c").exists() && build_dir.join("grammar.js").exists() {
+        let status = Command::new("tree-sitter")
+            .arg("generate")
+            .current_dir(build_dir)
+            .status()
+            .context("spawning `tree-sitter generate`")?;
+        if !status.success() {
+            bail!("tree-sitter generate failed in {}", build_dir.display());
+        }
+    }
+
+    // `tree-sitter build -o <path>` compiles the parser + scanner into
+    // a shared library at the given path. It looks at
+    // `tree-sitter.json` / `grammar.js` in the cwd, so we run it from
+    // `build_dir`.
     let status = Command::new("tree-sitter")
         .arg("build")
         .arg("-o")
