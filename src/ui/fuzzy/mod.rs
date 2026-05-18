@@ -59,6 +59,13 @@ pub(super) fn draw_fuzzy(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     f.render_widget(Paragraph::new(sep_v), panes[1]);
 
+    // Belt-and-suspenders: the popup-level `Clear` above should already
+    // have wiped panes[2], but in practice we still see syntax-
+    // highlighted fragments from prior preview renders leak through
+    // when navigating between files of different lengths. Clearing the
+    // preview rect explicitly here defends against whichever cell ends
+    // up not being touched by the new render.
+    f.render_widget(Clear, panes[2]);
     preview::draw_fuzzy_preview(f, app, finder, panes[2]);
 }
 

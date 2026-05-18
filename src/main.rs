@@ -122,6 +122,15 @@ fn main() -> Result<()> {
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // EnterAlternateScreen *should* clear the alt screen, but not every
+    // terminal honors that. Without an explicit clear, stale cells from
+    // a previous vorto session (or any program that ran in the same alt
+    // buffer) can leak through anywhere our render doesn't write — and
+    // ratatui's diff won't fix them, because the previous-buffer it
+    // diffs against is its own empty buffer, not the terminal's actual
+    // contents. Force a full clear so the next draw paints onto a known
+    // blank screen.
+    terminal.clear()?;
 
     let cfg_path = config::default_path();
     let cfg = match config::Config::load(cfg_path.as_deref()) {
@@ -191,9 +200,25 @@ fn run(
     event_rx: &mpsc::Receiver<event::AppEvent>,
 ) -> Result<()> {
     let mut last_shape: Option<CursorShape> = None;
+    let mut prev_prompt_open = false;
     while !app.should_quit {
         app.buffer.refresh_highlights();
         app.tick_toasts();
+        // When any modal prompt (fuzzy picker, hover popup, completion,
+        // …) just closed, force a full repaint of the next frame. The
+        // popup widgets only `Clear` their own rect, so cells the popup
+        // wrote that *aren't* covered by the post-close render would
+        // otherwise rely on ratatui's per-cell diff to clean them up.
+        // That has been observed to leak syntax-highlighted fragments
+        // when a fuzzy preview disappears, presumably because of a
+        // diff-vs-terminal-state mismatch the previous-buffer doesn't
+        // catch. `terminal.clear()` resets the back buffer so the next
+        // diff emits every cell, masking the issue.
+        let now_open = app.prompt.is_open();
+        if prev_prompt_open && !now_open {
+            terminal.clear()?;
+        }
+        prev_prompt_open = now_open;
         terminal.draw(|f| ui::draw(f, app))?;
         let shape = app.config.cursor_shapes.for_mode(app.mode);
         if last_shape != Some(shape) {

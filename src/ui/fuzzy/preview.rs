@@ -256,6 +256,20 @@ fn render_preview_lines(
     f.render_widget(Paragraph::new(out), area);
 }
 
+/// Cells emitted for one literal `\t` in the source. Tabs in preview
+/// content would otherwise be sent to the terminal as a literal `\t` byte
+/// — `unicode-width 0.1.14`'s `UnicodeWidthStr::width` reports tab as
+/// width 1 (see `width_in_str`'s catch-all `_ => (1, …)` branch for
+/// `c <= '\u{A0}'`), so ratatui happily stores the tab in a cell and
+/// queues a `Print("\t")` to the backend. The terminal then interprets
+/// the tab as "move to next tab stop", which slides every subsequent
+/// glyph on that row past the cell it was meant to occupy. The cells in
+/// between are never written, so any leftover content there shines
+/// through. Expanding tabs into spaces up front keeps every grapheme at
+/// width 1 and the per-cell diff in sync with what the terminal will
+/// actually display.
+const PREVIEW_TAB_WIDTH: usize = 4;
+
 fn render_preview_row(
     row: usize,
     line: &str,
@@ -326,24 +340,95 @@ fn render_preview_row(
 
     let mut buf = String::new();
     let mut buf_style = resolve(0);
+    let mut written_cells = 0usize;
     for (col, &c) in chars.iter().enumerate() {
         let s = resolve(col);
         if s != buf_style && !buf.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut buf), buf_style));
             buf_style = s;
         }
-        buf.push(c);
+        // Tabs become PREVIEW_TAB_WIDTH spaces — see the const docs for
+        // why a literal `\t` in the span content is a footgun here.
+        if c == '\t' {
+            for _ in 0..PREVIEW_TAB_WIDTH {
+                buf.push(' ');
+            }
+            written_cells += PREVIEW_TAB_WIDTH;
+        } else {
+            buf.push(c);
+            if !c.is_control() {
+                written_cells += 1;
+            }
+        }
     }
     if !buf.is_empty() {
         spans.push(Span::styled(buf, buf_style));
     }
-    // Pad target row to the right edge so the highlight band reaches the
-    // separator even when the line is shorter than the pane.
-    if is_target && chars.len() < text_width {
-        spans.push(Span::styled(
-            " ".repeat(text_width - chars.len()),
-            Style::default().bg(PREVIEW_HIT_BG),
-        ));
+    // Pad to the right edge. For the target row we use the highlight
+    // background so the band reaches the separator; everything else
+    // pads with plain spaces. The padding is what defends against ghost
+    // cells leaking through between successive preview renders — without
+    // it, cells past the line content stay at the buffer's default
+    // state, and ratatui's per-cell diff has been observed to leave
+    // stale syntax-highlighted fragments visible there when the picker
+    // navigates between files with different line lengths.
+    if written_cells < text_width {
+        let pad = text_width - written_cells;
+        let style = if is_target {
+            Style::default().bg(PREVIEW_HIT_BG)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(" ".repeat(pad), style));
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    /// Render a single preview row for `\t"context"` into a TestBackend
+    /// and dump every cell's symbol — used to verify there's no
+    /// duplication of line content in the rendered output.
+    #[test]
+    fn preview_row_no_duplication() {
+        // Tab + "context" (9 chars). Line is rendered into a 30-col area.
+        let line = "\t\"context\"".to_string();
+        // Pretend tree-sitter gave us one string capture covering chars
+        // 1..10 (the `"context"` portion, excluding the leading tab).
+        let captures = vec![Capture {
+            start_row: 0,
+            start_col: 1,
+            end_row: 0,
+            end_col: 10,
+            name: "string".to_string(),
+        }];
+        let rendered = render_preview_row(0, &line, &captures, false, 3, 26);
+
+        let backend = TestBackend::new(30, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    ratatui::widgets::Paragraph::new(rendered),
+                    Rect::new(0, 0, 30, 1),
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        for x in 0..30 {
+            let cell = &buf[(x, 0)];
+            eprintln!("cell[{:2}]: symbol={:?} fg={:?} bg={:?}", x, cell.symbol(), cell.fg, cell.bg);
+        }
+        let row: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
+        eprintln!("rendered row: {:?}", row);
+        // Should contain "context" exactly once.
+        let count = row.matches("context").count();
+        assert_eq!(count, 1, "rendered row: {:?}", row);
+    }
 }
