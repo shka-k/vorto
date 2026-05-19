@@ -2,8 +2,9 @@
 //!
 //! Two entry points:
 //! - [`find_root_upward`] — climb the parent chain looking for a marker.
-//! - [`discover_root`] — pick a root for the current `cwd`, falling
-//!   through to BFS-into-subdirs and the upward walk as needed.
+//! - [`discover_root`] — pick a root for the current `cwd`, walking up
+//!   from the opened file's parent toward `cwd` (and beyond, when the
+//!   file lives outside `cwd`'s subtree).
 
 use std::path::{Path, PathBuf};
 
@@ -35,21 +36,44 @@ fn find_root_upward(start_dir: &Path, markers: &[String]) -> PathBuf {
     }
 }
 
+/// Walk up from `start_dir` toward (and including) `cap`, looking for a
+/// marker. Returns `None` if no marker is found before passing `cap`.
+///
+/// Used when the opened file lives inside the workspace root — we don't
+/// want to escape above the workspace and accidentally land on a
+/// monorepo parent or unrelated project.
+fn find_root_upward_capped(start_dir: &Path, cap: &Path, markers: &[String]) -> Option<PathBuf> {
+    let abs = start_dir
+        .canonicalize()
+        .unwrap_or_else(|_| start_dir.to_path_buf());
+    let mut cur: &Path = &abs;
+    loop {
+        if markers.iter().any(|m| cur.join(m).exists()) {
+            return Some(cur.to_path_buf());
+        }
+        if cur == cap {
+            return None;
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => return None,
+        }
+    }
+}
+
 /// Resolve a workspace root for `file` against a stable anchor `cwd`.
 ///
 /// Strategy:
 /// 1. If `markers` is empty, return canonicalized `cwd`.
-/// 2. If `cwd` itself contains a marker, return it.
-/// 3. BFS from `cwd` into subdirectories (capped depth, common build /
-///    VCS dirs skipped) for a marker. First match wins.
-/// 4. If `file` is provided **and** lives outside `cwd`'s subtree, fall
-///    back to [`find_root_upward`] from the file's parent — that covers
+/// 2. If `cwd` itself contains a marker, return it — no walking needed.
+/// 3. If `file` is provided and lives inside `cwd`'s subtree, walk up
+///    from the file's parent toward `cwd` looking for a marker. The
+///    walk is capped at `cwd` so we don't escape into a monorepo
+///    parent or unrelated workspace.
+/// 4. If `file` is provided and lives outside `cwd`'s subtree, walk
+///    up unbounded from the file's parent — covers
 ///    `vorto ../other_project/main.rs` from an unrelated cwd.
 /// 5. Otherwise return canonicalized `cwd`.
-///
-/// We deliberately don't walk **up** from `cwd`. The user being in this
-/// directory is a signal; escaping it could land on a monorepo parent
-/// or other unrelated workspace.
 pub fn discover_root(cwd: &Path, file: Option<&Path>, markers: &[String]) -> PathBuf {
     let cwd_abs = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     if markers.is_empty() {
@@ -58,78 +82,19 @@ pub fn discover_root(cwd: &Path, file: Option<&Path>, markers: &[String]) -> Pat
     if markers.iter().any(|m| cwd_abs.join(m).exists()) {
         return cwd_abs;
     }
-    if let Some(found) = bfs_for_marker(&cwd_abs, markers) {
-        return found;
-    }
     if let Some(file) = file {
         let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-        let outside_cwd = !file_abs.starts_with(&cwd_abs);
-        if outside_cwd && let Some(parent) = file_abs.parent() {
-            return find_root_upward(parent, markers);
+        if let Some(parent) = file_abs.parent() {
+            if file_abs.starts_with(&cwd_abs) {
+                if let Some(found) = find_root_upward_capped(parent, &cwd_abs, markers) {
+                    return found;
+                }
+            } else {
+                return find_root_upward(parent, markers);
+            }
         }
     }
     cwd_abs
-}
-
-/// Max directory depth scanned by [`discover_root`]'s descent. Chosen to
-/// cover typical monorepo layouts (`apps/<name>/Cargo.toml`,
-/// `packages/<name>/package.json`) without melting on huge trees.
-const DESCEND_MAX_DEPTH: usize = 6;
-
-/// Directories skipped during descent — anything noisy, generated, or
-/// containing nested dependency manifests we don't want to mistake for
-/// the user's own project root.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".hg",
-    ".svn",
-    "target",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "dist",
-    "build",
-    ".direnv",
-    ".cache",
-    ".idea",
-    ".vscode",
-];
-
-fn bfs_for_marker(root: &Path, markers: &[String]) -> Option<PathBuf> {
-    use std::collections::VecDeque;
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    queue.push_back((root.to_path_buf(), 0));
-    while let Some((dir, depth)) = queue.pop_front() {
-        if depth > 0 && markers.iter().any(|m| dir.join(m).exists()) {
-            return Some(dir);
-        }
-        if depth >= DESCEND_MAX_DEPTH {
-            continue;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_s = name.to_string_lossy();
-            // Skip all dotdirs — keeps results predictable and avoids
-            // wandering into `.git`/`.cache`/etc. that we'd otherwise
-            // have to enumerate by name.
-            if name_s.starts_with('.') {
-                continue;
-            }
-            if SKIP_DIRS.iter().any(|d| *d == name_s) {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                queue.push_back((path, depth + 1));
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -172,23 +137,31 @@ mod tests {
     }
 
     #[test]
-    fn discover_root_descends_into_subdir() {
-        // cwd has no Cargo.toml; one of its grandchildren does. BFS must
-        // surface that nested project.
+    fn discover_root_walks_up_from_file_to_subproject() {
+        // cwd is a monorepo root with no marker; the opened file lives in
+        // a subproject that has one. The upward walk from the file's
+        // parent should surface that subproject's root.
         let tmp = std::env::temp_dir().join(format!("vorto-disc2-{}", std::process::id()));
-        let nested = tmp.join("apps/foo");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(nested.join("Cargo.toml"), "").unwrap();
-        let root = discover_root(&tmp, None, &["Cargo.toml".to_string()]);
-        assert_eq!(root, nested.canonicalize().unwrap());
+        let subproj = tmp.join("apps/foo");
+        let src = subproj.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(subproj.join("Cargo.toml"), "").unwrap();
+        let file = src.join("main.rs");
+        std::fs::write(&file, "").unwrap();
+        let root = discover_root(&tmp, Some(&file), &["Cargo.toml".to_string()]);
+        assert_eq!(root, subproj.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn discover_root_falls_back_to_cwd_when_no_marker() {
+        // No marker anywhere between file and cwd — return cwd as anchor.
         let tmp = std::env::temp_dir().join(format!("vorto-disc3-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let root = discover_root(&tmp, None, &["Cargo.toml".to_string()]);
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("main.rs");
+        std::fs::write(&file, "").unwrap();
+        let root = discover_root(&tmp, Some(&file), &["Cargo.toml".to_string()]);
         assert_eq!(root, tmp.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -213,16 +186,19 @@ mod tests {
     }
 
     #[test]
-    fn discover_root_skips_target_dir() {
-        // Make sure descent doesn't dive into `target/` etc. where vendored
-        // crates can have their own Cargo.toml.
-        let tmp = std::env::temp_dir().join(format!("vorto-disc5-{}", std::process::id()));
-        let bogus = tmp.join("target/debug/some_crate");
-        std::fs::create_dir_all(&bogus).unwrap();
-        std::fs::write(bogus.join("Cargo.toml"), "").unwrap();
-        let root = discover_root(&tmp, None, &["Cargo.toml".to_string()]);
-        // Should fall back to cwd, NOT find the Cargo.toml under target/.
-        assert_eq!(root, tmp.canonicalize().unwrap());
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn discover_root_upward_walk_does_not_escape_cwd() {
+        // Marker sits ABOVE cwd. The upward walk must stop at cwd rather
+        // than escaping into the parent (which could be an unrelated
+        // monorepo root or someone else's workspace).
+        let outer = std::env::temp_dir().join(format!("vorto-disc5-{}", std::process::id()));
+        let cwd = outer.join("inner");
+        let src = cwd.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(outer.join("Cargo.toml"), "").unwrap();
+        let file = src.join("main.rs");
+        std::fs::write(&file, "").unwrap();
+        let root = discover_root(&cwd, Some(&file), &["Cargo.toml".to_string()]);
+        assert_eq!(root, cwd.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&outer);
     }
 }
