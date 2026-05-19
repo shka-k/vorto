@@ -145,6 +145,13 @@ pub const COMMAND_BINDS: &[CommandBind] = &[
         takes_path: false,
     },
     CommandBind {
+        name: "lsp",
+        aliases: &[],
+        description: "show LSP for current buffer (:lsp all for every language)",
+        kind: DirectKind::LspStatus,
+        takes_path: false,
+    },
+    CommandBind {
         name: "reload",
         aliases: &["e!"],
         description: "reload buffer from disk (undo restores)",

@@ -105,6 +105,18 @@ pub enum LspEventOutcome {
     },
 }
 
+/// Per-client snapshot for the `:lsp` status modal. Produced by
+/// [`LspCoordinator::running_clients`]; the UI formats one row from
+/// each entry.
+pub struct RunningLspInfo {
+    pub client_key: String,
+    pub pid: u32,
+    pub root_uri: String,
+    pub language_id: String,
+    /// How many URIs the client currently holds `didOpen`'d.
+    pub open_count: usize,
+}
+
 /// Result of applying a [`WorkspaceEdit`]. Other-file edits are written
 /// to disk by the coordinator; the active buffer's edits are returned
 /// for the caller to apply through its own `Buffer` (with undo, version
@@ -381,6 +393,28 @@ impl LspCoordinator {
     /// Returns `true` when a client for `client_key` is already attached.
     pub fn has_client(&self, client_key: &str) -> bool {
         self.clients.contains_key(client_key)
+    }
+
+    /// Snapshot of every currently-running client for the `:lsp`
+    /// status modal. Order is unspecified — the caller sorts.
+    pub fn running_clients(&self) -> Vec<RunningLspInfo> {
+        self.clients
+            .iter()
+            .map(|(key, client)| {
+                let open_count = self
+                    .open_uris
+                    .values()
+                    .filter(|keys| keys.iter().any(|k| k == key))
+                    .count();
+                RunningLspInfo {
+                    client_key: key.clone(),
+                    pid: client.pid(),
+                    root_uri: client.root_uri().to_string(),
+                    language_id: client.language_id().to_string(),
+                    open_count,
+                }
+            })
+            .collect()
     }
 
     /// Adopt a pre-spawned `LspClient`. Used by the file-open worker

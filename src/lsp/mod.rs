@@ -78,6 +78,9 @@ pub struct LspClient {
     docs: HashMap<String, i32>,
     /// `languageId` to send in `didOpen`.
     language_id: String,
+    /// Root URI passed to `initialize`. Stored so the `:lsp` status
+    /// modal can show it; the protocol itself doesn't read it back.
+    root_uri: String,
     /// `completionProvider.triggerCharacters` from the server's
     /// `initialize` response. Drives insert-mode auto-trigger so that
     /// e.g. rust-analyzer's `:` (`::` paths) and TypeScript's `<` fire
@@ -301,10 +304,30 @@ impl LspClient {
             next_id: 2,
             docs: HashMap::new(),
             language_id,
+            root_uri: root_uri.to_string(),
             completion_trigger_characters,
             signature_help_trigger_characters,
             blocking_pending,
         })
+    }
+
+    /// OS process id of the running language server. Used by the
+    /// `:lsp` status modal.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Root URI passed to `initialize`. Used by the `:lsp` status
+    /// modal.
+    pub fn root_uri(&self) -> &str {
+        &self.root_uri
+    }
+
+    /// `languageId` advertised in `didOpen` notifications. Distinct
+    /// from our internal language name (e.g. `.tsx` → `tsx` internally
+    /// but `typescriptreact` over the wire).
+    pub fn language_id(&self) -> &str {
+        &self.language_id
     }
 
     /// Trigger characters the server declared in its `initialize`

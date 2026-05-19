@@ -341,6 +341,14 @@ pub enum Prompt {
         content: String,
         scroll: usize,
     },
+    /// `:lsp` — read-only, screen-centered modal listing every
+    /// configured LSP server and whether it's currently running.
+    /// Same key model as [`Self::Hover`]: scroll keys page the
+    /// content, any other key dismisses.
+    LspStatus {
+        content: String,
+        scroll: usize,
+    },
 }
 
 impl Prompt {
@@ -505,6 +513,11 @@ impl PromptController {
         self.state = Prompt::Hover { content, scroll: 0 };
     }
 
+    /// Open the `:lsp` status modal with pre-formatted content.
+    pub fn open_lsp_status(&mut self, content: String) {
+        self.state = Prompt::LspStatus { content, scroll: 0 };
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, root: &Path) -> PromptOutcome {
         let ctrl_c =
             key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
@@ -565,7 +578,7 @@ impl PromptController {
                 }
                 PromptOutcome::Nothing
             }
-            Prompt::Hover { scroll, .. } => {
+            Prompt::Hover { scroll, .. } | Prompt::LspStatus { scroll, .. } => {
                 // Read-only popup. Esc/Ctrl-C/Enter are intercepted by
                 // the top of `handle_key`, so here we only see scroll
                 // keys and "anything else" (which we treat as dismiss).
@@ -619,8 +632,8 @@ impl PromptController {
                     PromptOutcome::Nothing
                 }
             }
-            // Hover is read-only — Enter just dismisses it.
-            Prompt::Hover { .. } => PromptOutcome::Cancelled,
+            // Read-only popups — Enter just dismisses them.
+            Prompt::Hover { .. } | Prompt::LspStatus { .. } => PromptOutcome::Cancelled,
         }
     }
 

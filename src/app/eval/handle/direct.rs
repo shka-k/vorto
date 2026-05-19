@@ -175,6 +175,14 @@ pub(super) fn handle_direct(app: &mut App, kind: DirectKind, count: u32, ctx: Ct
         D::Rename => cmds.push(Cmd::OpenRenamePrompt),
         D::CodeAction => cmds.push(Cmd::LspCodeAction),
         D::Hover => cmds.push(Cmd::LspHover),
+        D::LspStatus => {
+            // `:lsp all` / `:lsp a` widens the scope to every
+            // configured language. Anything else (including the
+            // common no-arg case) is buffer-scoped — `open_lsp_status`
+            // filters down to the active file's language.
+            let all = matches!(ctx.rest.trim(), "all" | "a");
+            cmds.push(Cmd::OpenLspStatus { all });
+        }
         D::GotoDiagnostic { forward } => {
             cmds.push(Cmd::GotoDiagnostic { forward, count });
         }

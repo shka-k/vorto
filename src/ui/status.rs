@@ -127,6 +127,7 @@ fn status_label(app: &App) -> (String, Color) {
         Prompt::Rename(_) => ("RENAME".into(), Color::LightCyan),
         Prompt::CodeActionMenu { .. } => ("CODE ACTION".into(), Color::LightMagenta),
         Prompt::Hover { .. } => ("HOVER".into(), Color::LightBlue),
+        Prompt::LspStatus { .. } => ("LSP".into(), Color::LightBlue),
     }
 }
 

@@ -102,6 +102,12 @@ pub enum Cmd {
     LspCodeAction,
     /// `K` — `textDocument/hover` for the symbol under the cursor.
     LspHover,
+    /// `:lsp` / `:lsp all` — open the LSP status modal. `all=false`
+    /// scopes the listing to the active buffer's language only;
+    /// `all=true` shows every language with an LSP configured.
+    OpenLspStatus {
+        all: bool,
+    },
     /// `]d` / `[d` — jump the cursor to the next / previous LSP
     /// diagnostic in the current buffer. `count` walks N items in
     /// the requested direction.

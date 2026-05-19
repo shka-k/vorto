@@ -60,6 +60,7 @@ impl App {
             Cmd::LspFindReferences => self.lsp_find_references(),
             Cmd::LspCodeAction => self.lsp_code_action(),
             Cmd::LspHover => self.lsp_hover(),
+            Cmd::OpenLspStatus { all } => self.open_lsp_status(all),
             Cmd::GotoDiagnostic { forward, count } => self.run_goto_diagnostic(forward, count),
             Cmd::BufferCycle { forward } => self.buffer_cycle(forward)?,
             Cmd::BufferDelete { force } => self.buffer_delete(force)?,

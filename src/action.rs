@@ -271,6 +271,9 @@ pub enum DirectKind {
     /// `K` — request `textDocument/hover` for the symbol under the
     /// cursor and display the result in a scrollable popup.
     Hover,
+    /// `:lsp` — open a read-only modal listing every language with
+    /// an LSP configured plus its current running state.
+    LspStatus,
     /// `<space>c` — toggle a single-line comment on the current line
     /// using the active language's `comment_token`.
     ToggleComment,

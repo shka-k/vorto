@@ -24,6 +24,7 @@ mod completion;
 mod fuzzy;
 mod hints;
 mod hover;
+mod lsp_status;
 mod signature;
 mod status;
 mod toast;
@@ -111,6 +112,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if matches!(app.prompt.state, Prompt::Hover { .. }) {
         hover::draw_hover(f, app, active_rect);
+    }
+    // `:lsp` modal is screen-centered rather than cursor-anchored —
+    // hand it the full frame so the math stays simple under splits.
+    if matches!(app.prompt.state, Prompt::LspStatus { .. }) {
+        lsp_status::draw_lsp_status(f, app, f.area());
     }
     if app.completion.is_some() {
         completion::draw_completion(f, app, active_rect);

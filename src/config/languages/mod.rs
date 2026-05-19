@@ -293,6 +293,13 @@ impl LanguageRegistry {
     pub fn language_id_for_extension(&self, ext: &str) -> Option<&str> {
         self.extension_to_language_id.get(ext).map(String::as_str)
     }
+
+    /// Iterate every resolved language entry. Used by the `:lsp`
+    /// status modal to enumerate which languages have an LSP server
+    /// configured.
+    pub fn iter(&self) -> impl Iterator<Item = &Language> {
+        self.by_name.values()
+    }
 }
 
 #[cfg(test)]

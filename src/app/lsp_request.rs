@@ -353,6 +353,112 @@ impl App {
         }
     }
 
+    /// Build and open the `:lsp` status modal. `all=false` scopes the
+    /// listing to the active buffer's language; `all=true` lists every
+    /// language with an LSP configured. Each row marks the server
+    /// running (with pid + open-file count) or stopped.
+    pub(super) fn open_lsp_status(&mut self, all: bool) {
+        use crate::app::lsp_coordinator::RunningLspInfo;
+        use std::collections::HashMap;
+        let running: HashMap<String, RunningLspInfo> = self
+            .lsp
+            .running_clients()
+            .into_iter()
+            .map(|info| (info.client_key.clone(), info))
+            .collect();
+        // Default scope: only the active buffer's language. Falls
+        // through to the empty-list message below when the buffer has
+        // no path / unknown extension / no LSP configured. `:lsp all`
+        // bypasses the filter.
+        let buffer_lang = self.buffer.path.as_ref().and_then(|p| {
+            let ext = p.extension()?.to_str()?;
+            self.config.languages.by_extension(ext)
+        });
+        let mut langs: Vec<&crate::config::Language> = if all {
+            self.config
+                .languages
+                .iter()
+                .filter(|l| !l.lsp.is_empty())
+                .collect()
+        } else {
+            buffer_lang
+                .filter(|l| !l.lsp.is_empty())
+                .into_iter()
+                .collect()
+        };
+        langs.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut content = String::new();
+        if langs.is_empty() {
+            if all {
+                content.push_str("(no languages have an LSP configured)\n");
+            } else {
+                match buffer_lang {
+                    None => {
+                        content.push_str("(no language detected for this buffer — try :lsp all)\n")
+                    }
+                    Some(l) => content
+                        .push_str(&format!("({}: no LSP configured — try :lsp all)\n", l.name)),
+                }
+            }
+        }
+        for lang in langs {
+            content.push_str(&format!("\n{}\n", lang.name));
+            for cfg in &lang.lsp {
+                let key = format!("{}::{}", lang.name, cfg.name);
+                if let Some(info) = running.get(&key) {
+                    content.push_str(&format!(
+                        "  ● {:<28} running  pid {}  {} file{}  ({})\n",
+                        cfg.name,
+                        info.pid,
+                        info.open_count,
+                        if info.open_count == 1 { "" } else { "s" },
+                        info.language_id,
+                    ));
+                    content.push_str(&format!("      root: {}\n", info.root_uri));
+                } else {
+                    content.push_str(&format!(
+                        "  ○ {:<28} stopped  ({})\n",
+                        cfg.name, cfg.command,
+                    ));
+                }
+            }
+        }
+        // Runtime clients whose key doesn't match any configured entry
+        // (server name changed in config since spawn, etc). Only
+        // surfaced in the `:lsp all` view — for the per-buffer view
+        // they'd just be noise unrelated to the current language.
+        let mut orphans: Vec<&RunningLspInfo> = running
+            .values()
+            .filter(|info| {
+                let Some((lang, server)) = info.client_key.split_once("::") else {
+                    return true;
+                };
+                !self
+                    .config
+                    .languages
+                    .iter()
+                    .filter(|l| l.name == lang)
+                    .any(|l| l.lsp.iter().any(|c| c.name == server))
+            })
+            .collect();
+        orphans.sort_by(|a, b| a.client_key.cmp(&b.client_key));
+        if all && !orphans.is_empty() {
+            content.push_str("\norphan (running, not in current config)\n");
+            for info in orphans {
+                content.push_str(&format!(
+                    "  ● {:<28} pid {}  {} file{}  ({})\n",
+                    info.client_key,
+                    info.pid,
+                    info.open_count,
+                    if info.open_count == 1 { "" } else { "s" },
+                    info.language_id,
+                ));
+                content.push_str(&format!("      root: {}\n", info.root_uri));
+            }
+        }
+        self.prompt.open_lsp_status(content);
+    }
+
     pub(super) fn lsp_code_action(&mut self) {
         if !self.lsp.has_lsp() {
             self.push_toast(Toast::error("no LSP for this buffer"));
