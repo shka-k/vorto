@@ -35,9 +35,12 @@ impl App {
     ///     dropping line breaks (the prompt is single-line).
     ///   - Insert mode: splice the text in via `insert_text_raw` and
     ///     record it as one `InsertKey::Paste` for `.` replay.
-    ///   - Normal / Visual: ignore — vim has no built-in "paste here"
-    ///     gesture without an explicit register, and synthesizing one
-    ///     would surprise the user.
+    ///   - Normal: splice the text in at the cursor and clamp back
+    ///     onto a character — system paste shouldn't require dropping
+    ///     into Insert first.
+    ///   - Visual: ignore — replacing the selection wholesale would
+    ///     surprise the user when the paste was meant as a quick
+    ///     append.
     pub fn handle_paste(&mut self, s: String) {
         if self.prompt.is_open() {
             let filtered: String = s.chars().filter(|&c| c != '\n' && c != '\r').collect();
@@ -47,8 +50,17 @@ impl App {
             }
             return;
         }
-        if matches!(self.mode, Mode::Insert) {
-            self.insert_pasted_text(s);
+        match self.mode {
+            Mode::Insert => self.insert_pasted_text(s),
+            Mode::Normal => {
+                if s.is_empty() {
+                    return;
+                }
+                self.buffer.snapshot();
+                self.buffer.insert_text_raw(&s);
+                self.buffer.clamp_col(false);
+            }
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {}
         }
     }
 
