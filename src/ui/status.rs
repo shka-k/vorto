@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::action::{Operator, Token};
 use crate::app::{App, Prompt};
@@ -14,16 +14,24 @@ use crate::mode::Mode;
 
 const STATUS_LEFT_WIDTH: u16 = 14;
 const STATUS_RIGHT_WIDTH: u16 = 24;
+const STATUS_PAD: u16 = 1;
+const STATUS_BG: Color = Color::DarkGray;
 
 pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    // Three columns: mode badge on the left, filename centered, pending
-    // tokens + cursor position right-aligned.
+    // Paint the whole status line so the bar visually separates from the
+    // buffer above — without this, only the mode badge has a background.
+    f.render_widget(Block::default().style(Style::default().bg(STATUS_BG)), area);
+
+    // Three columns (mode badge / filename / position) with a one-cell
+    // pad on each edge so the badge and position don't kiss the border.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
+            Constraint::Length(STATUS_PAD),
             Constraint::Length(STATUS_LEFT_WIDTH),
             Constraint::Min(1),
             Constraint::Length(STATUS_RIGHT_WIDTH),
+            Constraint::Length(STATUS_PAD),
         ])
         .split(area);
 
@@ -35,16 +43,22 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     );
-    f.render_widget(Paragraph::new(Line::from(vec![mode_span])), cols[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![mode_span])).style(Style::default().bg(STATUS_BG)),
+        cols[1],
+    );
 
     let name = file_label(app);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             name,
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default()
+                .bg(STATUS_BG)
+                .add_modifier(Modifier::BOLD),
         )))
+        .style(Style::default().bg(STATUS_BG))
         .alignment(Alignment::Center),
-        cols[1],
+        cols[2],
     );
 
     // Visual column (tab-expanded), so the displayed `col` matches the
@@ -52,7 +66,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // disagree with the on-screen position whenever a tab sits between
     // the line start and the cursor.
     let pos = format!(
-        "{}:{} ",
+        "{}:{}",
         app.buffer.cursor.row + 1,
         app.cursor_visual_col() + 1
     );
@@ -62,15 +76,21 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         right_spans.push(Span::styled(
             pending,
             Style::default()
+                .bg(STATUS_BG)
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ));
-        right_spans.push(Span::raw(" "));
+        right_spans.push(Span::styled(" ", Style::default().bg(STATUS_BG)));
     }
-    right_spans.push(Span::styled(pos, Style::default().fg(Color::Gray)));
+    right_spans.push(Span::styled(
+        pos,
+        Style::default().bg(STATUS_BG).fg(Color::Gray),
+    ));
     f.render_widget(
-        Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right),
-        cols[2],
+        Paragraph::new(Line::from(right_spans))
+            .style(Style::default().bg(STATUS_BG))
+            .alignment(Alignment::Right),
+        cols[3],
     );
 }
 
