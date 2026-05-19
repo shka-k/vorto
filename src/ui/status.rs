@@ -52,9 +52,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             name,
-            Style::default()
-                .bg(STATUS_BG)
-                .add_modifier(Modifier::BOLD),
+            Style::default().bg(STATUS_BG).add_modifier(Modifier::BOLD),
         )))
         .style(Style::default().bg(STATUS_BG))
         .alignment(Alignment::Center),
